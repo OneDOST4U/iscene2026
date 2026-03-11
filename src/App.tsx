@@ -25,6 +25,7 @@ import {
   Clock
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { Analytics } from '@vercel/analytics/react';
 
 const colors = {
   red: '#E53935',
@@ -515,6 +516,7 @@ export default function App() {
           </div>
         </div>
       </footer>
+      <Analytics />
     </div>
   );
 }
