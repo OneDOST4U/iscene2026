@@ -228,6 +228,59 @@ export default function App() {
     doc.save('iscene-registrations.pdf');
   };
 
+  const handleExportCsv = () => {
+    if (!filteredRegistrations.length) {
+      return;
+    }
+
+    const header = [
+      'No.',
+      'Full Name',
+      'Email',
+      'Sector',
+      'Status',
+      'Contact',
+      'Accommodation',
+      'Travel',
+    ];
+
+    const rows = filteredRegistrations.map((r, index) => [
+      String(index + 1),
+      (r.fullName as string) || '',
+      (r.email as string) || '',
+      (r.sector as string) || '',
+      (r.status as string) || 'pending',
+      (r.contactNumber as string) || '',
+      (r.accommodationDetails as string) || '',
+      (r.travelDetails as string) || '',
+    ]);
+
+    const escapeCell = (cell: string) => {
+      if (cell.includes('"') || cell.includes(',') || cell.includes('\n')) {
+        return `"${cell.replace(/"/g, '""')}"`;
+      }
+      return cell;
+    };
+
+    const csvLines = [
+      header.map(escapeCell).join(','),
+      ...rows.map((row) => row.map(escapeCell).join(',')),
+    ];
+
+    const csvContent = '\uFEFF' + csvLines.join('\r\n');
+    const blob = new Blob([csvContent], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'iscene-registrations.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const loadRegistrations = async () => {
     if (!auth.currentUser) return;
     setRegistrationsLoading(true);
@@ -1287,13 +1340,22 @@ iSCENE 2026 Organizing Team</p>`,
                         <option value="approved">Approved</option>
                         <option value="declined">Declined</option>
                       </select>
-                      <button
-                        type="button"
-                        onClick={handleExportPdf}
-                        className="inline-flex items-center rounded-xl bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800"
-                      >
-                        Export PDF
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={handleExportPdf}
+                          className="inline-flex items-center rounded-xl bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800"
+                        >
+                          Export PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleExportCsv}
+                          className="inline-flex items-center rounded-xl bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-200"
+                        >
+                          Export CSV
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div className="max-h-[50vh] overflow-y-auto">
