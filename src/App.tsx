@@ -25,6 +25,8 @@ import {
   Clock,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import jsPDF from 'jspdf';
+import autoTable, { RowInput } from 'jspdf-autotable';
 import {
   collection,
   addDoc,
@@ -104,6 +106,8 @@ export default function App() {
   const [adminPassword, setAdminPassword] = React.useState('');
   const [registrations, setRegistrations] = React.useState<any[]>([]);
   const [registrationsLoading, setRegistrationsLoading] = React.useState(false);
+  const [filterSector, setFilterSector] = React.useState<string>('all');
+  const [filterStatus, setFilterStatus] = React.useState<string>('all');
 
   // Sectors that do NOT require payment or proof of payment
   const noFeeSectors = React.useMemo(
@@ -112,6 +116,35 @@ export default function App() {
   );
 
   const [selectedSector, setSelectedSector] = React.useState<string>('');
+
+  const sectorFilterOptions = React.useMemo(
+    () =>
+      Array.from(
+        new Set(
+          registrations
+            .map((r) => (r.sector as string | undefined) || '')
+            .filter((s) => s && s.trim().length > 0),
+        ),
+      ).sort(),
+    [registrations],
+  );
+
+  const filteredRegistrations = React.useMemo(
+    () =>
+      registrations.filter((r) => {
+        const sector = (r.sector as string | undefined) || '';
+        const status = (r.status as string | undefined) || 'pending';
+
+        if (filterSector !== 'all' && sector !== filterSector) {
+          return false;
+        }
+        if (filterStatus !== 'all' && status !== filterStatus) {
+          return false;
+        }
+        return true;
+      }),
+    [registrations, filterSector, filterStatus],
+  );
 
   React.useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -148,6 +181,51 @@ export default function App() {
   const handleAdminSignOut = async () => {
     await signOut(auth);
     setRegistrations([]);
+  };
+
+  const handleExportPdf = () => {
+    if (!filteredRegistrations.length) {
+      return;
+    }
+
+    const doc = new jsPDF('landscape');
+
+    const body: RowInput[] = filteredRegistrations.map((r, index) => {
+      const createdAt =
+        (r.createdAt as Timestamp | undefined)?.toDate?.() ?? null;
+
+      return [
+        index + 1,
+        (r.fullName as string) || '',
+        (r.email as string) || '',
+        (r.sector as string) || '',
+        (r.status as string) || 'pending',
+        (r.contactNumber as string) || '',
+        (r.accommodationDetails as string) || '',
+        (r.travelDetails as string) || '',
+      ];
+    });
+
+    autoTable(doc, {
+      head: [
+        [
+          '#',
+          'Full Name',
+          'Email',
+          'Sector',
+          'Status',
+          'Contact',
+          'Accommodation',
+          'Travel',
+        ],
+      ],
+      body,
+      styles: { fontSize: 7, cellPadding: 2 },
+      headStyles: { fillColor: [30, 136, 229] },
+      startY: 15,
+    });
+
+    doc.save('iscene-registrations.pdf');
   };
 
   const loadRegistrations = async () => {
@@ -1184,8 +1262,39 @@ iSCENE 2026 Organizing Team</p>`,
                   <p className="text-xs text-red-600 mb-1">{adminAuthError}</p>
                 )}
                 <div className="border border-slate-100 rounded-2xl overflow-hidden">
-                  <div className="bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-[0.16em]">
-                    Registrations
+                  <div className="bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-[0.16em] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <span>Registrations</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={filterSector}
+                        onChange={(e) => setFilterSector(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="all">All sectors</option>
+                        {sectorFilterOptions.map((sector) => (
+                          <option key={sector} value={sector}>
+                            {sector}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={filterStatus}
+                        onChange={(e) => setFilterStatus(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="all">All statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="declined">Declined</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleExportPdf}
+                        className="inline-flex items-center rounded-xl bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800"
+                      >
+                        Export PDF
+                      </button>
+                    </div>
                   </div>
                   <div className="max-h-[50vh] overflow-y-auto">
                     <table className="min-w-full text-xs">
@@ -1204,7 +1313,7 @@ iSCENE 2026 Organizing Team</p>`,
                         </tr>
                       </thead>
                       <tbody>
-                        {registrations.length === 0 && !registrationsLoading && (
+                        {filteredRegistrations.length === 0 && !registrationsLoading && (
                           <tr>
                             <td
                               colSpan={6}
@@ -1214,7 +1323,7 @@ iSCENE 2026 Organizing Team</p>`,
                             </td>
                           </tr>
                         )}
-                        {registrations.map((r) => {
+                        {filteredRegistrations.map((r) => {
                           const createdAt =
                             (r.createdAt as Timestamp | undefined)?.toDate?.() ??
                             null;
