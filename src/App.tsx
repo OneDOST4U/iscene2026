@@ -973,7 +973,7 @@ iSCENE 2026 Organizing Team</p>`,
                 <a href="https://facebook.com/ISCENE.PH" className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-blue-600 hover:text-white transition-all">
                   <Facebook size={20} />
                 </a>
-                <a href="https://www.iscene.ph" className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-blue-600 hover:text-white transition-all">
+                <a href="https://www.iscene.app" className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-blue-600 hover:text-white transition-all">
                   <Globe size={20} />
                 </a>
               </div>
@@ -991,7 +991,7 @@ iSCENE 2026 Organizing Team</p>`,
               <h5 className="font-bold text-slate-900 mb-6 uppercase tracking-widest text-xs">Contact Us</h5>
               <ul className="space-y-4 text-slate-500 font-medium">
                 <li className="flex items-center gap-2"><MapPin size={16} /> Cauayan City, Isabela</li>
-                <li className="flex items-center gap-2"><ExternalLink size={16} /> www.iscene.ph</li>
+                <li className="flex items-center gap-2"><ExternalLink size={16} /> www.iscene.app</li>
                 <li className="flex items-center gap-2"><Facebook size={16} /> ISCENE.PH</li>
               </ul>
             </div>
