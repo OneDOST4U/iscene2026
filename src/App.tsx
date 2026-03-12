@@ -48,7 +48,6 @@ import {
   signOut,
   User,
 } from 'firebase/auth';
-import { ParticipantDashboard } from './ParticipantDashboard';
 
 const colors = {
   red: '#E53935',
@@ -104,7 +103,6 @@ export default function App() {
   const [showSuccessPopup, setShowSuccessPopup] = React.useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = React.useState(false);
   const [adminUser, setAdminUser] = React.useState<User | null>(null);
-  const [currentUser, setCurrentUser] = React.useState<User | null>(null);
   const [adminAuthError, setAdminAuthError] = React.useState<string | null>(null);
   const [adminLoading, setAdminLoading] = React.useState(false);
   const [adminEmail, setAdminEmail] = React.useState('');
@@ -118,7 +116,6 @@ export default function App() {
   const [registrationsLoading, setRegistrationsLoading] = React.useState(false);
   const [filterSector, setFilterSector] = React.useState<string>('all');
   const [filterStatus, setFilterStatus] = React.useState<string>('all');
-  const [participantRegistration, setParticipantRegistration] = React.useState<any | null>(null);
 
   // Sectors that do NOT require payment or proof of payment
   const noFeeSectors = React.useMemo(
@@ -187,36 +184,8 @@ export default function App() {
   );
 
   React.useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
+    const unsub = onAuthStateChanged(auth, (user) => {
       setAdminUser(user);
-      setCurrentUser(user);
-
-      if (!user) {
-        setParticipantRegistration(null);
-        return;
-      }
-
-      try {
-        const q = query(
-          collection(db, 'registrations'),
-          where('uid', '==', user.uid),
-        );
-        const snap = await getDocs(q);
-        if (snap.empty) {
-          setParticipantRegistration(null);
-          return;
-        }
-        const docSnap = snap.docs[0];
-        const data = { id: docSnap.id, ...docSnap.data() };
-        if ((data.status as string | undefined) === 'approved') {
-          setParticipantRegistration(data);
-        } else {
-          setParticipantRegistration(null);
-        }
-      } catch (err) {
-        console.error('Error loading participant registration', err);
-        setParticipantRegistration(null);
-      }
     });
     return () => unsub();
   }, []);
@@ -248,8 +217,6 @@ export default function App() {
 
   const handleAdminSignOut = async () => {
     await signOut(auth);
-    setCurrentUser(null);
-    setParticipantRegistration(null);
     setRegistrations([]);
   };
 
@@ -279,8 +246,7 @@ export default function App() {
         return;
       }
 
-      const regSnap = snap.docs[0];
-      const reg = { id: regSnap.id, ...regSnap.data() };
+      const reg = snap.docs[0].data();
       const status = (reg.status as string | undefined) || 'pending';
 
       if (status !== 'approved') {
@@ -294,8 +260,6 @@ export default function App() {
       }
 
       // Login ok and registration approved – close modal and clear fields.
-      setCurrentUser(credential.user);
-      setParticipantRegistration(reg);
       setIsParticipantLoginOpen(false);
       setParticipantEmail('');
       setParticipantPassword('');
@@ -539,7 +503,6 @@ iSCENE 2026 Organizing Team</p>`,
       // Firebase will also sign them in after account creation.
       const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
       const uid = credential.user.uid;
-      setCurrentUser(credential.user);
 
       console.log('Submitting registration to Firestore...', {
         email,
@@ -566,28 +529,7 @@ iSCENE 2026 Organizing Team</p>`,
         proofOfPaymentPath = uploadSnapshot.ref.fullPath;
       }
 
-      const regRef = await addDoc(collection(db, 'registrations'), {
-        uid,
-        email,
-        fullName,
-        positionTitle,
-        contactNumber,
-        sector,
-        sectorOffice,
-        requiresPayment,
-        registrationFee: requiresPayment ? 6500 : 0,
-        paymentMethod: requiresPayment ? paymentMethod : null,
-        status: 'pending',
-        proofOfPaymentPath,
-        accommodationDetails,
-        travelDetails,
-        notes,
-        eventYear: 2026,
-        createdAt: Timestamp.now(),
-      });
-
-      setParticipantRegistration({
-        id: regRef.id,
+      await addDoc(collection(db, 'registrations'), {
         uid,
         email,
         fullName,
@@ -631,20 +573,6 @@ iSCENE 2026 Organizing Team</p>`,
       }
     }
   };
-
-  if (currentUser && participantRegistration && participantRegistration.status === 'approved') {
-    return (
-      <ParticipantDashboard
-        user={currentUser}
-        registration={participantRegistration}
-        onSignOut={async () => {
-          await signOut(auth);
-          setCurrentUser(null);
-          setParticipantRegistration(null);
-        }}
-      />
-    );
-  }
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900">
@@ -1546,35 +1474,40 @@ iSCENE 2026 Organizing Team</p>`,
         </div>
       )}
       {isAdminPanelOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-50">
-          <div className="flex flex-col h-full max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6 relative">
+        <div className="fixed inset-0 z-50 bg-slate-950 text-slate-50">
+          <div className="flex flex-col h-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 relative">
             <button
               type="button"
               onClick={() => setIsAdminPanelOpen(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-200"
             >
               <X size={20} />
             </button>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
-                <img src="/iscene.png" alt="iSCENE Logo" className="h-8 w-auto" />
+                <img src="/iscene.png" alt="iSCENE Logo" className="h-9 w-auto" />
                 <div>
-                  <h2 className="text-lg sm:text-xl font-bold text-slate-900">
-                    iSCENE 2026 Admin
+                  <h2 className="text-lg sm:text-xl font-bold">
+                    iSCENE 2026 · Admin Console
                   </h2>
-                  <p className="text-xs text-slate-500">
-                    View registrations and manage approval status.
+                  <p className="text-xs text-slate-400">
+                    Manage registrations, approvals, and event operations.
                   </p>
                 </div>
               </div>
               {adminUser && (
-                <button
-                  type="button"
-                  onClick={handleAdminSignOut}
-                  className="text-xs font-semibold text-slate-500 hover:text-slate-800"
-                >
-                  Sign out
-                </button>
+                <div className="flex items-center gap-3">
+                  <span className="hidden sm:inline text-xs text-slate-400">
+                    {adminUser.email}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAdminSignOut}
+                    className="text-xs font-semibold text-slate-300 hover:text-white border border-slate-600 rounded-full px-3 py-1"
+                  >
+                    Sign out
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1622,31 +1555,73 @@ iSCENE 2026 Organizing Team</p>`,
             )}
 
             {adminUser && (
-              <div className="space-y-3">
+              <div className="space-y-5">
+                {/* Hero + quick actions */}
+                <section className="rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-900 p-5 text-slate-50 shadow-lg">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-indigo-300 mb-1">
+                        April 9–11, 2026 • ICON
+                      </p>
+                      <h3 className="text-xl md:text-2xl font-extrabold mb-1">
+                        Welcome to the iSCENE 2026 admin hub
+                      </h3>
+                      <p className="text-xs md:text-sm text-slate-200 max-w-xl">
+                        Track registrations, approvals, and participation to keep the event running
+                        smoothly.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 md:justify-end">
+                      <button
+                        type="button"
+                        onClick={loadRegistrations}
+                        disabled={registrationsLoading}
+                        className="px-3 py-2 rounded-full bg-white text-slate-900 text-xs font-semibold shadow md:min-w-[120px] disabled:bg-slate-300"
+                      >
+                        {registrationsLoading ? 'Refreshing…' : 'Refresh Registrations'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExportPdf}
+                        className="px-3 py-2 rounded-full bg-indigo-500 text-xs font-semibold shadow hover:bg-indigo-400"
+                      >
+                        Export PDF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExportCsv}
+                        className="px-3 py-2 rounded-full bg-slate-900/60 border border-slate-700 text-xs font-semibold hover:bg-slate-800"
+                      >
+                        Export CSV
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
                 <div className="flex items-center justify-between">
-                  <p className="text-xs text-slate-500">
-                    Signed in as <span className="font-semibold">{adminUser.email}</span>
+                  <p className="text-xs text-slate-400">
+                    Signed in as <span className="font-semibold text-slate-100">{adminUser.email}</span>
                   </p>
                   <button
                     type="button"
                     onClick={loadRegistrations}
                     disabled={registrationsLoading}
-                    className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:text-slate-400"
+                    className="text-xs font-semibold text-indigo-300 hover:text-indigo-200 disabled:text-slate-600 md:hidden"
                   >
                     {registrationsLoading ? 'Refreshing…' : 'Refresh list'}
                   </button>
                 </div>
                 {adminAuthError && (
-                  <p className="text-xs text-red-600 mb-1">{adminAuthError}</p>
+                  <p className="text-xs text-red-400 mb-1">{adminAuthError}</p>
                 )}
-                <div className="border border-slate-100 rounded-2xl overflow-hidden">
-                  <div className="bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-[0.16em] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <span>Registrations</span>
+                <div className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-950/60">
+                  <div className="bg-slate-900/60 px-4 py-3 text-[11px] font-semibold text-slate-300 uppercase tracking-[0.16em] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <span>Registrations overview</span>
                     <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={filterSector}
                         onChange={(e) => setFilterSector(e.target.value)}
-                        className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="rounded-xl border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-medium text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       >
                         <option value="all">All sectors</option>
                         {sectorFilterOptions.map((sector) => (
@@ -1658,34 +1633,18 @@ iSCENE 2026 Organizing Team</p>`,
                       <select
                         value={filterStatus}
                         onChange={(e) => setFilterStatus(e.target.value)}
-                        className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="rounded-xl border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-medium text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       >
                         <option value="all">All statuses</option>
                         <option value="pending">Pending</option>
                         <option value="approved">Approved</option>
                         <option value="declined">Declined</option>
                       </select>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={handleExportPdf}
-                          className="inline-flex items-center rounded-xl bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800"
-                        >
-                          Export PDF
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleExportCsv}
-                          className="inline-flex items-center rounded-xl bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-200"
-                        >
-                          Export CSV
-                        </button>
-                      </div>
                     </div>
                   </div>
                   <div className="max-h-[50vh] overflow-y-auto">
                     <table className="min-w-full text-xs">
-                      <thead className="bg-slate-50 text-slate-500">
+                      <thead className="bg-slate-900 text-slate-300">
                         <tr>
                           <th className="px-3 py-2 text-left font-semibold">Name</th>
                           <th className="px-3 py-2 text-left font-semibold">Email</th>
