@@ -183,6 +183,16 @@ export default function App() {
     [registrations, filterSector, filterStatus],
   );
 
+  const totalRegistrations = registrations.length;
+  const pendingRegistrations = React.useMemo(
+    () => registrations.filter((r) => (r.status as string | undefined) === 'pending').length,
+    [registrations],
+  );
+  const approvedRegistrations = React.useMemo(
+    () => registrations.filter((r) => (r.status as string | undefined) === 'approved').length,
+    [registrations],
+  );
+
   React.useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
       setAdminUser(user);
@@ -1475,41 +1485,73 @@ iSCENE 2026 Organizing Team</p>`,
       )}
       {isAdminPanelOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950 text-slate-50">
-          <div className="flex flex-col h-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 relative">
-            <button
-              type="button"
-              onClick={() => setIsAdminPanelOpen(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-200"
-            >
-              <X size={20} />
-            </button>
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-3">
-                <img src="/iscene.png" alt="iSCENE Logo" className="h-9 w-auto" />
+          <div className="flex h-full max-w-6xl mx-auto">
+            {/* Sidebar */}
+            <aside className="hidden md:flex w-60 flex-col bg-slate-950 border-r border-slate-800 py-6 px-4">
+              <div className="flex items-center gap-2 mb-8">
+                <img src="/iscene.png" alt="iSCENE Logo" className="h-8 w-auto" />
                 <div>
-                  <h2 className="text-lg sm:text-xl font-bold">
-                    iSCENE 2026 · Admin Console
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Manage registrations, approvals, and event operations.
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                    Admin
                   </p>
+                  <h2 className="text-sm font-semibold">iSCENE 2026</h2>
                 </div>
               </div>
+              <nav className="flex-1 space-y-1 text-sm">
+                {['Dashboard', 'Participants', 'Sessions', 'Booths', 'Food', 'Analytics'].map(
+                  (item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-left ${
+                        item === 'Dashboard'
+                          ? 'bg-slate-900 text-slate-50'
+                          : 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-100'
+                      }`}
+                    >
+                      <span className="text-[13px]">{item}</span>
+                    </button>
+                  ),
+                )}
+              </nav>
               {adminUser && (
-                <div className="flex items-center gap-3">
-                  <span className="hidden sm:inline text-xs text-slate-400">
+                <div className="mt-4 pt-4 border-t border-slate-800">
+                  <p className="text-[11px] text-slate-500 mb-1 line-clamp-1">
                     {adminUser.email}
-                  </span>
+                  </p>
                   <button
                     type="button"
                     onClick={handleAdminSignOut}
-                    className="text-xs font-semibold text-slate-300 hover:text-white border border-slate-600 rounded-full px-3 py-1"
+                    className="w-full text-[11px] font-semibold text-red-300 hover:text-red-200 border border-red-500/60 rounded-full px-3 py-1"
                   >
                     Sign out
                   </button>
                 </div>
               )}
-            </div>
+            </aside>
+
+            {/* Main content */}
+            <div className="flex-1 flex flex-col px-4 sm:px-6 lg:px-8 py-6 relative overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsAdminPanelOpen(false)}
+                className="absolute top-4 right-4 text-slate-500 hover:text-slate-200"
+              >
+                <X size={20} />
+              </button>
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold">Dashboard</h2>
+                  <p className="text-xs text-slate-400">
+                    Overview of registrations and event activity.
+                  </p>
+                </div>
+                {adminUser && (
+                  <span className="text-[11px] text-slate-500 hidden sm:inline">
+                    {adminUser.email}
+                  </span>
+                )}
+              </div>
 
             {!adminUser && (
               <form onSubmit={handleAdminSignIn} className="space-y-4 mb-6">
@@ -1555,62 +1597,26 @@ iSCENE 2026 Organizing Team</p>`,
             )}
 
             {adminUser && (
-              <div className="space-y-5">
-                {/* Hero + quick actions */}
-                <section className="rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-900 p-5 text-slate-50 shadow-lg">
-                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-indigo-300 mb-1">
-                        April 9–11, 2026 • ICON
-                      </p>
-                      <h3 className="text-xl md:text-2xl font-extrabold mb-1">
-                        Welcome to the iSCENE 2026 admin hub
-                      </h3>
-                      <p className="text-xs md:text-sm text-slate-200 max-w-xl">
-                        Track registrations, approvals, and participation to keep the event running
-                        smoothly.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2 md:justify-end">
-                      <button
-                        type="button"
-                        onClick={loadRegistrations}
-                        disabled={registrationsLoading}
-                        className="px-3 py-2 rounded-full bg-white text-slate-900 text-xs font-semibold shadow md:min-w-[120px] disabled:bg-slate-300"
-                      >
-                        {registrationsLoading ? 'Refreshing…' : 'Refresh Registrations'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleExportPdf}
-                        className="px-3 py-2 rounded-full bg-indigo-500 text-xs font-semibold shadow hover:bg-indigo-400"
-                      >
-                        Export PDF
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleExportCsv}
-                        className="px-3 py-2 rounded-full bg-slate-900/60 border border-slate-700 text-xs font-semibold hover:bg-slate-800"
-                      >
-                        Export CSV
-                      </button>
-                    </div>
+              <div className="space-y-6">
+                {/* Summary cards */}
+                <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-2">
+                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
+                    <p className="text-[11px] text-slate-400 mb-1">Total registrations</p>
+                    <p className="text-xl font-bold">{totalRegistrations}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
+                    <p className="text-[11px] text-slate-400 mb-1">Pending approvals</p>
+                    <p className="text-xl font-bold text-amber-300">{pendingRegistrations}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
+                    <p className="text-[11px] text-slate-400 mb-1">Approved participants</p>
+                    <p className="text-xl font-bold text-emerald-300">{approvedRegistrations}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
+                    <p className="text-[11px] text-slate-400 mb-1">Food claims</p>
+                    <p className="text-xl font-bold text-sky-300">0</p>
                   </div>
                 </section>
-
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-slate-400">
-                    Signed in as <span className="font-semibold text-slate-100">{adminUser.email}</span>
-                  </p>
-                  <button
-                    type="button"
-                    onClick={loadRegistrations}
-                    disabled={registrationsLoading}
-                    className="text-xs font-semibold text-indigo-300 hover:text-indigo-200 disabled:text-slate-600 md:hidden"
-                  >
-                    {registrationsLoading ? 'Refreshing…' : 'Refresh list'}
-                  </button>
-                </div>
                 {adminAuthError && (
                   <p className="text-xs text-red-400 mb-1">{adminAuthError}</p>
                 )}
