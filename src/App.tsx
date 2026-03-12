@@ -37,6 +37,7 @@ import {
   orderBy,
   updateDoc,
   doc,
+  where,
 } from 'firebase/firestore';
 import { db, storage, auth } from './firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -47,6 +48,7 @@ import {
   signOut,
   User,
 } from 'firebase/auth';
+import { ParticipantDashboard } from './ParticipantDashboard';
 
 const colors = {
   red: '#E53935',
@@ -102,14 +104,21 @@ export default function App() {
   const [showSuccessPopup, setShowSuccessPopup] = React.useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = React.useState(false);
   const [adminUser, setAdminUser] = React.useState<User | null>(null);
+  const [currentUser, setCurrentUser] = React.useState<User | null>(null);
   const [adminAuthError, setAdminAuthError] = React.useState<string | null>(null);
   const [adminLoading, setAdminLoading] = React.useState(false);
   const [adminEmail, setAdminEmail] = React.useState('');
   const [adminPassword, setAdminPassword] = React.useState('');
+   const [isParticipantLoginOpen, setIsParticipantLoginOpen] = React.useState(false);
+   const [participantEmail, setParticipantEmail] = React.useState('');
+   const [participantPassword, setParticipantPassword] = React.useState('');
+   const [participantAuthError, setParticipantAuthError] = React.useState<string | null>(null);
+   const [participantAuthLoading, setParticipantAuthLoading] = React.useState(false);
   const [registrations, setRegistrations] = React.useState<any[]>([]);
   const [registrationsLoading, setRegistrationsLoading] = React.useState(false);
   const [filterSector, setFilterSector] = React.useState<string>('all');
   const [filterStatus, setFilterStatus] = React.useState<string>('all');
+  const [participantRegistration, setParticipantRegistration] = React.useState<any | null>(null);
 
   // Sectors that do NOT require payment or proof of payment
   const noFeeSectors = React.useMemo(
@@ -178,8 +187,36 @@ export default function App() {
   );
 
   React.useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
       setAdminUser(user);
+      setCurrentUser(user);
+
+      if (!user) {
+        setParticipantRegistration(null);
+        return;
+      }
+
+      try {
+        const q = query(
+          collection(db, 'registrations'),
+          where('uid', '==', user.uid),
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) {
+          setParticipantRegistration(null);
+          return;
+        }
+        const docSnap = snap.docs[0];
+        const data = { id: docSnap.id, ...docSnap.data() };
+        if ((data.status as string | undefined) === 'approved') {
+          setParticipantRegistration(data);
+        } else {
+          setParticipantRegistration(null);
+        }
+      } catch (err) {
+        console.error('Error loading participant registration', err);
+        setParticipantRegistration(null);
+      }
     });
     return () => unsub();
   }, []);
@@ -211,7 +248,72 @@ export default function App() {
 
   const handleAdminSignOut = async () => {
     await signOut(auth);
+    setCurrentUser(null);
+    setParticipantRegistration(null);
     setRegistrations([]);
+  };
+
+  const handleParticipantSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setParticipantAuthError(null);
+    setParticipantAuthLoading(true);
+    try {
+      const credential = await signInWithEmailAndPassword(
+        auth,
+        participantEmail.trim(),
+        participantPassword,
+      );
+      const uid = credential.user.uid;
+
+      const q = query(
+        collection(db, 'registrations'),
+        where('uid', '==', uid),
+      );
+      const snap = await getDocs(q);
+
+      if (snap.empty) {
+        await signOut(auth);
+        setParticipantAuthError(
+          'No registration was found for this account. Please register first or use a different email.',
+        );
+        return;
+      }
+
+      const regSnap = snap.docs[0];
+      const reg = { id: regSnap.id, ...regSnap.data() };
+      const status = (reg.status as string | undefined) || 'pending';
+
+      if (status !== 'approved') {
+        await signOut(auth);
+        setParticipantAuthError(
+          status === 'pending'
+            ? 'Your registration is still pending approval. You will receive an email once it is approved.'
+            : 'Your registration has not been approved. Please contact the organizers for assistance.',
+        );
+        return;
+      }
+
+      // Login ok and registration approved – close modal and clear fields.
+      setCurrentUser(credential.user);
+      setParticipantRegistration(reg);
+      setIsParticipantLoginOpen(false);
+      setParticipantEmail('');
+      setParticipantPassword('');
+    } catch (err: any) {
+      console.error('Participant sign-in error', err);
+      const code = err?.code as string | undefined;
+      if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') {
+        setParticipantAuthError('Incorrect email or password.');
+      } else if (code === 'auth/user-not-found') {
+        setParticipantAuthError('No account found with this email. Please register first.');
+      } else if (code === 'auth/too-many-requests') {
+        setParticipantAuthError('Too many attempts. Please try again later.');
+      } else {
+        setParticipantAuthError('Unable to sign in. Please try again.');
+      }
+    } finally {
+      setParticipantAuthLoading(false);
+    }
   };
 
   const handleExportPdf = () => {
@@ -437,6 +539,7 @@ iSCENE 2026 Organizing Team</p>`,
       // Firebase will also sign them in after account creation.
       const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
       const uid = credential.user.uid;
+      setCurrentUser(credential.user);
 
       console.log('Submitting registration to Firestore...', {
         email,
@@ -463,7 +566,28 @@ iSCENE 2026 Organizing Team</p>`,
         proofOfPaymentPath = uploadSnapshot.ref.fullPath;
       }
 
-      await addDoc(collection(db, 'registrations'), {
+      const regRef = await addDoc(collection(db, 'registrations'), {
+        uid,
+        email,
+        fullName,
+        positionTitle,
+        contactNumber,
+        sector,
+        sectorOffice,
+        requiresPayment,
+        registrationFee: requiresPayment ? 6500 : 0,
+        paymentMethod: requiresPayment ? paymentMethod : null,
+        status: 'pending',
+        proofOfPaymentPath,
+        accommodationDetails,
+        travelDetails,
+        notes,
+        eventYear: 2026,
+        createdAt: Timestamp.now(),
+      });
+
+      setParticipantRegistration({
+        id: regRef.id,
         uid,
         email,
         fullName,
@@ -508,6 +632,20 @@ iSCENE 2026 Organizing Team</p>`,
     }
   };
 
+  if (currentUser && participantRegistration && participantRegistration.status === 'approved') {
+    return (
+      <ParticipantDashboard
+        user={currentUser}
+        registration={participantRegistration}
+        onSignOut={async () => {
+          await signOut(auth);
+          setCurrentUser(null);
+          setParticipantRegistration(null);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900">
       {/* Navigation */}
@@ -532,6 +670,13 @@ iSCENE 2026 Organizing Team</p>`,
                   {item}
                 </a>
               ))}
+              <button
+                type="button"
+                onClick={() => setIsParticipantLoginOpen(true)}
+                className="text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors"
+              >
+                Participant Login
+              </button>
               <button
                 type="button"
                 onClick={() => setIsRegisterOpen(true)}
@@ -567,6 +712,16 @@ iSCENE 2026 Organizing Team</p>`,
                 {item}
               </a>
             ))}
+            <button
+              type="button"
+              onClick={() => {
+                setIsMenuOpen(false);
+                setIsParticipantLoginOpen(true);
+              }}
+              className="w-full border border-slate-200 text-slate-800 px-6 py-3 rounded-xl font-bold"
+            >
+              Participant Login
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -1039,6 +1194,59 @@ iSCENE 2026 Organizing Team</p>`,
           </div>
         </div>
       </footer>
+
+      {/* Participant Login Modal */}
+      {isParticipantLoginOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative">
+            <button
+              type="button"
+              onClick={() => setIsParticipantLoginOpen(false)}
+              className="absolute top-3 right-3 text-slate-400 hover:text-slate-600"
+            >
+              <X size={20} />
+            </button>
+            <h2 className="text-xl font-bold text-slate-900 mb-1 text-center">Participant Login</h2>
+            <p className="text-xs text-slate-500 mb-4 text-center">
+              Use the email and password you provided during registration. Only approved registrations can sign in.
+            </p>
+            <form onSubmit={handleParticipantSignIn} className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                <input
+                  required
+                  type="email"
+                  value={participantEmail}
+                  onChange={(e) => setParticipantEmail(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="you@example.com"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+                <input
+                  required
+                  type="password"
+                  value={participantPassword}
+                  onChange={(e) => setParticipantPassword(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Your password"
+                />
+              </div>
+              {participantAuthError && (
+                <p className="text-xs text-red-600 mt-1">{participantAuthError}</p>
+              )}
+              <button
+                type="submit"
+                disabled={participantAuthLoading}
+                className="w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors mt-1"
+              >
+                {participantAuthLoading ? 'Signing in…' : 'Sign in'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Register Modal */}
       {isRegisterOpen && (
