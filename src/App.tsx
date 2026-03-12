@@ -18,6 +18,7 @@ import {
   Globe,
   Award,
   ChevronRight,
+  ChevronLeft,
   Facebook,
   ExternalLink,
   Menu,
@@ -116,6 +117,35 @@ export default function App() {
   );
 
   const [selectedSector, setSelectedSector] = React.useState<string>('');
+  const [paymentMethod, setPaymentMethod] = React.useState<'upload' | 'pay_at_venue'>('upload');
+
+  // Only show fee/payment UI when the selected sector requires payment (not Speakers, Facilitators, etc.)
+  const sectorRequiresPayment = Boolean(selectedSector && !noFeeSectors.includes(selectedSector));
+
+  // Countdown to April 9, 2026 (event start)
+  const eventDate = React.useMemo(() => new Date(2026, 3, 9, 0, 0, 0), []);
+  const [countdown, setCountdown] = React.useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
+  const [countdownEnded, setCountdownEnded] = React.useState(false);
+
+  React.useEffect(() => {
+    const tick = () => {
+      const now = new Date();
+      const diff = eventDate.getTime() - now.getTime();
+      if (diff <= 0) {
+        setCountdownEnded(true);
+        return;
+      }
+      setCountdown({
+        days: Math.floor(diff / (1000 * 60 * 60 * 24)),
+        hours: Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)),
+        minutes: Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60)),
+        seconds: Math.floor((diff % (1000 * 60)) / 1000),
+      });
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [eventDate]);
 
   const sectorFilterOptions = React.useMemo(
     () =>
@@ -379,10 +409,11 @@ iSCENE 2026 Organizing Team</p>`,
     const proofFile = formData.get('proofOfPayment') as File | null;
 
     const requiresPayment = sector ? !noFeeSectors.includes(sector) : true;
+    const payByUpload = requiresPayment && paymentMethod === 'upload';
 
-    if (requiresPayment && (!proofFile || proofFile.size === 0)) {
+    if (payByUpload && (!proofFile || proofFile.size === 0)) {
       setRegisterStatus('error');
-      setRegisterMessage('Proof of payment is required for paying participants.');
+      setRegisterMessage('Proof of payment is required when paying by upload.');
       return;
     }
 
@@ -420,6 +451,7 @@ iSCENE 2026 Organizing Team</p>`,
         sectorOffice,
         requiresPayment,
         registrationFee: requiresPayment ? 6500 : 0,
+        paymentMethod: requiresPayment ? paymentMethod : null,
         status: 'pending',
         proofOfPaymentPath,
         accommodationDetails,
@@ -432,9 +464,10 @@ iSCENE 2026 Organizing Team</p>`,
       console.log('Registration saved successfully.');
 
       setRegisterStatus('success');
-      setRegisterMessage('Thank you for registering for iSCENE 2025!');
+      setRegisterMessage('Thank you for registering for iSCENE 2026!');
       form.reset();
       setSelectedSector('');
+      setPaymentMethod('upload');
       setIsRegisterOpen(false);
       setShowSuccessPopup(true);
     } catch (error) {
@@ -463,7 +496,7 @@ iSCENE 2026 Organizing Team</p>`,
             
             {/* Desktop Nav */}
             <div className="hidden md:flex items-center gap-8">
-              {['Overview', 'Focus', 'Highlights', 'Schedule'].map((item) => (
+              {['Teaser', 'Overview', 'Focus', 'Highlights', 'Schedule'].map((item) => (
                 <a key={item} href={`#${item.toLowerCase()}`} className="text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors">
                   {item}
                 </a>
@@ -493,7 +526,7 @@ iSCENE 2026 Organizing Team</p>`,
             animate={{ opacity: 1, y: 0 }}
             className="md:hidden bg-white border-t border-slate-100 p-4 space-y-4 shadow-xl"
           >
-            {['Overview', 'Focus', 'Highlights', 'Schedule'].map((item) => (
+            {['Teaser', 'Overview', 'Focus', 'Highlights', 'Schedule'].map((item) => (
               <a 
                 key={item} 
                 href={`#${item.toLowerCase()}`} 
@@ -596,6 +629,33 @@ iSCENE 2026 Organizing Team</p>`,
             </div>
           </motion.div>
 
+          {/* Countdown to April 9, 2026 */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.45 }}
+            className="mb-12"
+          >
+            <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Event starts in</p>
+            {countdownEnded ? (
+              <p className="text-xl font-bold text-green-600">Event has started! See you at iSCENE 2026.</p>
+            ) : (
+              <div className="flex flex-wrap justify-center gap-3 sm:gap-6">
+                {[
+                  { value: countdown.days, label: 'Days' },
+                  { value: countdown.hours, label: 'Hours' },
+                  { value: countdown.minutes, label: 'Minutes' },
+                  { value: countdown.seconds, label: 'Seconds' },
+                ].map(({ value, label }) => (
+                  <div key={label} className="bg-white rounded-2xl shadow-sm border border-slate-100 px-5 py-4 min-w-[4.5rem] sm:min-w-[5.5rem]">
+                    <span className="block text-2xl sm:text-3xl font-black text-slate-900 tabular-nums">{String(value).padStart(2, '0')}</span>
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -615,6 +675,36 @@ iSCENE 2026 Organizing Team</p>`,
           </motion.div>
         </div>
       </header>
+
+      {/* YouTube Teaser Section */}
+      <section id="teaser" className="py-16 md:py-24 bg-white border-t border-slate-100">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="text-center mb-10"
+          >
+            <h2 className="text-2xl md:text-3xl font-bold text-slate-900 mb-2">Watch the Teaser</h2>
+            <p className="text-slate-600 max-w-xl mx-auto">Get a glimpse of what awaits at iSCENE 2026.</p>
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ delay: 0.1 }}
+            className="aspect-video w-full max-w-4xl mx-auto rounded-2xl overflow-hidden shadow-xl border border-slate-200 bg-slate-100"
+          >
+            <iframe
+              src="https://www.youtube.com/embed/0FTd0p8P4hk"
+              title="iSCENE 2026 Teaser"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              className="w-full h-full"
+            />
+          </motion.div>
+        </div>
+      </section>
 
       {/* Overview Section */}
       <section id="overview" className="py-24 bg-white">
@@ -921,171 +1011,130 @@ iSCENE 2026 Organizing Team</p>`,
 
       {/* Register Modal */}
       {isRegisterOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full p-6 sm:p-8 relative max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex flex-col bg-white max-h-screen overflow-hidden sm:max-w-lg sm:mx-auto sm:my-4 sm:rounded-2xl sm:shadow-2xl sm:max-h-[95vh]">
+          {/* Header bar */}
+          <div className="flex items-center justify-between h-14 px-4 border-b border-slate-100 shrink-0">
             <button
               type="button"
               onClick={() => setIsRegisterOpen(false)}
-              className="absolute top-3 right-3 text-slate-400 hover:text-slate-600"
+              className="p-2 -ml-2 text-slate-600 hover:text-slate-900"
+              aria-label="Close"
             >
-              <X size={20} />
+              <ChevronLeft size={24} />
             </button>
-            <div className="flex flex-col items-center gap-2 mb-4">
-              <span className="inline-flex items-center rounded-full bg-slate-900 text-white px-4 py-1 text-[11px] sm:text-xs font-semibold uppercase tracking-[0.18em]">
+            <h1 className="text-lg font-bold text-slate-900">Registration</h1>
+            <div className="w-10" aria-hidden />
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {/* Banner with logo */}
+            <div className="relative w-full h-40 sm:h-48 bg-gradient-to-br from-slate-800 via-teal-900 to-blue-900 overflow-hidden">
+              <img
+                src="/icon.jpg"
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover opacity-70"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+              <div className="absolute bottom-4 left-4 flex items-end">
+                <img
+                  src="/iscene.png"
+                  alt="iSCENE 2026"
+                  className="h-12 sm:h-14 w-auto drop-shadow-lg"
+                />
+              </div>
+            </div>
+
+            {/* Event info */}
+            <div className="px-4 pt-6 pb-4">
+              <h2 className="text-xl sm:text-2xl font-bold text-slate-900 mb-1">
                 International Smart &amp; Sustainable Cities Exposition
-              </span>
-              <h2 className="text-2xl sm:text-3xl font-black text-slate-900 text-center tracking-tight">
-                iSCENE <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-green-600">2026</span>{' '}
-                Registration
               </h2>
-              <p className="text-[11px] sm:text-xs font-medium text-blue-700 uppercase tracking-[0.2em] text-center">
-                Co-creating Smart and Sustainable Communities Through People-Centric Innovation
+              <p className="text-sm text-slate-500 mb-4">
+                Co-creating Smart and Sustainable Communities Through People-Centric Innovation.
               </p>
-            </div>
-            <p className="text-slate-600 text-sm mb-3 text-center max-w-2xl mx-auto leading-relaxed">
-              The Department of Science and Technology (DOST), in partnership with the Local Government Unit of Cauayan City,
-              Isabela State University, and the Smart and Livable Cities Company, will stage the International Smart &amp;
-              Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026) on April 9–11, 2026 at the
-              Isabela Convention Center (ICON), Cauayan City, Isabela, Philippines, with the theme &quot;Co-creating Smart and
-              Sustainable Communities Through People-Centric Innovation.&quot;
-            </p>
-            <p className="text-slate-600 text-xs sm:text-sm mb-3 text-center max-w-2xl mx-auto leading-relaxed">
-              iSCENE serves as a national and international platform that brings together local chief executives, national
-              government leaders, academe, industry partners, startups, and development organizations to share knowledge, build
-              partnerships, and accelerate the adoption of science, technology, and innovation (STI) solutions that support
-              smarter and more sustainable communities.
-            </p>
-            <p className="text-slate-600 text-xs sm:text-sm mb-4 text-center max-w-2xl mx-auto leading-relaxed">
-              The registration fee of ₱6,500.00 per participant is inclusive of a certificate of participation, AM and PM snacks
-              and lunch for the three-day event (April 9–11, 2026), smart kit and event giveaways, and transportation during the
-              Smart City Tour and project immersion visits.
-            </p>
-            <div className="mt-2 mb-6 rounded-3xl border border-slate-100 bg-slate-50 p-4 sm:p-5 flex flex-col gap-3">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-blue-600">
-                    <Calendar size={18} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex items-start gap-3 rounded-xl bg-slate-100 p-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
+                    <Calendar size={20} />
                   </div>
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Event Duration
-                    </p>
-                    <p className="text-sm font-semibold text-slate-900">April 9–11, 2026</p>
-                    <p className="text-xs text-slate-500">3-day international exposition &amp; networking engagement</p>
+                    <p className="font-semibold text-slate-900">April 9-11, 2026</p>
+                    <p className="text-xs text-slate-500">Event Dates</p>
                   </div>
                 </div>
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600">
-                    <MapPin size={18} />
+                <div className="flex items-start gap-3 rounded-xl bg-slate-100 p-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
+                    <MapPin size={20} />
                   </div>
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Venue</p>
-                    <p className="text-sm font-semibold text-slate-900">Isabela Convention Center (ICON)</p>
-                    <p className="text-xs text-slate-500">Cauayan City, Isabela, Philippines</p>
+                    <p className="font-semibold text-slate-900">Isabela Convention Center (ICON)</p>
+                    <p className="text-xs text-slate-500">Venue Location</p>
                   </div>
                 </div>
               </div>
+            </div>
 
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-4 py-3 border border-slate-100">
+            {/* Show registration fee only when the selected sector requires payment (hidden for Speakers, Facilitators, Exhibitor, DOST, etc.) */}
+            {sectorRequiresPayment && (
+              <div className="mx-4 mb-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm text-slate-700">
+                  Registration fee: <strong className="text-blue-600">₱6,500.00</strong> — inclusive of certificate, meals, smart kit, giveaways, and Smart City Tour.
+                </p>
+              </div>
+            )}
+
+            <form onSubmit={handleRegisterSubmit} className="px-4 pb-8">
+              {/* Attendee Information */}
+              <h3 className="text-base font-bold text-blue-600 mb-3">Attendee Information</h3>
+              <div className="space-y-4 mb-6">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                    Registration Fee
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    Includes participation, meals, smart kit, giveaways, and Smart City Tour &amp; immersion visits.
-                  </p>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Full Name *</label>
+                  <input
+                    required
+                    type="text"
+                    name="fullName"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Juan Dela Cruz"
+                  />
                 </div>
-                <p className="text-lg sm:text-xl font-black text-blue-600 whitespace-nowrap">₱6,500.00</p>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] sm:text-xs text-slate-500">
-                <div className="flex flex-wrap gap-3">
-                  <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 border border-slate-200">
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" /> Certificate of participation
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 border border-slate-200">
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" /> AM/PM snacks &amp; lunch (3 days)
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 border border-slate-200">
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" /> Smart kit &amp; event giveaways
-                  </span>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Email Address *</label>
+                  <input
+                    required
+                    type="email"
+                    name="email"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="juan.dc@example.com"
+                  />
                 </div>
-                <a
-                  href="https://www.iscene.app/"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-600 font-semibold hover:text-blue-700"
-                >
-                  www.iscene.app
-                </a>
-              </div>
-            </div>
-            <form onSubmit={handleRegisterSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Email *</label>
-                <input
-                  required
-                  type="email"
-                  name="email"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="you@example.com"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Full Name (Contact Person) *</label>
-                <input
-                  required
-                  type="text"
-                  name="fullName"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="Juan Dela Cruz"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Position Title (Do not abbreviate) *</label>
-                <input
-                  required
-                  type="text"
-                  name="positionTitle"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="City Mayor, University President, etc."
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Contact Number *</label>
-                <input
-                  required
-                  type="tel"
-                  name="contactNumber"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="09XXXXXXXXX"
-                />
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Contact Number *</label>
+                  <input
+                    required
+                    type="tel"
+                    name="contactNumber"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="+63 9XX XXX XXXX"
+                  />
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Sector *</label>
                   <select
                     required
                     name="sector"
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22M6%209l6%206%206-6%22%2F%3E%3C%2Fsvg%3E')] bg-[length:1.25rem] bg-[right_0.5rem_center] bg-no-repeat pr-10"
                     value={selectedSector}
-                    onChange={(e) => setSelectedSector(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setSelectedSector(v);
+                      if (noFeeSectors.includes(v)) setPaymentMethod('upload');
+                    }}
                   >
-                    <option value="" disabled>
-                      Select sector
-                    </option>
+                    <option value="" disabled>Select Sector</option>
                     <option value="PLGU/LGU/MLGU">PLGU/LGU/MLGU</option>
                     <option value="Academe">Academe</option>
-                    <option value="Non governmental Organization (NGO non-profit)">
-                      Non governmental Organization (NGO non-profit)
-                    </option>
-                    <option value="National Government Agencies (NGA)">
-                      National Government Agencies (NGA)
-                    </option>
+                    <option value="Non governmental Organization (NGO non-profit)">Non governmental Organization (NGO non-profit)</option>
+                    <option value="National Government Agencies (NGA)">National Government Agencies (NGA)</option>
                     <option value="Private Sector">Private Sector</option>
                     <option value="Industry">Industry</option>
                     <option value="Others">Others</option>
@@ -1097,126 +1146,137 @@ iSCENE 2026 Organizing Team</p>`,
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Office / Department / Unit *
-                  </label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Position Title *</label>
+                  <input
+                    required
+                    type="text"
+                    name="positionTitle"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="e.g. Director"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Office / Department / Unit *</label>
                   <input
                     required
                     type="text"
                     name="sectorOffice"
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="e.g., City Planning Office, College of Engineering"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Name of your organization"
                   />
                 </div>
               </div>
 
-              {selectedSector && !noFeeSectors.includes(selectedSector) && (
-                <>
-                  <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                    <label className="block text-sm font-semibold text-slate-800 mb-1">
-                      Registration Fee – Php 6,500.00
-                    </label>
-                    <p className="text-xs text-slate-600 leading-relaxed">
-                      Inclusive of certificate of participation, AM and PM snacks and lunch for the three-day event (April 9–11,
-                      2026), smart kit and event giveaways, and transportation during the Smart City Tour and project immersion
-                      visits.
-                    </p>
+              {/* Payment section: only for sectors that require payment */}
+              {sectorRequiresPayment && (
+                <div className="mb-6 space-y-4">
+                  <div className="rounded-xl border border-green-200 bg-green-50 p-4">
+                    <label className="block text-sm font-semibold text-slate-800 mb-2">Payment method</label>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="paymentMethod"
+                          value="upload"
+                          checked={paymentMethod === 'upload'}
+                          onChange={() => setPaymentMethod('upload')}
+                          className="rounded-full border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm font-medium text-slate-700">Upload proof of payment</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="paymentMethod"
+                          value="pay_at_venue"
+                          checked={paymentMethod === 'pay_at_venue'}
+                          onChange={() => setPaymentMethod('pay_at_venue')}
+                          className="rounded-full border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm font-medium text-slate-700">Pay at the venue</span>
+                      </label>
+                    </div>
+                    {paymentMethod === 'pay_at_venue' && (
+                      <p className="text-xs text-slate-600 mt-2">You will pay ₱6,500.00 on-site. No upload needed.</p>
+                    )}
                   </div>
-
-                  <div className="rounded-2xl border border-slate-100 bg-white p-4">
-                    <label className="block text-sm font-semibold text-slate-800 mb-1">Payment Instructions</label>
-                    <p className="text-xs text-slate-500 mb-2">
-                      To finish the registration process, kindly make a payment of the specified amount using the following
-                      details:
-                    </p>
-                    <ul className="text-xs text-slate-600 space-y-1 mb-2">
-                      <li>
-                        <span className="font-semibold">Bank:</span> LANDBANK OF THE PHILIPPINES
-                      </li>
-                      <li>
-                        <span className="font-semibold">Account Name:</span> CITY GOVERNMENT OF CAUAYAN
-                      </li>
-                      <li>
-                        <span className="font-semibold">Account Number:</span> 0062 0170 40
-                      </li>
-                    </ul>
-                    <p className="text-xs text-slate-500">
-                      For payment concerns, you may contact 09757730571 / 09356875841 or email{' '}
-                      <a href="mailto:cityinfotech@cityofcauayan.gov.ph" className="text-blue-600 underline">
-                        cityinfotech@cityofcauayan.gov.ph
-                      </a>
-                      .
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-800 mb-1">Proof of Payment *</label>
-                    <input
-                      type="file"
-                      name="proofOfPayment"
-                      accept="image/*,application/pdf"
-                      className="w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                    />
-                    <p className="text-xs text-slate-500 mt-1">
-                      Upload a clear copy of the deposit slip or online transfer confirmation. Max 100 MB.
-                    </p>
-                  </div>
-                </>
+                  {paymentMethod === 'upload' && (
+                    <>
+                      <div className="rounded-xl border border-green-200 bg-green-50 p-4">
+                        <p className="text-xs text-slate-600 mb-2">
+                          Bank: LANDBANK OF THE PHILIPPINES · Account: CITY GOVERNMENT OF CAUAYAN · 0062 0170 40. For payment concerns: 09757730571 / 09356875841 or cityinfotech@cityofcauayan.gov.ph
+                        </p>
+                        <label className="block text-sm font-semibold text-slate-800 mb-1">Proof of Payment *</label>
+                        <input
+                          type="file"
+                          name="proofOfPayment"
+                          accept="image/*,application/pdf"
+                          className="w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Accommodation Details</label>
-                <textarea
-                  rows={2}
-                  name="accommodationDetails"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                  placeholder="Hotel name, check-in/check-out dates, room sharing details, etc."
-                />
+              {/* Logistics */}
+              <h3 className="text-base font-bold text-blue-600 mb-3">Logistics</h3>
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Accommodation Details</label>
+                  <textarea
+                    rows={2}
+                    name="accommodationDetails"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                    placeholder="Hotel preferences or pre-booked accommodation"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Travel Details</label>
+                  <textarea
+                    rows={2}
+                    name="travelDetails"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                    placeholder="Flight number / ETA / Arrival point"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Additional Notes / Dietary Requirements</label>
+                  <textarea
+                    rows={3}
+                    name="notes"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                    placeholder="Any other information we should know"
+                  />
+                </div>
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Travel Details</label>
-                <textarea
-                  rows={2}
-                  name="travelDetails"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                  placeholder="Flight number, arrival/departure times, airport of origin, etc."
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Additional Notes / Special Requests</label>
-                <textarea
-                  rows={3}
-                  name="notes"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                  placeholder="Flight details, accommodation info, dietary needs, accessibility requirements, etc."
-                />
-              </div>
-
-              <p className="text-xs text-slate-400">
-                All information collected shall be used exclusively by the iSCENE team for further improvement of our event. DOST
-                R02 is duty-bound to protect such information as prescribed under Republic Act 10173 or the National Privacy Act of
-                2012 without the expressed written consent of the users concerned.
-              </p>
 
               <button
                 type="submit"
                 disabled={registerStatus === 'submitting'}
-                className="w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white px-6 py-3 rounded-xl font-bold text-sm sm:text-base hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 mt-2"
+                className="w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white py-3.5 rounded-xl font-bold text-base hover:bg-blue-700 transition-all"
               >
-                {registerStatus === 'submitting' ? 'Submitting...' : 'Submit Registration'}
+                {registerStatus === 'submitting' ? 'Submitting...' : 'Complete Registration'}
               </button>
               {registerMessage && (
-                <p
-                  className={`text-sm mt-2 text-center ${
-                    registerStatus === 'success' ? 'text-green-600' : 'text-red-600'
-                  }`}
-                >
+                <p className={`text-sm mt-3 text-center ${registerStatus === 'success' ? 'text-green-600' : 'text-red-600'}`}>
                   {registerMessage}
                 </p>
               )}
+
+              {/* Privacy Notice */}
+              <div className="mt-6 flex gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
+                <Shield className="shrink-0 text-blue-600 mt-0.5" size={20} />
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  <strong className="text-slate-800">Privacy Notice:</strong> iSCENE 2026 is committed to protecting your personal information. By submitting this form, you consent to the collection and processing of your data in accordance with Republic Act No. 10173 (Data Privacy Act of 2012). Your data will be used solely for registration and event-related communications.
+                </p>
+              </div>
             </form>
+
+            {/* Footer */}
+            <footer className="px-4 py-4 border-t border-slate-100 text-center">
+              <p className="text-xs text-slate-400">© 2026 ISCENE ORGANIZING COMMITTEE</p>
+            </footer>
           </div>
         </div>
       )}
