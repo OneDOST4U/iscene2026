@@ -42,6 +42,7 @@ import { db, storage, auth } from './firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
   signOut,
   User,
@@ -398,6 +399,8 @@ iSCENE 2026 Organizing Team</p>`,
     const formData = new FormData(form);
 
     const email = (formData.get('email') as string) || '';
+    const password = (formData.get('password') as string) || '';
+    const confirmPassword = (formData.get('confirmPassword') as string) || '';
     const fullName = (formData.get('fullName') as string) || '';
     const positionTitle = (formData.get('positionTitle') as string) || '';
     const contactNumber = (formData.get('contactNumber') as string) || '';
@@ -417,7 +420,24 @@ iSCENE 2026 Organizing Team</p>`,
       return;
     }
 
+    if (password.length < 6) {
+      setRegisterStatus('error');
+      setRegisterMessage('Password must be at least 6 characters.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setRegisterStatus('error');
+      setRegisterMessage('Passwords do not match.');
+      return;
+    }
+
     try {
+      // Create the user account first so the registrant can log in later (after approval).
+      // Firebase will also sign them in after account creation.
+      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const uid = credential.user.uid;
+
       console.log('Submitting registration to Firestore...', {
         email,
         fullName,
@@ -429,6 +449,7 @@ iSCENE 2026 Organizing Team</p>`,
         accommodationDetails,
         travelDetails,
         notes,
+        uid,
       });
 
       // Store only the Storage path (not a public URL) for better security.
@@ -443,6 +464,7 @@ iSCENE 2026 Organizing Team</p>`,
       }
 
       await addDoc(collection(db, 'registrations'), {
+        uid,
         email,
         fullName,
         positionTitle,
@@ -473,7 +495,16 @@ iSCENE 2026 Organizing Team</p>`,
     } catch (error) {
       console.error('Error saving registration:', error);
       setRegisterStatus('error');
-      setRegisterMessage('There was an error saving your registration. Please try again. See console for details.');
+      const code = (error as any)?.code as string | undefined;
+      if (code === 'auth/email-already-in-use') {
+        setRegisterMessage('This email is already registered. Please log in instead.');
+      } else if (code === 'auth/invalid-email') {
+        setRegisterMessage('Please enter a valid email address.');
+      } else if (code === 'auth/weak-password') {
+        setRegisterMessage('Password is too weak. Please use at least 6 characters.');
+      } else {
+        setRegisterMessage('There was an error saving your registration. Please try again. See console for details.');
+      }
     }
   };
 
@@ -1106,6 +1137,32 @@ iSCENE 2026 Organizing Team</p>`,
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="juan.dc@example.com"
                   />
+                </div>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Password *</label>
+                    <input
+                      required
+                      type="password"
+                      name="password"
+                      minLength={6}
+                      autoComplete="new-password"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Create a password"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Confirm Password *</label>
+                    <input
+                      required
+                      type="password"
+                      name="confirmPassword"
+                      minLength={6}
+                      autoComplete="new-password"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Repeat password"
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Contact Number *</label>
