@@ -1,0 +1,179 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────────────────────
+    // Helper functions
+    // ─────────────────────────────────────────────────────────────
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isNonAdminOwner(uid) {
+      return signedIn()
+        && request.auth.uid == uid
+        && !(request.auth.token.admin == true);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // USER PROFILES  /users/{uid}
+    // ─────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow create: if isOwner(userId)
+        && request.resource.data.uid == request.auth.uid;
+      allow read:   if isOwner(userId) || isAdmin();
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EVENT REGISTRATIONS  /registrations/{docId}
+    // ─────────────────────────────────────────────────────────────
+    match /registrations/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      // Any signed-in user can read registrations.
+      // Food booth operators need to look up participant eligibility;
+      // presenters and facilitators need to see attendee info for their sessions.
+      allow read:   if signedIn();
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ROOMS  /rooms/{docId}
+    // Admin creates/deletes; any signed-in user reads (for schedule).
+    // ─────────────────────────────────────────────────────────────
+    match /rooms/{docId} {
+      allow create, update, delete: if isAdmin();
+      allow read: if signedIn();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // MEALS  /meals/{docId}
+    // Admin creates/deletes; any signed-in user reads.
+    // ─────────────────────────────────────────────────────────────
+    match /meals/{docId} {
+      allow create, update, delete: if isAdmin();
+      allow read: if signedIn();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // RESERVATIONS  /reservations/{docId}
+    // Participants manage their own reservations.
+    // Any signed-in event staff can read reservations so facilitators
+    // can verify room access and view participant schedules.
+    // ─────────────────────────────────────────────────────────────
+    match /reservations/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow read:   if signedIn();
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // REVIEWS  /reviews/{docId}
+    // Participants submit their own; admin reads all.
+    // ─────────────────────────────────────────────────────────────
+    match /reviews/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow read:   if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ATTENDANCE  /attendance/{docId}
+    // Participants can write their own records.
+    // Signed-in event staff can also record attendance when recordedBy matches
+    // their auth uid, which enables facilitator QR scanning.
+    // ─────────────────────────────────────────────────────────────
+    match /attendance/{docId} {
+      allow create: if signedIn()
+        && (
+          request.resource.data.uid == request.auth.uid
+          || request.resource.data.recordedBy == request.auth.uid
+        );
+      allow read:   if signedIn();
+      allow update: if isAdmin()
+        || (signedIn()
+          && (
+            request.resource.data.uid == request.auth.uid
+            || request.resource.data.recordedBy == request.auth.uid
+          ));
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // FOOD CLAIMS  /foodClaims/{docId}
+    // Food booth operators create and read their own claims; admin reads all.
+    // ─────────────────────────────────────────────────────────────
+    match /foodClaims/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.claimedBy == request.auth.uid;
+      allow read:   if isAdmin()
+        || (signedIn() && resource.data.claimedBy == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // DIGITAL IDs  /digitalIds/{userId}
+    // ─────────────────────────────────────────────────────────────
+    match /digitalIds/{userId} {
+      allow create: if isNonAdminOwner(userId)
+        && request.resource.data.uid == request.auth.uid;
+      allow read:   if isOwner(userId) || isAdmin();
+      allow update: if isNonAdminOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // CERTIFICATES  /certificates/{certId}
+    // ─────────────────────────────────────────────────────────────
+    match /certificates/{certId} {
+      allow create, update, delete: if isAdmin();
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRESENTER MATERIALS  /presenterMaterials/{docId}
+    // Presenters create/read/delete their own; admin reads all.
+    // ─────────────────────────────────────────────────────────────
+    match /presenterMaterials/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow read:   if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // REVIEWS — also readable by presenters for their own rooms
+    // (Override the earlier reviews rule to add presenter read access)
+    // ─────────────────────────────────────────────────────────────
+
+    // ─────────────────────────────────────────────────────────────
+    // MAIL QUEUE  /mail/{docId}
+    // ─────────────────────────────────────────────────────────────
+    match /mail/{docId} {
+      allow create: if isAdmin();
+      allow read, update, delete: if false;
+    }
+  }
+}

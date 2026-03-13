@@ -1,6 +1,8 @@
 {
   "projects": {
-    "default": "iscene-test"
-  }
+    "default": "iscene-test",
+    "prod": "iscene2026"
+  },
+  "targets": {},
+  "etags": {}
 }
-

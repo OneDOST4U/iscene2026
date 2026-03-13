@@ -1,0 +1,13 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for iSCENE admin (e.g. delete Auth user)",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^6.0.0"
+  }
+}

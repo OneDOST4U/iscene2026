@@ -24,6 +24,7 @@ import {
   Menu,
   X,
   Clock,
+  FileText,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import jsPDF from 'jspdf';
@@ -36,16 +37,25 @@ import {
   query,
   orderBy,
   updateDoc,
+  deleteDoc,
   doc,
   where,
 } from 'firebase/firestore';
-import { db, storage, auth } from './firebase';
+import { db, storage, auth, app } from './firebase';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { ParticipantDashboard } from './ParticipantDashboard';
+import { SpeakerDashboard } from './SpeakerDashboard';
+import { FacilitatorDashboard } from './FacilitatorDashboard';
+import { FoodBoothDashboard } from './FoodBoothDashboard';
+import { ExhibitorDashboard } from './ExhibitorDashboard';
+import { AdminDashboard } from './AdminDashboard';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   signOut,
+  sendPasswordResetEmail,
   User,
 } from 'firebase/auth';
 
@@ -97,12 +107,18 @@ const Card = ({ title, description, icon: Icon, color }: { title: string, descri
 
 export default function App() {
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+  const [isAuthChoiceOpen, setIsAuthChoiceOpen] = React.useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = React.useState(false);
   const [registerStatus, setRegisterStatus] = React.useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [registerMessage, setRegisterMessage] = React.useState<string | null>(null);
   const [showSuccessPopup, setShowSuccessPopup] = React.useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = React.useState(false);
+  // isAdminVerified is only true after the signed-in user's token is confirmed to carry admin: true
+  const [isAdminVerified, setIsAdminVerified] = React.useState(false);
   const [adminUser, setAdminUser] = React.useState<User | null>(null);
+  // false until the FIRST onAuthStateChanged fires — prevents landing page from
+  // flashing in a new tab while the persisted session is being restored
+  const [authInitialized, setAuthInitialized] = React.useState(false);
   const [adminAuthError, setAdminAuthError] = React.useState<string | null>(null);
   const [adminLoading, setAdminLoading] = React.useState(false);
   const [adminEmail, setAdminEmail] = React.useState('');
@@ -112,6 +128,8 @@ export default function App() {
    const [participantPassword, setParticipantPassword] = React.useState('');
    const [participantAuthError, setParticipantAuthError] = React.useState<string | null>(null);
    const [participantAuthLoading, setParticipantAuthLoading] = React.useState(false);
+  const [participantRegistration, setParticipantRegistration] = React.useState<any | null>(null);
+  const [participantRegistrationLoading, setParticipantRegistrationLoading] = React.useState(false);
   const [registrations, setRegistrations] = React.useState<any[]>([]);
   const [registrationsLoading, setRegistrationsLoading] = React.useState(false);
   const [filterSector, setFilterSector] = React.useState<string>('all');
@@ -119,12 +137,23 @@ export default function App() {
 
   // Sectors that do NOT require payment or proof of payment
   const noFeeSectors = React.useMemo(
-    () => ['Speakers', 'Facilitators', 'Booth (Technologies)', 'Exhibitor', 'DOST'],
+    () => ['Speakers', 'Facilitators', 'Food (Booth)', 'Exhibitor', 'Exhibitor (Booth)', 'DOST'],
     [],
   );
 
   const [selectedSector, setSelectedSector] = React.useState<string>('');
   const [paymentMethod, setPaymentMethod] = React.useState<'upload' | 'pay_at_venue'>('upload');
+
+  // Profile picture preview (data URL shown in the form before submit)
+  const [profilePicPreview, setProfilePicPreview] = React.useState<string | null>(null);
+
+  const handleProfilePicChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setProfilePicPreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
 
   // Only show fee/payment UI when the selected sector requires payment (not Speakers, Facilitators, etc.)
   const sectorRequiresPayment = Boolean(selectedSector && !noFeeSectors.includes(selectedSector));
@@ -193,12 +222,91 @@ export default function App() {
     [registrations],
   );
 
+  const closeParticipantAuthModals = React.useCallback(() => {
+    setIsAuthChoiceOpen(false);
+    setIsParticipantLoginOpen(false);
+    setIsRegisterOpen(false);
+  }, []);
+
+  const openAuthChoiceModal = React.useCallback(() => {
+    setIsMenuOpen(false);
+    setIsParticipantLoginOpen(false);
+    setIsRegisterOpen(false);
+    setIsAuthChoiceOpen(true);
+  }, []);
+
+  const openParticipantLoginModal = React.useCallback(() => {
+    setIsMenuOpen(false);
+    setIsAuthChoiceOpen(false);
+    setIsRegisterOpen(false);
+    setIsParticipantLoginOpen(true);
+  }, []);
+
+  const openRegisterModal = React.useCallback(() => {
+    setIsMenuOpen(false);
+    setIsAuthChoiceOpen(false);
+    setIsParticipantLoginOpen(false);
+    setIsRegisterOpen(true);
+  }, []);
+
+  // Keep a ref so the auth listener below can read the latest value without
+  // needing to resubscribe every time isAdminPanelOpen changes.
+  const isAdminPanelOpenRef = React.useRef(isAdminPanelOpen);
+  React.useEffect(() => { isAdminPanelOpenRef.current = isAdminPanelOpen; }, [isAdminPanelOpen]);
+
   React.useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
       setAdminUser(user);
+      setAuthInitialized(true); // unblock the UI after the first auth state is known
+      if (!user) {
+        // Signed out — clear admin verification
+        setIsAdminVerified(false);
+        return;
+      }
+      // Re-verify admin claim so a page-refresh inside the admin portal
+      // keeps a legitimate admin without forcing them to log in again.
+      if (isAdminPanelOpenRef.current) {
+        user.getIdTokenResult()
+          .then((result) => setIsAdminVerified(!!result.claims['admin']))
+          .catch(() => setIsAdminVerified(false));
+      }
     });
     return () => unsub();
   }, []);
+
+  // Load current user's registration when signed in (for role-based dashboard)
+  React.useEffect(() => {
+    if (!adminUser?.uid) {
+      setParticipantRegistration(null);
+      return;
+    }
+    let cancelled = false;
+    setParticipantRegistrationLoading(true);
+    const q = query(
+      collection(db, 'registrations'),
+      where('uid', '==', adminUser.uid),
+    );
+    getDocs(q)
+      .then((snap) => {
+        if (cancelled) return;
+        if (snap.empty) {
+          setParticipantRegistration(null);
+          return;
+        }
+        const reg = { id: snap.docs[0].id, ...snap.docs[0].data() };
+        const status = (reg.status as string | undefined) || 'pending';
+        setParticipantRegistration(status === 'approved' ? reg : null);
+      })
+      .catch(() => {
+        if (!cancelled) setParticipantRegistration(null);
+      })
+      .finally(() => {
+        if (!cancelled) setParticipantRegistrationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adminUser?.uid]);
 
   // Secret URL trigger for admin panel, e.g. https://site.com/?admin=1
   React.useEffect(() => {
@@ -215,11 +323,29 @@ export default function App() {
     setAdminAuthError(null);
     setAdminLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, adminEmail.trim(), adminPassword);
+      const credential = await signInWithEmailAndPassword(auth, adminEmail.trim(), adminPassword);
+      // Verify the user carries the admin custom claim
+      const tokenResult = await credential.user.getIdTokenResult();
+      if (!tokenResult.claims['admin']) {
+        // This account has no admin privileges — sign them out immediately
+        await signOut(auth);
+        setAdminAuthError(
+          'Access denied. This account does not have admin privileges. Use the Participant Login instead.'
+        );
+        return;
+      }
+      setIsAdminVerified(true);
       await loadRegistrations();
     } catch (err: any) {
       console.error('Admin sign-in error', err);
-      setAdminAuthError('Invalid email or password, or you are not authorized.');
+      if ((err?.code as string | undefined) === 'auth/invalid-credential' ||
+          (err?.code as string | undefined) === 'auth/wrong-password') {
+        setAdminAuthError('Incorrect email or password.');
+      } else if ((err?.code as string | undefined) === 'auth/user-not-found') {
+        setAdminAuthError('No account found with this email.');
+      } else {
+        setAdminAuthError('Invalid email or password, or you are not authorized.');
+      }
     } finally {
       setAdminLoading(false);
     }
@@ -228,6 +354,14 @@ export default function App() {
   const handleAdminSignOut = async () => {
     await signOut(auth);
     setRegistrations([]);
+    setParticipantRegistration(null);
+    setIsAdminVerified(false);
+    setIsAdminPanelOpen(false); // close the panel so the next sign-in doesn't inherit admin mode
+  };
+
+  const handleParticipantSignOut = async () => {
+    await signOut(auth);
+    setParticipantRegistration(null);
   };
 
   const handleParticipantSignIn = async (e: React.FormEvent) => {
@@ -256,11 +390,12 @@ export default function App() {
         return;
       }
 
-      const reg = snap.docs[0].data();
+      const reg = { id: snap.docs[0].id, ...snap.docs[0].data() };
       const status = (reg.status as string | undefined) || 'pending';
 
       if (status !== 'approved') {
         await signOut(auth);
+        setParticipantRegistration(null);
         setParticipantAuthError(
           status === 'pending'
             ? 'Your registration is still pending approval. You will receive an email once it is approved.'
@@ -269,8 +404,10 @@ export default function App() {
         return;
       }
 
-      // Login ok and registration approved – close modal and clear fields.
+      setParticipantRegistration(reg);
       setIsParticipantLoginOpen(false);
+      setIsAdminPanelOpen(false);   // ensure participant never inherits admin portal state
+      setIsAdminVerified(false);
       setParticipantEmail('');
       setParticipantPassword('');
     } catch (err: any) {
@@ -466,6 +603,66 @@ iSCENE 2026 Organizing Team</p>`,
     }
   };
 
+  const saveRegistrationDetails = async (
+    registrationId: string,
+    updates: Record<string, any>,
+  ) => {
+    try {
+      const payload = {
+        fullName: (updates.fullName as string | undefined)?.trim() || '',
+        email: (updates.email as string | undefined)?.trim() || '',
+        sector: (updates.sector as string | undefined)?.trim() || '',
+        status: (updates.status as string | undefined) || 'pending',
+        positionTitle: (updates.positionTitle as string | undefined)?.trim() || '',
+        sectorOffice: (updates.sectorOffice as string | undefined)?.trim() || '',
+        contactNumber: (updates.contactNumber as string | undefined)?.trim() || '',
+      };
+      await updateDoc(doc(db, 'registrations', registrationId), payload);
+      setRegistrations((prev) =>
+        prev.map((registration) =>
+          registration.id === registrationId ? { ...registration, ...payload } : registration,
+        ),
+      );
+    } catch (err) {
+      console.error('Error saving registration details', err);
+      setAdminAuthError('Failed to save registration changes. Check console for details.');
+      throw err;
+    }
+  };
+
+  const deleteRegistrationRecord = async (registration: any) => {
+    const registrationId = registration.id as string | undefined;
+    if (!registrationId) return;
+    if (!window.confirm(`Delete the registration for ${registration.fullName || 'this participant'}? This will also remove their login account so the email can be used again.`)) {
+      return;
+    }
+
+    try {
+      const uid = registration.uid as string | undefined;
+      if (uid) {
+        const functions = getFunctions(app);
+        const deleteAuthUser = httpsCallable<{ uid: string }, { success: boolean }>(functions, 'deleteAuthUser');
+        await deleteAuthUser({ uid });
+      }
+      await deleteDoc(doc(db, 'registrations', registrationId));
+      setRegistrations((prev) => prev.filter((item) => item.id !== registrationId));
+    } catch (err) {
+      console.error('Error deleting registration', err);
+      setAdminAuthError('Failed to delete registration. Check console for details.');
+      throw err;
+    }
+  };
+
+  const sendRegistrationPasswordReset = async (email: string) => {
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+    } catch (err) {
+      console.error('Error sending password reset email', err);
+      setAdminAuthError('Failed to send password reset email. Check console for details.');
+      throw err;
+    }
+  };
+
   const handleRegisterSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setRegisterStatus('submitting');
@@ -486,6 +683,19 @@ iSCENE 2026 Organizing Team</p>`,
     const travelDetails = (formData.get('travelDetails') as string) || '';
     const notes = (formData.get('notes') as string) || '';
     const proofFile = formData.get('proofOfPayment') as File | null;
+    const profilePicFile = formData.get('profilePicture') as File | null;
+
+    // Profile picture is always required
+    if (!profilePicFile || profilePicFile.size === 0) {
+      setRegisterStatus('error');
+      setRegisterMessage('A profile photo is required. Please upload a photo of yourself.');
+      return;
+    }
+    if (profilePicFile.size > 5 * 1024 * 1024) {
+      setRegisterStatus('error');
+      setRegisterMessage('Profile photo must be smaller than 5 MB.');
+      return;
+    }
 
     const requiresPayment = sector ? !noFeeSectors.includes(sector) : true;
     const payByUpload = requiresPayment && paymentMethod === 'upload';
@@ -528,13 +738,20 @@ iSCENE 2026 Organizing Team</p>`,
         uid,
       });
 
+      // Upload profile picture (required) — store download URL for display
+      const safePicName = profilePicFile.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const picRef = ref(storage, `profilePictures/${uid}/${Date.now()}_${safePicName}`);
+      const picSnapshot = await uploadBytes(picRef, profilePicFile);
+      const profilePictureUrl = await getDownloadURL(picSnapshot.ref);
+
       // Store only the Storage path (not a public URL) for better security.
       // Admin tools can generate a download URL later using this path while authenticated.
       let proofOfPaymentPath: string | null = null;
 
       if (proofFile && proofFile.size > 0) {
         const safeFileName = proofFile.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-        const storageRef = ref(storage, `proofOfPayment/${Date.now()}_${safeFileName}`);
+        // Path matches Storage rule: /proofOfPayment/{uid}/{fileName}
+        const storageRef = ref(storage, `proofOfPayment/${uid}/${Date.now()}_${safeFileName}`);
         const uploadSnapshot = await uploadBytes(storageRef, proofFile);
         proofOfPaymentPath = uploadSnapshot.ref.fullPath;
       }
@@ -552,6 +769,7 @@ iSCENE 2026 Organizing Team</p>`,
         paymentMethod: requiresPayment ? paymentMethod : null,
         status: 'pending',
         proofOfPaymentPath,
+        profilePictureUrl,
         accommodationDetails,
         travelDetails,
         notes,
@@ -566,6 +784,7 @@ iSCENE 2026 Organizing Team</p>`,
       form.reset();
       setSelectedSector('');
       setPaymentMethod('upload');
+      setProfilePicPreview(null);
       setIsRegisterOpen(false);
       setShowSuccessPopup(true);
     } catch (error) {
@@ -584,8 +803,55 @@ iSCENE 2026 Organizing Team</p>`,
     }
   };
 
+  const showRoleDashboard =
+    !isAdminPanelOpen &&
+    !isAdminVerified &&          // verified admins never fall through to a role dashboard
+    !!adminUser &&
+    !!participantRegistration &&
+    (participantRegistration.status as string) === 'approved';
+  const participantSector = (participantRegistration?.sector as string) || '';
+
+  // While auth state is being restored (e.g. new tab, page refresh), show a
+  // loading screen instead of the landing page. This prevents the user from
+  // seeing the sign-in UI when they are already logged in.
+  const isRestoringSession =
+    !authInitialized ||
+    // Auth is known but the participant's Firestore registration is still loading
+    (!isAdminPanelOpen && !isAdminVerified && !!adminUser && participantRegistrationLoading);
+
+  if (isRestoringSession) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-4">
+        <img src="/iscene.png" alt="iSCENE 2026" className="w-16 h-16 rounded-full shadow-md" />
+        <div className="flex flex-col items-center gap-1">
+          <p className="text-blue-600 font-bold text-base">iSCENE 2026</p>
+          <p className="text-slate-400 text-sm">Restoring your session…</p>
+        </div>
+        <svg className="animate-spin w-6 h-6 text-blue-500 mt-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+        </svg>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900">
+      {showRoleDashboard && adminUser && participantRegistration && (
+        participantSector === 'Speakers' ? (
+          <SpeakerDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+        ) : participantSector === 'Facilitators' ? (
+          <FacilitatorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+        ) : participantSector === 'Food (Booth)' ? (
+          <FoodBoothDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+        ) : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)' ? (
+          <ExhibitorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+        ) : (
+          <ParticipantDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+        )
+      )}
+      {!showRoleDashboard && (
+        <>
       {/* Navigation */}
       <nav className="fixed top-0 w-full bg-white/80 backdrop-blur-md z-50 border-bottom border-slate-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -610,17 +876,10 @@ iSCENE 2026 Organizing Team</p>`,
               ))}
               <button
                 type="button"
-                onClick={() => setIsParticipantLoginOpen(true)}
-                className="text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors"
-              >
-                Participant Login
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsRegisterOpen(true)}
+                onClick={openAuthChoiceModal}
                 className="bg-blue-600 text-white px-6 py-2.5 rounded-full text-sm font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
               >
-                Register Now
+                Sign In / Sign Up
               </button>
             </div>
 
@@ -652,23 +911,10 @@ iSCENE 2026 Organizing Team</p>`,
             ))}
             <button
               type="button"
-              onClick={() => {
-                setIsMenuOpen(false);
-                setIsParticipantLoginOpen(true);
-              }}
-              className="w-full border border-slate-200 text-slate-800 px-6 py-3 rounded-xl font-bold"
-            >
-              Participant Login
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsMenuOpen(false);
-                setIsRegisterOpen(true);
-              }}
+              onClick={openAuthChoiceModal}
               className="w-full bg-blue-600 text-white px-6 py-3 rounded-xl font-bold"
             >
-              Register Now
+              Sign In / Sign Up
             </button>
           </motion.div>
         )}
@@ -788,10 +1034,10 @@ iSCENE 2026 Organizing Team</p>`,
           >
             <button
               type="button"
-              onClick={() => setIsRegisterOpen(true)}
+              onClick={openAuthChoiceModal}
               className="bg-slate-900 text-white px-10 py-5 rounded-2xl font-bold text-lg hover:bg-slate-800 transition-all flex items-center gap-2 shadow-xl shadow-slate-200"
             >
-              Secure Your Spot <ChevronRight size={20} />
+              Join iSCENE 2026 <ChevronRight size={20} />
             </button>
             <button className="bg-white text-slate-900 border border-slate-200 px-10 py-5 rounded-2xl font-bold text-lg hover:bg-slate-50 transition-all">
               Download Brochure
@@ -1133,13 +1379,59 @@ iSCENE 2026 Organizing Team</p>`,
         </div>
       </footer>
 
+      {/* Participant Auth Choice Modal */}
+      {isAuthChoiceOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="relative w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <button
+              type="button"
+              onClick={closeParticipantAuthModals}
+              className="absolute right-3 top-3 text-slate-400 hover:text-slate-600"
+            >
+              <X size={20} />
+            </button>
+            <div className="mb-6 text-center">
+              <img
+                src="/iscene.png"
+                alt="iSCENE Logo"
+                className="mx-auto mb-4 h-14 w-auto"
+              />
+              <h2 className="text-2xl font-bold text-slate-900">Welcome to iSCENE 2026</h2>
+              <p className="mt-2 text-sm text-slate-500">Choose how you want to continue.</p>
+            </div>
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={openParticipantLoginModal}
+                className="w-full rounded-2xl border border-slate-200 px-5 py-4 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"
+              >
+                <p className="text-base font-bold text-slate-900">Sign in</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Already registered? Use your email and password.
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={openRegisterModal}
+                className="w-full rounded-2xl bg-blue-600 px-5 py-4 text-left text-white transition-colors hover:bg-blue-700"
+              >
+                <p className="text-base font-bold">Sign up</p>
+                <p className="mt-1 text-sm text-blue-100">
+                  New here? Create your iSCENE 2026 registration.
+                </p>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Participant Login Modal */}
       {isParticipantLoginOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative">
             <button
               type="button"
-              onClick={() => setIsParticipantLoginOpen(false)}
+              onClick={closeParticipantAuthModals}
               className="absolute top-3 right-3 text-slate-400 hover:text-slate-600"
             >
               <X size={20} />
@@ -1181,6 +1473,13 @@ iSCENE 2026 Organizing Team</p>`,
               >
                 {participantAuthLoading ? 'Signing in…' : 'Sign in'}
               </button>
+              <button
+                type="button"
+                onClick={openRegisterModal}
+                className="w-full text-sm font-semibold text-blue-600 hover:text-blue-700"
+              >
+                Need an account? Sign up
+              </button>
             </form>
           </div>
         </div>
@@ -1193,7 +1492,7 @@ iSCENE 2026 Organizing Team</p>`,
           <div className="flex items-center justify-between h-14 px-4 border-b border-slate-100 shrink-0">
             <button
               type="button"
-              onClick={() => setIsRegisterOpen(false)}
+              onClick={closeParticipantAuthModals}
               className="p-2 -ml-2 text-slate-600 hover:text-slate-900"
               aria-label="Close"
             >
@@ -1264,6 +1563,30 @@ iSCENE 2026 Organizing Team</p>`,
               {/* Attendee Information */}
               <h3 className="text-base font-bold text-blue-600 mb-3">Attendee Information</h3>
               <div className="space-y-4 mb-6">
+                {/* ── Profile Picture ── */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Profile Photo *</label>
+                  <div className="flex items-center gap-4">
+                    {/* Preview circle */}
+                    <div className="w-20 h-20 rounded-full border-2 border-dashed border-blue-300 bg-blue-50 flex items-center justify-center shrink-0 overflow-hidden">
+                      {profilePicPreview
+                        ? <img src={profilePicPreview} alt="Preview" className="w-full h-full object-cover" />
+                        : <svg className="w-8 h-8 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>}
+                    </div>
+                    <div className="flex-1">
+                      <input
+                        required
+                        type="file"
+                        name="profilePicture"
+                        accept="image/*"
+                        onChange={handleProfilePicChange}
+                        className="w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                      />
+                      <p className="text-[11px] text-slate-400 mt-1">JPG, PNG or WEBP · Max 5 MB · Used for your digital ID &amp; profile</p>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Full Name *</label>
                   <input
@@ -1343,8 +1666,8 @@ iSCENE 2026 Organizing Team</p>`,
                     <option value="Others">Others</option>
                     <option value="Speakers">Speakers</option>
                     <option value="Facilitators">Facilitators</option>
-                    <option value="Booth (Technologies)">Booth (Technologies)</option>
-                    <option value="Exhibitor">Exhibitor</option>
+                    <option value="Food (Booth)">Food (Booth)</option>
+                    <option value="Exhibitor (Booth)">Exhibitor (Booth)</option>
                     <option value="DOST">DOST</option>
                   </select>
                 </div>
@@ -1461,6 +1784,13 @@ iSCENE 2026 Organizing Team</p>`,
               >
                 {registerStatus === 'submitting' ? 'Submitting...' : 'Complete Registration'}
               </button>
+              <button
+                type="button"
+                onClick={openParticipantLoginModal}
+                className="mt-3 w-full text-sm font-semibold text-blue-600 hover:text-blue-700"
+              >
+                Already registered? Sign in
+              </button>
               {registerMessage && (
                 <p className={`text-sm mt-3 text-center ${registerStatus === 'success' ? 'text-green-600' : 'text-red-600'}`}>
                   {registerMessage}
@@ -1483,328 +1813,420 @@ iSCENE 2026 Organizing Team</p>`,
           </div>
         </div>
       )}
-      {isAdminPanelOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950 text-slate-50">
-          <div className="flex h-full max-w-6xl mx-auto">
-            {/* Sidebar */}
-            <aside className="hidden md:flex w-60 flex-col bg-slate-950 border-r border-slate-800 py-6 px-4">
-              <div className="flex items-center gap-2 mb-8">
-                <img src="/iscene.png" alt="iSCENE Logo" className="h-8 w-auto" />
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                    Admin
-                  </p>
-                  <h2 className="text-sm font-semibold">iSCENE 2026</h2>
-                </div>
+        </>
+      )}
+      {/* Admin portal – login modal */}
+      {isAdminPanelOpen && (!adminUser || !isAdminVerified) && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 relative">
+            <button
+              type="button"
+              onClick={() => setIsAdminPanelOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"
+            >
+              <X size={18} />
+            </button>
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold tracking-tight mb-1">Admin Portal</h2>
+              <p className="text-xs text-slate-500">
+                Sign in to manage registrations, rooms, booths, and analytics.
+              </p>
+            </div>
+            <form onSubmit={handleAdminSignIn} className="space-y-4">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-slate-700">Admin email</label>
+                <input
+                  required
+                  type="email"
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="admin@example.com"
+                />
               </div>
-              <nav className="flex-1 space-y-1 text-sm">
-                {['Dashboard', 'Participants', 'Sessions', 'Booths', 'Food', 'Analytics'].map(
-                  (item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-left ${
-                        item === 'Dashboard'
-                          ? 'bg-slate-900 text-slate-50'
-                          : 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-100'
-                      }`}
-                    >
-                      <span className="text-[13px]">{item}</span>
-                    </button>
-                  ),
-                )}
-              </nav>
-              {adminUser && (
-                <div className="mt-4 pt-4 border-t border-slate-800">
-                  <p className="text-[11px] text-slate-500 mb-1 line-clamp-1">
-                    {adminUser.email}
-                  </p>
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-slate-700">Password</label>
+                <input
+                  required
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="••••••••"
+                />
+              </div>
+              {adminAuthError && <p className="text-xs text-red-600">{adminAuthError}</p>}
+              <button
+                type="submit"
+                disabled={adminLoading}
+                className="mt-2 inline-flex w-full items-center justify-center px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed"
+              >
+                {adminLoading ? 'Signing in…' : 'Sign in'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin portal – full dashboard — only rendered for verified admins */}
+      {isAdminPanelOpen && adminUser && isAdminVerified && (
+        <AdminDashboard
+          user={adminUser}
+          registrations={registrations}
+          registrationsLoading={registrationsLoading}
+          filteredRegistrations={filteredRegistrations}
+          sectorFilterOptions={sectorFilterOptions}
+          filterSector={filterSector}
+          filterStatus={filterStatus}
+          totalRegistrations={totalRegistrations}
+          pendingRegistrations={pendingRegistrations}
+          approvedRegistrations={approvedRegistrations}
+          onFilterSectorChange={setFilterSector}
+          onFilterStatusChange={setFilterStatus}
+          onUpdateStatus={updateRegistrationStatus}
+          onSaveRegistration={saveRegistrationDetails}
+          onDeleteRegistration={deleteRegistrationRecord}
+          onSendPasswordReset={sendRegistrationPasswordReset}
+          onExportPdf={handleExportPdf}
+          onExportCsv={handleExportCsv}
+          onSignOut={handleAdminSignOut}
+        />
+      )}
+      {/* placeholder – old admin panel body removed */}
+      {false && adminUser && (
+            <div className="flex min-h-[80vh] max-h-[90vh] max-w-6xl w-full bg-slate-100 text-slate-900 rounded-3xl overflow-hidden shadow-2xl">
+              {/* Sidebar */}
+              <aside className="w-72 bg-white border-r border-blue-100 flex flex-col">
+                <div className="p-6 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded bg-blue-600 flex items-center justify-center text-white">
+                    <Users size={20} />
+                  </div>
+                  <div>
+                    <h1 className="text-xl font-bold tracking-tight">iSCENE 2026</h1>
+                    <p className="text-xs text-blue-600 font-semibold uppercase tracking-wider">
+                      Admin Portal
+                    </p>
+                  </div>
+                </div>
+                <nav className="flex-1 px-4 space-y-2 mt-2 text-sm font-medium">
+                  <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-500/20">
+                    <span>Dashboard</span>
+                  </button>
+                  <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-600 hover:bg-blue-50">
+                    <span>Registration</span>
+                  </button>
+                  <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-600 hover:bg-blue-50">
+                    <span>Breakout Rooms</span>
+                  </button>
+                  <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-600 hover:bg-blue-50">
+                    <span>Booths</span>
+                  </button>
+                  <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-600 hover:bg-blue-50">
+                    <span>Settings</span>
+                  </button>
+                </nav>
+                <div className="p-6 border-t border-blue-100">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-xs font-semibold text-blue-700">
+                      {(adminUser.email || '')
+                        .split('@')[0]
+                        .slice(0, 2)
+                        .toUpperCase() || 'AD'}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold truncate">
+                        {adminUser.email || 'Admin User'}
+                      </p>
+                      <p className="text-xs text-slate-500">Super Admin</p>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     onClick={handleAdminSignOut}
-                    className="w-full text-[11px] font-semibold text-red-300 hover:text-red-200 border border-red-500/60 rounded-full px-3 py-1"
+                    className="mt-4 w-full text-xs font-semibold text-red-600 border border-red-200 rounded-full py-2 hover:bg-red-50"
                   >
                     Sign out
                   </button>
                 </div>
-              )}
-            </aside>
+              </aside>
 
-            {/* Main content */}
-            <div className="flex-1 flex flex-col px-4 sm:px-6 lg:px-8 py-6 relative overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setIsAdminPanelOpen(false)}
-                className="absolute top-4 right-4 text-slate-500 hover:text-slate-200"
-              >
-                <X size={20} />
-              </button>
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-lg sm:text-xl font-bold">Dashboard</h2>
-                  <p className="text-xs text-slate-400">
-                    Overview of registrations and event activity.
-                  </p>
-                </div>
-                {adminUser && (
-                  <span className="text-[11px] text-slate-500 hidden sm:inline">
-                    {adminUser.email}
-                  </span>
-                )}
-              </div>
-
-            {!adminUser && (
-              <form onSubmit={handleAdminSignIn} className="space-y-4 mb-6">
-                <div className="grid sm:grid-cols-2 gap-4">
+              {/* Main admin content */}
+              <main className="flex-1 p-8 overflow-y-auto">
+                <div className="flex items-start justify-between mb-8">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Admin email
-                    </label>
-                    <input
-                      required
-                      type="email"
-                      value={adminEmail}
-                      onChange={(e) => setAdminEmail(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="admin@example.com"
-                    />
+                    <h2 className="text-3xl font-black text-slate-900">Event Overview</h2>
+                    <p className="text-slate-500 mt-1 text-sm">
+                      Real-time management for iSCENE 2026 Conference.
+                    </p>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Password
-                    </label>
-                    <input
-                      required
-                      type="password"
-                      value={adminPassword}
-                      onChange={(e) => setAdminPassword(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="••••••••"
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleExportPdf}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full text-sm font-bold shadow-lg shadow-blue-500/30 flex items-center gap-2"
+                  >
+                    <FileText size={16} />
+                    Generate PDF Report
+                  </button>
                 </div>
-                {adminAuthError && (
-                  <p className="text-xs text-red-600">{adminAuthError}</p>
-                )}
-                <button
-                  type="submit"
-                  disabled={adminLoading}
-                  className="inline-flex items-center justify-center px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed"
-                >
-                  {adminLoading ? 'Signing in…' : 'Sign in'}
-                </button>
-              </form>
-            )}
 
-            {adminUser && (
-              <div className="space-y-6">
-                {/* Summary cards */}
-                <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-2">
-                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
-                    <p className="text-[11px] text-slate-400 mb-1">Total registrations</p>
-                    <p className="text-xl font-bold">{totalRegistrations}</p>
+                {/* High-level metrics */}
+                <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-10 text-sm">
+                  <div className="bg-white rounded-xl border border-blue-100 p-4 shadow-sm">
+                    <p className="text-slate-500 text-xs font-medium mb-1">Total registrations</p>
+                    <p className="text-2xl font-bold">{totalRegistrations}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">All sectors</p>
                   </div>
-                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
-                    <p className="text-[11px] text-slate-400 mb-1">Pending approvals</p>
-                    <p className="text-xl font-bold text-amber-300">{pendingRegistrations}</p>
+                  <div className="bg-white rounded-xl border border-blue-100 p-4 shadow-sm">
+                    <p className="text-slate-500 text-xs font-medium mb-1">Pending approvals</p>
+                    <p className="text-2xl font-bold text-amber-500">{pendingRegistrations}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">Awaiting review</p>
                   </div>
-                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
-                    <p className="text-[11px] text-slate-400 mb-1">Approved participants</p>
-                    <p className="text-xl font-bold text-emerald-300">{approvedRegistrations}</p>
+                  <div className="bg-white rounded-xl border border-blue-100 p-4 shadow-sm">
+                    <p className="text-slate-500 text-xs font-medium mb-1">
+                      Approved participants
+                    </p>
+                    <p className="text-2xl font-bold text-emerald-600">{approvedRegistrations}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">Cleared for attendance</p>
                   </div>
-                  <div className="rounded-2xl bg-slate-900/60 border border-slate-800 px-4 py-3">
-                    <p className="text-[11px] text-slate-400 mb-1">Food claims</p>
-                    <p className="text-xl font-bold text-sky-300">0</p>
+                  <div className="bg-white rounded-xl border border-blue-100 p-4 shadow-sm">
+                    <p className="text-slate-500 text-xs font-medium mb-1">Food claims (today)</p>
+                    <p className="text-2xl font-bold text-sky-600">0</p>
+                    <p className="text-[11px] text-slate-400 mt-1">Snacks &amp; meals</p>
                   </div>
                 </section>
-                {adminAuthError && (
-                  <p className="text-xs text-red-400 mb-1">{adminAuthError}</p>
-                )}
-                <div className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-950/60">
-                  <div className="bg-slate-900/60 px-4 py-3 text-[11px] font-semibold text-slate-300 uppercase tracking-[0.16em] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <span>Registrations overview</span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <select
-                        value={filterSector}
-                        onChange={(e) => setFilterSector(e.target.value)}
-                        className="rounded-xl border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-medium text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      >
-                        <option value="all">All sectors</option>
-                        {sectorFilterOptions.map((sector) => (
-                          <option key={sector} value={sector}>
-                            {sector}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={filterStatus}
-                        onChange={(e) => setFilterStatus(e.target.value)}
-                        className="rounded-xl border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-medium text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      >
-                        <option value="all">All statuses</option>
-                        <option value="pending">Pending</option>
-                        <option value="approved">Approved</option>
-                        <option value="declined">Declined</option>
-                      </select>
+
+                {/* Pending approvals table */}
+                <section className="mb-10">
+                  <div className="bg-white rounded-xl border border-blue-100 overflow-hidden shadow-sm">
+                    <div className="p-5 border-b border-blue-100 flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-bold">Pending registration approval</h3>
+                        <p className="text-xs text-slate-500">
+                          Focused view of attendees that still need a decision.
+                        </p>
+                      </div>
+                      <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-widest">
+                        {pendingRegistrations} pending
+                      </span>
                     </div>
-                  </div>
-                  <div className="max-h-[50vh] overflow-y-auto">
-                    <table className="min-w-full text-xs">
-                      <thead className="bg-slate-900 text-slate-300">
-                        <tr>
-                          <th className="px-3 py-2 text-left font-semibold">Name</th>
-                          <th className="px-3 py-2 text-left font-semibold">Email</th>
-                          <th className="px-3 py-2 text-left font-semibold">Sector</th>
-                          <th className="px-3 py-2 text-left font-semibold">Contact</th>
-                          <th className="px-3 py-2 text-left font-semibold">Accommodation</th>
-                          <th className="px-3 py-2 text-left font-semibold">Travel</th>
-                          <th className="px-3 py-2 text-left font-semibold">Status</th>
-                          <th className="px-3 py-2 text-left font-semibold">Created</th>
-                          <th className="px-3 py-2 text-left font-semibold">Proof</th>
-                          <th className="px-3 py-2 text-left font-semibold">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredRegistrations.length === 0 && !registrationsLoading && (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50">
                           <tr>
-                            <td
-                              colSpan={6}
-                              className="px-3 py-4 text-center text-slate-400"
-                            >
-                              No registrations found.
-                            </td>
+                            <th className="px-6 py-3 text-xs font-bold text-slate-500 uppercase">
+                              Attendee
+                            </th>
+                            <th className="px-6 py-3 text-xs font-bold text-slate-500 uppercase">
+                              Institution
+                            </th>
+                            <th className="px-6 py-3 text-xs font-bold text-slate-500 uppercase">
+                              Status
+                            </th>
+                            <th className="px-6 py-3 text-xs font-bold text-slate-500 uppercase text-right">
+                              Actions
+                            </th>
                           </tr>
-                        )}
-                        {filteredRegistrations.map((r) => {
-                          const createdAt =
-                            (r.createdAt as Timestamp | undefined)?.toDate?.() ??
-                            null;
-                          const fullName = (r.fullName as string) || '';
-                          const position = (r.positionTitle as string) || '';
-                          const contact = (r.contactNumber as string) || '';
-                          const accommodation = (r.accommodationDetails as string) || '';
-                          const travel = (r.travelDetails as string) || '';
-                          const notes = (r.notes as string) || '';
-                          const proofPath = (r.proofOfPaymentPath as string) || '';
-                          return (
-                            <tr key={r.id} className="border-t border-slate-100">
-                              <td className="px-3 py-2 align-top text-slate-900">
-                                <div className="font-semibold">{fullName || '—'}</div>
-                                {position && (
-                                  <div className="text-[11px] text-slate-500">
-                                    {position}
+                        </thead>
+                        <tbody className="divide-y divide-blue-50">
+                          {filteredRegistrations
+                            .filter(
+                              (r) =>
+                                (r.status as string | undefined) === 'pending' ||
+                                !(r.status as string | undefined),
+                            )
+                            .map((r) => (
+                              <tr key={r.id} className="hover:bg-blue-50/40">
+                                <td className="px-6 py-4">
+                                  <div className="flex flex-col">
+                                    <span className="font-semibold">
+                                      {(r.fullName as string) || '—'}
+                                    </span>
+                                    <span className="text-xs text-slate-500">
+                                      {(r.email as string) || ''}
+                                    </span>
                                   </div>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 align-top text-slate-600">
-                                <div>{r.email}</div>
-                                {notes && (
-                                  <div className="text-[11px] text-slate-500 line-clamp-2">
-                                    {notes}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 align-top text-slate-600">
-                                {r.sector || '—'}
-                              </td>
-                              <td className="px-3 py-2 align-top text-slate-600">
-                                {contact || '—'}
-                              </td>
-                              <td className="px-3 py-2 align-top text-slate-600 max-w-[140px]">
-                                <div className="text-[11px] line-clamp-3">
-                                  {accommodation || '—'}
-                                </div>
-                              </td>
-                              <td className="px-3 py-2 align-top text-slate-600 max-w-[140px]">
-                                <div className="text-[11px] line-clamp-3">
-                                  {travel || '—'}
-                                </div>
-                              </td>
-                              <td className="px-3 py-2 align-top">
-                                <span
-                                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                                    r.status === 'approved'
-                                      ? 'bg-emerald-50 text-emerald-700'
-                                      : r.status === 'declined'
-                                      ? 'bg-red-50 text-red-700'
-                                      : 'bg-slate-50 text-slate-600'
-                                  }`}
-                                >
-                                  {r.status || 'pending'}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 align-top text-slate-500 whitespace-nowrap">
-                                {createdAt
-                                  ? createdAt.toLocaleString()
-                                  : '—'}
-                              </td>
-                              <td className="px-3 py-2 align-top">
-                                {proofPath ? (
+                                </td>
+                                <td className="px-6 py-4 text-sm text-slate-600">
+                                  {(r.sectorOffice as string) || (r.sector as string) || '—'}
+                                </td>
+                                <td className="px-6 py-4">
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800">
+                                    Pending
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-right">
                                   <button
                                     type="button"
-                                    onClick={async () => {
-                                      try {
-                                        const storageRef = ref(storage, proofPath);
-                                        const url = await getDownloadURL(storageRef);
-                                        window.open(url, '_blank', 'noopener,noreferrer');
-                                      } catch (err) {
-                                        console.error('Error opening proof', err);
-                                        setAdminAuthError(
-                                          'Unable to open proof of payment. Check console for details.'
-                                        );
-                                      }
-                                    }}
-                                    className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[11px] font-semibold hover:bg-blue-100"
-                                  >
-                                    View
-                                  </button>
-                                ) : (
-                                  <span className="text-[11px] text-slate-400">None</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 align-top">
-                                <div className="flex flex-wrap gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      updateRegistrationStatus(r, 'approved')
-                                    }
-                                    className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-semibold hover:bg-emerald-100"
+                                    onClick={() => updateRegistrationStatus(r, 'approved')}
+                                    className="inline-flex items-center px-4 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700"
                                   >
                                     Approve
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      updateRegistrationStatus(r, 'declined')
-                                    }
-                                    className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-[11px] font-semibold hover:bg-red-100"
-                                  >
-                                    Decline
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      updateRegistrationStatus(r, 'pending')
-                                    }
-                                    className="px-2 py-0.5 rounded-full bg-slate-50 text-slate-600 text-[11px] font-semibold hover:bg-slate-100"
-                                  >
-                                    Reset
-                                  </button>
-                                </div>
+                                </td>
+                              </tr>
+                            ))}
+                          {filteredRegistrations.filter(
+                            (r) =>
+                              (r.status as string | undefined) === 'pending' ||
+                              !(r.status as string | undefined),
+                          ).length === 0 && (
+                            <tr>
+                              <td
+                                colSpan={4}
+                                className="px-6 py-6 text-center text-sm text-slate-400"
+                              >
+                                No pending registrations at the moment.
                               </td>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+                </section>
+
+                {/* Management sections grid (static placeholders for now) */}
+                <section className="grid grid-cols-1 lg:grid-cols-2 gap-8 text-sm">
+                  {/* Breakout room management */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xl font-bold">Breakout rooms</h3>
+                      <button
+                        type="button"
+                        className="bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white px-4 py-2 rounded-lg font-semibold text-xs transition-all"
+                      >
+                        + New room
+                      </button>
+                    </div>
+                    <div className="bg-white rounded-xl border border-blue-100 p-5 shadow-sm space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-500 uppercase">
+                            Room name
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="Quantum Physics A"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-500 uppercase">
+                            Max capacity
+                          </label>
+                          <input
+                            type="number"
+                            className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="50"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase">
+                          Presenter
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                          placeholder="Dr. Sarah Connor"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-500 uppercase">
+                            Timeline
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="10:00 AM – 11:30 AM"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-500 uppercase">
+                            Materials
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="VR Headsets, Tablets"
+                          />
+                        </div>
+                      </div>
+                      <div className="pt-3 flex items-center gap-3">
+                        <button
+                          type="button"
+                          className="flex-1 bg-blue-600 text-white font-bold py-2.5 rounded-lg shadow-md shadow-blue-500/20 text-xs"
+                        >
+                          Save details
+                        </button>
+                        <button
+                          type="button"
+                          className="bg-slate-100 text-slate-700 px-4 py-2 rounded-lg font-bold text-xs hover:bg-slate-200"
+                        >
+                          QR code
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Booth management (static) */}
+                  <div className="space-y-4">
+                    <h3 className="text-xl font-bold">Booth management</h3>
+                    <div className="bg-white rounded-xl border border-blue-100 p-5 shadow-sm space-y-5">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase">
+                          Booth name
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                          placeholder="Future Mobility Hub"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase">
+                          Key technologies
+                        </label>
+                        <div className="flex flex-wrap gap-2 text-[11px]">
+                          <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-bold">
+                            AI computing
+                          </span>
+                          <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-bold">
+                            Robotics
+                          </span>
+                          <button
+                            type="button"
+                            className="border border-dashed border-blue-200 text-blue-600 px-3 py-1 rounded-full font-bold"
+                          >
+                            + Add tech
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase">
+                          Assigned in-charge
+                        </label>
+                        <div className="relative">
+                          <select className="w-full bg-slate-50 border-none rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500 appearance-none">
+                            <option>Select staff member</option>
+                            <option>Mark Johnson (Lead Eng)</option>
+                            <option>Sarah Williams (Event Spec)</option>
+                          </select>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="w-full bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-600 font-bold py-2.5 rounded-lg text-xs border border-blue-200 transition-all"
+                      >
+                        Register booth configuration
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </main>
+            </div>
+          )}
       {showSuccessPopup && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4">
           <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative text-center">
