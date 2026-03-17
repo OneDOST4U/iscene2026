@@ -937,19 +937,29 @@ iSCENE 2026 Organizing Team</p>`,
           >
             <div className="flex flex-wrap justify-center items-center gap-4 md:gap-8">
               <img
-                src="/iscene.png"
-                alt="iSCENE Logo"
-                className="h-16 md:h-24 lg:h-28 w-auto"
-              />
-              <img
-                src="/isu.png"
-                alt="ISU Logo"
-                className="h-16 md:h-24 lg:h-28 w-auto"
+                src="/dost.png"
+                alt="DOST Logo"
+                className="h-14 sm:h-16 md:h-20 lg:h-24 w-auto object-contain"
               />
               <img
                 src="/cauayan.png"
                 alt="Cauayan City Logo"
-                className="h-16 md:h-24 lg:h-28 w-auto"
+                className="h-14 sm:h-16 md:h-20 lg:h-24 w-auto object-contain"
+              />
+              <img
+                src="/isu.png"
+                alt="ISU Logo"
+                className="h-14 sm:h-16 md:h-20 lg:h-24 w-auto object-contain"
+              />
+              <img
+                src="/iscene.png"
+                alt="iSCENE Logo"
+                className="h-14 sm:h-16 md:h-20 lg:h-24 w-auto object-contain"
+              />
+              <img
+                src="/bagong-pilipinas.png"
+                alt="Bagong Pilipinas Logo"
+                className="h-14 sm:h-16 md:h-20 lg:h-24 w-auto object-contain"
               />
             </div>
             <div className="inline-flex items-center bg-white px-6 py-3 rounded-full shadow-sm border border-slate-100">
@@ -1767,7 +1777,7 @@ iSCENE 2026 Organizing Team</p>`,
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Additional Notes / Dietary Requirements</label>
+                  <label className="block text-sm font-semibold text-red-600 mb-1">Food Allergy / Dietary Requirements</label>
                   <textarea
                     rows={3}
                     name="notes"
@@ -2247,8 +2257,11 @@ iSCENE 2026 Organizing Team</p>`,
                 Registration Submitted
               </h3>
             </div>
-            <p className="text-sm text-slate-600 mb-4">
+            <p className="text-sm text-slate-600 mb-2">
               Your registration has been submitted successfully. Thank you for being part of iSCENE 2026.
+            </p>
+            <p className="text-xs text-red-600 mb-4">
+              Please check your email inbox <span className="font-semibold">and</span> your Spam or Junk folder for messages from the iSCENE organizers.
             </p>
             <button
               type="button"
