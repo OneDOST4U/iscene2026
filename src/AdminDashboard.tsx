@@ -467,6 +467,9 @@ export function AdminDashboard({
         positionTitle: editingRegistration.positionTitle || '',
         sectorOffice: editingRegistration.sectorOffice || '',
         contactNumber: editingRegistration.contactNumber || '',
+        accommodationDetails: editingRegistration.accommodationDetails || '',
+        travelDetails: editingRegistration.travelDetails || '',
+        notes: editingRegistration.notes || '',
       };
       await onSaveRegistration(editingRegistration.id, updates);
       clearMessageSoon('Participant details updated.');
@@ -812,6 +815,8 @@ export function AdminDashboard({
                       <div className="mt-3 space-y-1 text-xs text-slate-500">
                         <p>Contact: {registration.contactNumber || '—'}</p>
                         <p>Organization: {registration.sectorOffice || '—'}</p>
+                        <p>Travel / Flight: {registration.travelDetails || '—'}</p>
+                        <p className="text-red-600">Food Allergy / Dietary: {registration.notes || '—'}</p>
                         <p>Created: {formatDate(registration.createdAt)}</p>
                       </div>
                       <div className="mt-4 flex flex-wrap gap-2">
@@ -856,13 +861,15 @@ export function AdminDashboard({
 
               <div className="hidden overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm lg:block">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[980px] text-sm">
+                  <table className="w-full min-w-[1180px] text-sm">
                     <thead className="bg-slate-50 text-[11px] font-black uppercase tracking-wider text-slate-500">
                       <tr>
                         <th className="px-4 py-3 text-left">Participant</th>
                         <th className="px-4 py-3 text-left">Role</th>
                         <th className="px-4 py-3 text-left">Contact</th>
                         <th className="px-4 py-3 text-left">Organization</th>
+                        <th className="px-4 py-3 text-left">Travel / Flight</th>
+                        <th className="px-4 py-3 text-left">Dietary</th>
                         <th className="px-4 py-3 text-left">Status</th>
                         <th className="px-4 py-3 text-left">Created</th>
                         <th className="px-4 py-3 text-left">Proof</th>
@@ -872,14 +879,14 @@ export function AdminDashboard({
                     <tbody className="divide-y divide-slate-100">
                       {registrationsLoading && (
                         <tr>
-                          <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
+                          <td colSpan={10} className="px-4 py-10 text-center text-slate-400">
                             Loading registrations...
                           </td>
                         </tr>
                       )}
                       {!registrationsLoading && registrationsView.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
+                          <td colSpan={10} className="px-4 py-10 text-center text-slate-400">
                             No registrations found.
                           </td>
                         </tr>
@@ -898,6 +905,16 @@ export function AdminDashboard({
                             </td>
                             <td className="px-4 py-3 text-xs text-slate-600">{registration.contactNumber || '—'}</td>
                             <td className="px-4 py-3 text-xs text-slate-600">{registration.sectorOffice || '—'}</td>
+                            <td className="px-4 py-3 text-xs text-slate-600">
+                              <span className="block max-w-[220px] truncate" title={registration.travelDetails || ''}>
+                                {registration.travelDetails || '—'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-xs">
+                              <span className="block max-w-[220px] truncate text-red-600" title={registration.notes || ''}>
+                                {registration.notes || '—'}
+                              </span>
+                            </td>
                             <td className="px-4 py-3">
                               <StatusBadge status={registration.status || 'pending'} />
                             </td>
@@ -1505,6 +1522,33 @@ export function AdminDashboard({
                   <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
                     {formatDate(editingRegistration.createdAt)}
                   </div>
+                </Field>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                <Field label="Accommodation Details">
+                  <textarea
+                    value={editingRegistration.accommodationDetails || ''}
+                    onChange={(e) => setEditingRegistration((prev: any) => ({ ...prev, accommodationDetails: e.target.value }))}
+                    rows={2}
+                    className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </Field>
+                <Field label="Travel / Flight Details">
+                  <textarea
+                    value={editingRegistration.travelDetails || ''}
+                    onChange={(e) => setEditingRegistration((prev: any) => ({ ...prev, travelDetails: e.target.value }))}
+                    rows={2}
+                    className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </Field>
+                <Field label="Food Allergy / Dietary Requirements">
+                  <textarea
+                    value={editingRegistration.notes || ''}
+                    onChange={(e) => setEditingRegistration((prev: any) => ({ ...prev, notes: e.target.value }))}
+                    rows={3}
+                    className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
                 </Field>
               </div>
 

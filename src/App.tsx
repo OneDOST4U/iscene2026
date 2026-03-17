@@ -34,6 +34,7 @@ import {
   addDoc,
   Timestamp,
   getDocs,
+  onSnapshot,
   query,
   orderBy,
   updateDoc,
@@ -312,11 +313,37 @@ export default function App() {
   React.useEffect(() => {
     if (typeof window !== 'undefined' && window.location.search.includes('admin=1')) {
       setIsAdminPanelOpen(true);
-      if (auth.currentUser) {
-        void loadRegistrations();
-      }
     }
   }, []);
+
+  React.useEffect(() => {
+    if (!isAdminVerified) return;
+
+    setRegistrationsLoading(true);
+    setAdminAuthError(null);
+
+    const q = query(collection(db, 'registrations'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const items = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        setRegistrations(items);
+        setRegistrationsLoading(false);
+      },
+      (err) => {
+        console.error('Error loading registrations (realtime)', err);
+        setAdminAuthError(
+          'Unable to load registrations in real-time. Make sure this account is listed as an admin in Firestore rules.',
+        );
+        setRegistrationsLoading(false);
+      },
+    );
+
+    return () => unsub();
+  }, [isAdminVerified]);
 
   const handleAdminSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -335,7 +362,6 @@ export default function App() {
         return;
       }
       setIsAdminVerified(true);
-      await loadRegistrations();
     } catch (err: any) {
       console.error('Admin sign-in error', err);
       if ((err?.code as string | undefined) === 'auth/invalid-credential' ||
@@ -616,6 +642,9 @@ iSCENE 2026 Organizing Team</p>`,
         positionTitle: (updates.positionTitle as string | undefined)?.trim() || '',
         sectorOffice: (updates.sectorOffice as string | undefined)?.trim() || '',
         contactNumber: (updates.contactNumber as string | undefined)?.trim() || '',
+        accommodationDetails: (updates.accommodationDetails as string | undefined) || '',
+        travelDetails: (updates.travelDetails as string | undefined) || '',
+        notes: (updates.notes as string | undefined) || '',
       };
       await updateDoc(doc(db, 'registrations', registrationId), payload);
       setRegistrations((prev) =>
@@ -639,13 +668,27 @@ iSCENE 2026 Organizing Team</p>`,
 
     try {
       const uid = registration.uid as string | undefined;
+      const tasks: Promise<unknown>[] = [];
       if (uid) {
         const functions = getFunctions(app);
         const deleteAuthUser = httpsCallable<{ uid: string }, { success: boolean }>(functions, 'deleteAuthUser');
-        await deleteAuthUser({ uid });
+        tasks.push(deleteAuthUser({ uid }));
       }
-      await deleteDoc(doc(db, 'registrations', registrationId));
-      setRegistrations((prev) => prev.filter((item) => item.id !== registrationId));
+      tasks.push(deleteDoc(doc(db, 'registrations', registrationId)));
+
+      const results = await Promise.allSettled(tasks);
+      const docDeleteResult = results[results.length - 1];
+      if (docDeleteResult.status === 'rejected') {
+        throw docDeleteResult.reason;
+      }
+
+      const authDeleteResult = results.length === 2 ? results[0] : null;
+      if (authDeleteResult && authDeleteResult.status === 'rejected') {
+        console.warn('Deleted Firestore registration, but failed to delete Auth user.', authDeleteResult.reason);
+        setAdminAuthError(
+          'Registration deleted, but the login account could not be removed. The email might still be taken until the Auth user is deleted.',
+        );
+      }
     } catch (err) {
       console.error('Error deleting registration', err);
       setAdminAuthError('Failed to delete registration. Check console for details.');
