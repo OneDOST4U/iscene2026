@@ -120,6 +120,12 @@ function formatDate(value: any) {
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : '—';
 }
 
+function formatDateTime(value: any) {
+  const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 function statusColor(status: string) {
   if (status === 'approved') return 'bg-emerald-100 text-emerald-700';
   if (status === 'declined') return 'bg-red-100 text-red-700';
@@ -815,9 +821,11 @@ export function AdminDashboard({
                       <div className="mt-3 space-y-1 text-xs text-slate-500">
                         <p>Contact: {registration.contactNumber || '—'}</p>
                         <p>Organization: {registration.sectorOffice || '—'}</p>
+                        <p>Accommodation: {registration.accommodationDetails || '—'}</p>
                         <p>Travel / Flight: {registration.travelDetails || '—'}</p>
                         <p className="text-red-600">Food Allergy / Dietary: {registration.notes || '—'}</p>
-                        <p>Created: {formatDate(registration.createdAt)}</p>
+                        <p>Date of Registration: {formatDateTime(registration.createdAt)}</p>
+                        {registration.approvedAt && <p>Date of Approval: {formatDateTime(registration.approvedAt)}</p>}
                       </div>
                       <div className="mt-4 flex flex-wrap gap-2">
                         <button
@@ -865,13 +873,14 @@ export function AdminDashboard({
                     <thead className="bg-slate-50 text-[11px] font-black uppercase tracking-wider text-slate-500">
                       <tr>
                         <th className="px-4 py-3 text-left">Participant</th>
-                        <th className="px-4 py-3 text-left">Role</th>
+                        <th className="px-4 py-3 text-left">Role & Position</th>
                         <th className="px-4 py-3 text-left">Contact</th>
                         <th className="px-4 py-3 text-left">Organization</th>
+                        <th className="px-4 py-3 text-left">Accommodation</th>
                         <th className="px-4 py-3 text-left">Travel / Flight</th>
                         <th className="px-4 py-3 text-left">Dietary</th>
                         <th className="px-4 py-3 text-left">Status</th>
-                        <th className="px-4 py-3 text-left">Created</th>
+                        <th className="px-4 py-3 text-left">Date of Registration</th>
                         <th className="px-4 py-3 text-left">Proof</th>
                         <th className="px-4 py-3 text-right">Actions</th>
                       </tr>
@@ -879,14 +888,14 @@ export function AdminDashboard({
                     <tbody className="divide-y divide-slate-100">
                       {registrationsLoading && (
                         <tr>
-                          <td colSpan={10} className="px-4 py-10 text-center text-slate-400">
+                          <td colSpan={11} className="px-4 py-10 text-center text-slate-400">
                             Loading registrations...
                           </td>
                         </tr>
                       )}
                       {!registrationsLoading && registrationsView.length === 0 && (
                         <tr>
-                          <td colSpan={10} className="px-4 py-10 text-center text-slate-400">
+                          <td colSpan={11} className="px-4 py-10 text-center text-slate-400">
                             No registrations found.
                           </td>
                         </tr>
@@ -899,26 +908,43 @@ export function AdminDashboard({
                               <div className="text-xs text-slate-500">{registration.email || '—'}</div>
                             </td>
                             <td className="px-4 py-3">
-                              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${sectorColor(registration.sector || '')}`}>
-                                {registration.sector || '—'}
-                              </span>
+                              <div className="flex flex-col items-start gap-1">
+                                <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${sectorColor(registration.sector || '')}`}>
+                                  {registration.sector || '—'}
+                                </span>
+                                {registration.positionTitle && (
+                                  <span className="text-[10px] font-bold text-slate-500">
+                                    {registration.positionTitle}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="px-4 py-3 text-xs text-slate-600">{registration.contactNumber || '—'}</td>
-                            <td className="px-4 py-3 text-xs text-slate-600">{registration.sectorOffice || '—'}</td>
+                            <td className="px-4 py-3 text-xs text-slate-600 whitespace-pre-wrap">{registration.sectorOffice || '—'}</td>
                             <td className="px-4 py-3 text-xs text-slate-600">
-                              <span className="block max-w-[220px] truncate" title={registration.travelDetails || ''}>
+                              <span className="block min-w-[120px] max-w-[220px] whitespace-pre-wrap" title={registration.accommodationDetails || ''}>
+                                {registration.accommodationDetails || '—'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-slate-600">
+                              <span className="block min-w-[120px] max-w-[220px] whitespace-pre-wrap" title={registration.travelDetails || ''}>
                                 {registration.travelDetails || '—'}
                               </span>
                             </td>
                             <td className="px-4 py-3 text-xs">
-                              <span className="block max-w-[220px] truncate text-red-600" title={registration.notes || ''}>
+                              <span className="block min-w-[120px] max-w-[220px] whitespace-pre-wrap text-red-600" title={registration.notes || ''}>
                                 {registration.notes || '—'}
                               </span>
                             </td>
                             <td className="px-4 py-3">
                               <StatusBadge status={registration.status || 'pending'} />
                             </td>
-                            <td className="px-4 py-3 text-xs text-slate-500">{formatDate(registration.createdAt)}</td>
+                            <td className="px-4 py-3 text-xs text-slate-500">
+                              <div>{formatDateTime(registration.createdAt)}</div>
+                              {registration.approvedAt && (
+                                <div className="text-emerald-600 mt-0.5" title="Approved at">✓ {formatDateTime(registration.approvedAt)}</div>
+                              )}
+                            </td>
                             <td className="px-4 py-3">
                               {registration.proofOfPaymentPath ? (
                                 <button
@@ -1518,7 +1544,7 @@ export function AdminDashboard({
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </Field>
-                <Field label="Created">
+                <Field label="Date of Registration">
                   <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
                     {formatDate(editingRegistration.createdAt)}
                   </div>

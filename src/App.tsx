@@ -294,7 +294,7 @@ export default function App() {
           setParticipantRegistration(null);
           return;
         }
-        const reg = { id: snap.docs[0].id, ...snap.docs[0].data() };
+        const reg = { id: snap.docs[0].id, ...snap.docs[0].data() } as any;
         const status = (reg.status as string | undefined) || 'pending';
         setParticipantRegistration(status === 'approved' ? reg : null);
       })
@@ -416,7 +416,7 @@ export default function App() {
         return;
       }
 
-      const reg = { id: snap.docs[0].id, ...snap.docs[0].data() };
+      const reg = { id: snap.docs[0].id, ...snap.docs[0].data() } as any;
       const status = (reg.status as string | undefined) || 'pending';
 
       if (status !== 'approved') {
@@ -460,19 +460,30 @@ export default function App() {
 
     const doc = new jsPDF('landscape');
 
+    const formatDt = (value: any) => {
+      const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return '—';
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+
     const body: RowInput[] = filteredRegistrations.map((r, index) => {
-      const createdAt =
-        (r.createdAt as Timestamp | undefined)?.toDate?.() ?? null;
+      const createdAt = formatDt(r.createdAt);
+      const approvedAt = formatDt(r.approvedAt);
 
       return [
         index + 1,
         (r.fullName as string) || '',
         (r.email as string) || '',
         (r.sector as string) || '',
+        (r.positionTitle as string) || '',
+        (r.sectorOffice as string) || '',
         (r.status as string) || 'pending',
         (r.contactNumber as string) || '',
         (r.accommodationDetails as string) || '',
         (r.travelDetails as string) || '',
+        (r.notes as string) || '',
+        createdAt,
+        approvedAt,
       ];
     });
 
@@ -483,10 +494,15 @@ export default function App() {
           'Full Name',
           'Email',
           'Sector',
+          'Position',
+          'Organization',
           'Status',
           'Contact',
           'Accommodation',
           'Travel',
+          'Dietary',
+          'Registered At',
+          'Approved At',
         ],
       ],
       body,
@@ -508,21 +524,37 @@ export default function App() {
       'Full Name',
       'Email',
       'Sector',
+      'Position',
+      'Organization',
       'Status',
       'Contact',
       'Accommodation',
       'Travel',
+      'Dietary',
+      'Registered At',
+      'Approved At',
     ];
+
+    const formatDt = (value: any) => {
+      const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return '—';
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
 
     const rows = filteredRegistrations.map((r, index) => [
       String(index + 1),
       (r.fullName as string) || '',
       (r.email as string) || '',
       (r.sector as string) || '',
+      (r.positionTitle as string) || '',
+      (r.sectorOffice as string) || '',
       (r.status as string) || 'pending',
       (r.contactNumber as string) || '',
       (r.accommodationDetails as string) || '',
       (r.travelDetails as string) || '',
+      (r.notes as string) || '',
+      formatDt(r.createdAt),
+      formatDt(r.approvedAt),
     ]);
 
     const escapeCell = (cell: string) => {
@@ -579,9 +611,13 @@ export default function App() {
   ) => {
     const id = registration.id as string;
     try {
-      await updateDoc(doc(db, 'registrations', id), { status });
+      const updatePayload: any = { status };
+      if (status === 'approved') {
+        updatePayload.approvedAt = Timestamp.now();
+      }
+      await updateDoc(doc(db, 'registrations', id), updatePayload);
       setRegistrations((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, status } : r)),
+        prev.map((r) => (r.id === id ? { ...r, ...updatePayload } : r)),
       );
 
       // When a registration is approved, enqueue an email for the participant
@@ -822,6 +858,9 @@ iSCENE 2026 Organizing Team</p>`,
 
       console.log('Registration saved successfully.');
 
+      // Sign them out automatically since their account is still pending approval
+      await signOut(auth);
+
       setRegisterStatus('success');
       setRegisterMessage('Thank you for registering for iSCENE 2026!');
       form.reset();
@@ -860,7 +899,7 @@ iSCENE 2026 Organizing Team</p>`,
   const isRestoringSession =
     !authInitialized ||
     // Auth is known but the participant's Firestore registration is still loading
-    (!isAdminPanelOpen && !isAdminVerified && !!adminUser && participantRegistrationLoading);
+    (!isAdminPanelOpen && !isAdminVerified && !!adminUser && participantRegistrationLoading && registerStatus !== 'submitting');
 
   if (isRestoringSession) {
     return (
