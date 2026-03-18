@@ -1078,17 +1078,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </button>
             </div>
 
-            {/* User info */}
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3">
-              {profilePicUrl
-                ? <img src={profilePicUrl} alt={fullName} className="w-11 h-11 rounded-full object-cover shrink-0 ring-2 ring-blue-100" />
-                : <div className="w-11 h-11 rounded-full bg-blue-600 flex items-center justify-center text-white font-black text-sm shrink-0">{initials}</div>}
-              <div className="min-w-0">
-                <p className="font-bold text-sm truncate">{fullName}</p>
-                <p className="text-[11px] text-slate-400 truncate">{user.email}</p>
-                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full mt-0.5 inline-block">✓ Approved</span>
-              </div>
-            </div>
+
 
             {/* Nav links */}
             <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
@@ -1128,15 +1118,30 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               >
                 <CreditCard size={18} /><span>My Digital ID</span>
               </button>
-              <div className="border-t border-slate-100 pt-2 mt-1">
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold text-red-500 hover:bg-red-50"
-                >
-                  <X size={18} /><span>Sign Out</span>
-                </button>
+            </div>
+            
+            {/* Profile Info & Sign Out Footer */}
+            <div className="mt-auto border-t border-slate-100 p-4">
+              <div className="mb-3 flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 overflow-hidden">
+                  {profilePicUrl ? (
+                    <img src={profilePicUrl} alt={fullName} className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="text-sm font-black text-blue-600">{initials}</span>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-slate-800">{fullName}</p>
+                  <p className="truncate text-[11px] text-slate-500">{registration?.sector || 'Participant'}</p>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="w-full rounded-full border border-red-200 py-2 text-xs font-bold text-red-600 transition-colors hover:bg-red-50"
+              >
+                Sign out
+              </button>
             </div>
           </div>
         </>
@@ -1166,10 +1171,27 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           <NavItem icon={<Utensils size={17} />} label="My Meals" active={activeTab === 'meals'} onClick={() => setActiveTab('meals')} />
           <NavItem icon={<User size={17} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
         </nav>
-        <div className="mx-3 mb-4 p-3 bg-blue-50 rounded-2xl">
-          <p className="text-xs font-bold text-slate-700 mb-0.5">Need help?</p>
-          <p className="text-[11px] text-slate-500 mb-2">Check out our attendee guide for 2026.</p>
-          <button type="button" className="text-[11px] font-bold text-blue-600 flex items-center gap-1 hover:underline">Read Guide <ChevronRight size={11} /></button>
+        <div className="border-t border-slate-100 p-4">
+          <div className="mb-3 flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 overflow-hidden">
+              {profilePicUrl ? (
+                <img src={profilePicUrl} alt={fullName} className="h-full w-full object-cover" />
+              ) : (
+                <span className="text-sm font-black text-blue-600">{initials}</span>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-bold text-slate-800">{fullName}</p>
+              <p className="truncate text-[11px] text-slate-500">{registration?.sector || 'Participant'}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="w-full rounded-full border border-red-200 py-2 text-xs font-bold text-red-600 transition-colors hover:bg-red-50"
+          >
+            Sign out
+          </button>
         </div>
       </aside>
 

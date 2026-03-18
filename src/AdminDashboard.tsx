@@ -1009,10 +1009,6 @@ export function AdminDashboard({
 
           {activeTab === 'rooms' && (
             <section>
-              <div className="mb-5">
-                <h3 className="text-2xl font-black">Breakout Rooms</h3>
-                <p className="text-sm text-slate-500">Create sessions, assign presenters, and generate room QR codes.</p>
-              </div>
 
               <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1218,10 +1214,6 @@ export function AdminDashboard({
 
           {activeTab === 'meals' && (
             <section>
-              <div className="mb-5">
-                <h3 className="text-2xl font-black">Meals & Food</h3>
-                <p className="text-sm text-slate-500">Create meal windows and manage food booth operators.</p>
-              </div>
               <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
@@ -1318,10 +1310,6 @@ export function AdminDashboard({
 
           {activeTab === 'booths' && (
             <section>
-              <div className="mb-5">
-                <h3 className="text-2xl font-black">Booth Management</h3>
-                <p className="text-sm text-slate-500">Approve and manage exhibitor and food booth registrations.</p>
-              </div>
 
               <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -1397,10 +1385,6 @@ export function AdminDashboard({
 
           {activeTab === 'analytics' && (
             <section>
-              <div className="mb-5">
-                <h3 className="text-2xl font-black">Analytics</h3>
-                <p className="text-sm text-slate-500">Live overview of registrations, sectors, and event readiness.</p>
-              </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <StatCard label="Total Registered" value={totalRegistrations} sub="All sectors" tone="blue" />
                 <StatCard
