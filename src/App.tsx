@@ -924,9 +924,9 @@ iSCENE 2026 Organizing Team</p>`,
           <SpeakerDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         ) : participantSector === 'Facilitators' ? (
           <FacilitatorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Food (Booth)' ? (
+        ) : participantSector === 'Food (Booth)' || participantSector === 'Exhibitor (Booth)' ? (
           <FoodBoothDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)' ? (
+        ) : participantSector === 'Exhibitor' ? (
           <ExhibitorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         ) : (
           <ParticipantDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />

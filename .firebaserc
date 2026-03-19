@@ -1,6 +1,6 @@
 {
   "projects": {
-    "default": "iscene-test",
+    "default": "iscene2026",
     "prod": "iscene2026"
   },
   "targets": {},

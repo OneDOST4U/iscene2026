@@ -81,6 +81,12 @@ type Room = {
 type Meal = {
   id: string;
   type: string;
+  itemType?: 'food' | 'kit' | 'both';
+  name?: string;
+  location?: string;
+  assignedBoothUid?: string;
+  eligibleSectors?: string[];
+  eligibleParticipantIds?: string[];
   sessionDate: string;
   startTime: string;
   endTime: string;
@@ -194,6 +200,204 @@ function Field({
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Create Entitlement Form (refactored – native selects, no overlay dropdowns)
+// ─────────────────────────────────────────────────────────────────────────────
+type CreateEntitlementFormProps = {
+  allBoothRegs: { id: string; fullName?: string; sector?: string; uid?: string }[];
+  allRoleOptions: string[];
+  approvedRegistrations: { id: string; fullName?: string; sector?: string; email?: string }[];
+  onSubmit: (payload: {
+    type: string;
+    itemType: 'food' | 'kit' | 'both';
+    name?: string;
+    location?: string;
+    assignedBoothUid?: string;
+    eligibleSectors?: string[];
+    eligibleParticipantIds?: string[];
+    sessionDate: string;
+    startTime: string;
+    endTime: string;
+  }) => Promise<void>;
+  onValidationError: (msg: string) => void;
+};
+
+function CreateEntitlementForm({
+  allBoothRegs,
+  allRoleOptions,
+  approvedRegistrations,
+  onSubmit,
+  onValidationError,
+}: CreateEntitlementFormProps) {
+  const [itemType, setItemType] = React.useState<'food' | 'kit' | 'both'>('food');
+  const [mealType, setMealType] = React.useState('lunch');
+  const [name, setName] = React.useState('');
+  const [sessionDate, setSessionDate] = React.useState('');
+  const [startTime, setStartTime] = React.useState('');
+  const [endTime, setEndTime] = React.useState('');
+  const [location, setLocation] = React.useState('');
+  const [assignedBoothUid, setAssignedBoothUid] = React.useState('');
+  const [eligibleSectors, setEligibleSectors] = React.useState<string[]>([]);
+  const [eligibleParticipantIds, setEligibleParticipantIds] = React.useState<string[]>([]);
+  const [saving, setSaving] = React.useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sessionDate?.trim()) {
+      onValidationError('Please select a Session Date.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSubmit({
+        type: itemType === 'kit' ? 'kit' : mealType,
+        itemType,
+        name: name.trim() || undefined,
+        location: location.trim() || undefined,
+        assignedBoothUid: assignedBoothUid || undefined,
+        eligibleSectors: eligibleSectors.length > 0 ? eligibleSectors : undefined,
+        eligibleParticipantIds: eligibleParticipantIds.length > 0 ? eligibleParticipantIds : undefined,
+        sessionDate,
+        startTime,
+        endTime,
+      });
+      setItemType('food');
+      setMealType('lunch');
+      setName('');
+      setSessionDate('');
+      setStartTime('');
+      setEndTime('');
+      setLocation('');
+      setAssignedBoothUid('');
+      setEligibleSectors([]);
+      setEligibleParticipantIds([]);
+    } catch (err: unknown) {
+      console.error('createMeal', err);
+      const msg = err instanceof Error ? err.message : 'Failed to create entitlement. Check console.';
+      onValidationError(`Error: ${msg}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addPerson = (regId: string) => {
+    if (regId && !eligibleParticipantIds.includes(regId)) {
+      setEligibleParticipantIds((prev) => [...prev, regId]);
+    }
+  };
+
+  const toggleSector = (sector: string) => {
+    setEligibleSectors((prev) =>
+      prev.includes(sector) ? prev.filter((s) => s !== sector) : [...prev, sector]
+    );
+  };
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      <Field label="Item Type">
+        <select value={itemType} onChange={(e) => setItemType(e.target.value as 'food' | 'kit' | 'both')} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="food">Food</option>
+          <option value="kit">Kit</option>
+          <option value="both">Both (Food &amp; Kit)</option>
+        </select>
+      </Field>
+      <Field label="Display Name (optional)">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Day 0 Starter Kit" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+      </Field>
+      {(itemType === 'food' || itemType === 'both') && (
+        <Field label="Meal Type">
+          <select value={mealType} onChange={(e) => setMealType(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="breakfast">Breakfast</option>
+            <option value="snacks">Snacks (AM)</option>
+            <option value="lunch">Lunch</option>
+            <option value="snacks_pm">Snacks (PM)</option>
+            <option value="dinner">Dinner</option>
+          </select>
+        </Field>
+      )}
+      <Field label="Session Date *">
+        <input value={sessionDate} onChange={(e) => setSessionDate(e.target.value)} type="date" required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+      </Field>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="Claim Opens">
+          <input value={startTime} onChange={(e) => setStartTime(e.target.value)} type="time" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        </Field>
+        <Field label="Claim Closes">
+          <input value={endTime} onChange={(e) => setEndTime(e.target.value)} type="time" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+        </Field>
+      </div>
+      <Field label="Location">
+        <select value={location} onChange={(e) => setLocation(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">Any booth</option>
+          {allBoothRegs.map((r) => (
+            <option key={r.id} value={r.fullName || r.id}>{r.fullName} ({r.sector})</option>
+          ))}
+        </select>
+        <p className="text-[10px] text-slate-400 mt-1">Where participants claim</p>
+      </Field>
+      <Field label="Assigned Booth">
+        <select value={assignedBoothUid} onChange={(e) => setAssignedBoothUid(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">Any booth (all can process)</option>
+          {allBoothRegs.map((r) => (
+            <option key={r.id} value={r.uid || ''}>{r.fullName} ({r.sector})</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Eligible Sectors">
+        <div className="flex flex-wrap gap-2">
+          {allRoleOptions.map((sector) => (
+            <label key={sector} className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={eligibleSectors.includes(sector)} onChange={() => toggleSector(sector)} className="rounded border-slate-300 text-blue-600" />
+              <span className="text-xs font-medium">{sector}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-[10px] text-slate-400 mt-1">Leave empty = all sectors eligible</p>
+      </Field>
+      <Field label="Specific Persons (optional)">
+        <select value="" onChange={(e) => addPerson(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="">Add a person...</option>
+          {approvedRegistrations.filter((r) => !eligibleParticipantIds.includes(r.id)).map((r) => (
+            <option key={r.id} value={r.id}>{r.fullName} ({r.sector})</option>
+          ))}
+        </select>
+        {eligibleParticipantIds.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {eligibleParticipantIds.map((regId) => {
+              const reg = approvedRegistrations.find((r) => r.id === regId);
+              return (
+                <span key={regId} className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-bold text-blue-700">
+                  {reg?.fullName || regId.slice(0, 8)}
+                  <button type="button" onClick={() => setEligibleParticipantIds((prev) => prev.filter((x) => x !== regId))} className="hover:bg-blue-200 rounded-full p-0.5" aria-label="Remove">
+                    <X size={12} />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </Field>
+      <button
+        type="button"
+        disabled={saving}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (saving) return;
+          if (!sessionDate?.trim()) {
+            onValidationError('Please select a Session Date.');
+            return;
+          }
+          handleSubmit(e as unknown as React.FormEvent);
+        }}
+        className="w-full rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer"
+      >
+        {saving ? 'Saving...' : 'Create Entitlement'}
+      </button>
+    </form>
+  );
+}
+
 export function AdminDashboard({
   user,
   registrations,
@@ -242,16 +446,19 @@ export function AdminDashboard({
 
   const [meals, setMeals] = React.useState<Meal[]>([]);
   const [mealsLoading, setMealsLoading] = React.useState(false);
-  const [newMealType, setNewMealType] = React.useState('lunch');
-  const [newMealDate, setNewMealDate] = React.useState('');
-  const [newMealStart, setNewMealStart] = React.useState('');
-  const [newMealEnd, setNewMealEnd] = React.useState('');
-  const [mealSaving, setMealSaving] = React.useState(false);
 
   const adminInitials = (user.email || 'AD').slice(0, 2).toUpperCase();
 
   const boothRegs = React.useMemo(
     () => registrations.filter((r) => BOOTH_SECTORS.includes((r.sector as string) || '')),
+    [registrations],
+  );
+  const foodBoothRegs = React.useMemo(
+    () => registrations.filter((r) => (r.sector as string) === 'Food (Booth)' && (r.status as string) === 'approved' && r.uid),
+    [registrations],
+  );
+  const allBoothRegs = React.useMemo(
+    () => registrations.filter((r) => BOOTH_SECTORS.includes((r.sector as string) || '') && (r.status as string) === 'approved' && r.uid),
     [registrations],
   );
   const presenterRegs = React.useMemo(
@@ -413,30 +620,40 @@ export function AdminDashboard({
     }
   };
 
-  const handleCreateMeal = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newMealDate) return;
-    setMealSaving(true);
-    try {
-      const payload = {
-        type: newMealType,
-        sessionDate: newMealDate,
-        startTime: newMealStart,
-        endTime: newMealEnd,
-        createdAt: Timestamp.now(),
-      };
-      const docRef = await addDoc(collection(db, 'meals'), payload);
-      setMeals((prev) => [{ id: docRef.id, ...payload }, ...prev]);
-      setNewMealType('lunch');
-      setNewMealDate('');
-      setNewMealStart('');
-      setNewMealEnd('');
-      clearMessageSoon('Meal window created.');
-    } catch (err) {
-      console.error('createMeal', err);
-    } finally {
-      setMealSaving(false);
-    }
+  const handleCreateMeal = async (payload: {
+    type: string;
+    itemType: 'food' | 'kit' | 'both';
+    name?: string;
+    location?: string;
+    assignedBoothUid?: string;
+    eligibleSectors?: string[];
+    eligibleParticipantIds?: string[];
+    sessionDate: string;
+    startTime: string;
+    endTime: string;
+  }) => {
+    const docPayload: Record<string, unknown> = {
+      type: payload.type,
+      itemType: payload.itemType,
+      sessionDate: payload.sessionDate,
+      startTime: payload.startTime,
+      endTime: payload.endTime,
+      createdAt: Timestamp.now(),
+    };
+    if (payload.name?.trim()) docPayload.name = payload.name.trim();
+    if (payload.location?.trim()) docPayload.location = payload.location.trim();
+    if (payload.assignedBoothUid?.trim()) docPayload.assignedBoothUid = payload.assignedBoothUid.trim();
+    if (payload.eligibleSectors?.length) docPayload.eligibleSectors = payload.eligibleSectors;
+    if (payload.eligibleParticipantIds?.length) docPayload.eligibleParticipantIds = payload.eligibleParticipantIds;
+
+    // Firestore rejects undefined – strip any that slipped through
+    Object.keys(docPayload).forEach((k) => {
+      if (docPayload[k] === undefined) delete docPayload[k];
+    });
+
+    const docRef = await addDoc(collection(db, 'meals'), docPayload);
+    setMeals((prev) => [{ id: docRef.id, ...docPayload } as Meal, ...prev]);
+    clearMessageSoon('Entitlement created.');
   };
 
   const handleDeleteMeal = async (id: string) => {
@@ -634,24 +851,26 @@ export function AdminDashboard({
                 </p>
               </div>
             </div>
-            <div className="hidden items-center gap-2 sm:flex">
-              <button
-                type="button"
-                onClick={onExportPdf}
-                className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
-              >
-                <FileText size={15} />
-                PDF
-              </button>
-              <button
-                type="button"
-                onClick={onExportCsv}
-                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-              >
-                <Download size={15} />
-                CSV
-              </button>
-            </div>
+            {activeTab === 'registrations' && (
+              <div className="hidden items-center gap-2 sm:flex">
+                <button
+                  type="button"
+                  onClick={onExportPdf}
+                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
+                >
+                  <FileText size={15} />
+                  PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={onExportCsv}
+                  className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  <Download size={15} />
+                  CSV
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
@@ -722,11 +941,11 @@ export function AdminDashboard({
                   <h3 className="text-2xl font-black">Participant Registrations</h3>
                   <p className="text-sm text-slate-500">Edit participant details, roles, approval state, deletion, and password resets.</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 sm:hidden">
                   <button
                     type="button"
                     onClick={onExportPdf}
-                    className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 sm:hidden"
+                    className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
                   >
                     <FileText size={15} />
                     Export PDF
@@ -734,7 +953,7 @@ export function AdminDashboard({
                   <button
                     type="button"
                     onClick={onExportCsv}
-                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 sm:hidden"
+                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
                   >
                     <Download size={15} />
                     Export CSV
@@ -1218,33 +1437,15 @@ export function AdminDashboard({
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
                     <Plus size={18} className="text-blue-600" />
-                    Create Meal Window
+                    Create Entitlement
                   </h4>
-                  <form onSubmit={handleCreateMeal} className="space-y-4">
-                    <Field label="Meal Type">
-                      <select value={newMealType} onChange={(e) => setNewMealType(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="breakfast">Breakfast</option>
-                        <option value="snacks">Snacks (AM)</option>
-                        <option value="lunch">Lunch</option>
-                        <option value="snacks_pm">Snacks (PM)</option>
-                        <option value="dinner">Dinner</option>
-                      </select>
-                    </Field>
-                    <Field label="Session Date *">
-                      <input value={newMealDate} onChange={(e) => setNewMealDate(e.target.value)} type="date" required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-                    </Field>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field label="Claim Opens">
-                        <input value={newMealStart} onChange={(e) => setNewMealStart(e.target.value)} type="time" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-                      </Field>
-                      <Field label="Claim Closes">
-                        <input value={newMealEnd} onChange={(e) => setNewMealEnd(e.target.value)} type="time" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-                      </Field>
-                    </div>
-                    <button type="submit" disabled={mealSaving} className="w-full rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-50">
-                      {mealSaving ? 'Saving...' : 'Create Meal Window'}
-                    </button>
-                  </form>
+                  <CreateEntitlementForm
+                    allBoothRegs={allBoothRegs}
+                    allRoleOptions={allRoleOptions}
+                    approvedRegistrations={filteredRegistrations.filter((r) => (r.status as string) === 'approved')}
+                    onSubmit={handleCreateMeal}
+                    onValidationError={clearMessageSoon}
+                  />
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1279,23 +1480,37 @@ export function AdminDashboard({
               </div>
 
               <div className="mt-6">
-                <h4 className="mb-3 text-lg font-black">Scheduled Meal Windows ({meals.length})</h4>
-                {mealsLoading && <p className="text-sm text-slate-400">Loading meal windows...</p>}
+                <h4 className="mb-3 text-lg font-black">Scheduled Entitlements ({meals.length})</h4>
+                {mealsLoading && <p className="text-sm text-slate-400">Loading entitlements...</p>}
                 {!mealsLoading && meals.length === 0 && (
                   <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400 shadow-sm">
-                    No meal windows yet. Use the form above to create one.
+                    No entitlements yet. Use the form above to create one.
                   </div>
                 )}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {meals.map((meal) => (
                     <div key={meal.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div>
-                        <p className="font-black">{MEAL_LABELS[meal.type] || meal.type}</p>
+                        <p className="font-black">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
                         <p className="mt-1 text-xs text-slate-500">{meal.sessionDate || '—'}</p>
                         {meal.startTime && meal.endTime && (
                           <p className="mt-1 text-xs font-semibold text-blue-600">
                             {meal.startTime} - {meal.endTime}
                           </p>
+                        )}
+                        {meal.location && <p className="mt-1 text-xs text-slate-500">📍 {meal.location}</p>}
+                        {meal.assignedBoothUid && (
+                          <p className="mt-1 text-[10px] text-slate-400">
+                            Booth: {allBoothRegs.find((r) => r.uid === meal.assignedBoothUid)?.fullName || 'Assigned'}
+                          </p>
+                        )}
+                        {meal.itemType && (
+                          <span className={`mt-1 inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            meal.itemType === 'kit' ? 'bg-amber-100 text-amber-700' :
+                            meal.itemType === 'both' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            {meal.itemType === 'kit' ? 'Kit' : meal.itemType === 'both' ? 'Food & Kit' : 'Food'}
+                          </span>
                         )}
                       </div>
                       <button type="button" onClick={() => handleDeleteMeal(meal.id)} className="rounded-xl p-2 text-slate-400 hover:bg-red-50 hover:text-red-500">

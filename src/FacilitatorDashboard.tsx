@@ -134,12 +134,12 @@ function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; su
   const [scanSuccess, setScanSuccess] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
-  const restartCameraRef = React.useRef<() => Promise<void>>(async () => {});
   const closingRef = React.useRef(false);
+  const handledRef = React.useRef(false);
+  const successTimerRef = React.useRef<number | null>(null);
   const historyTokenRef = React.useRef(`facilitator-scan-${Math.random().toString(36).slice(2)}`);
   const historyPushedRef = React.useRef(false);
-  const successTimerRef = React.useRef<number | null>(null);
-  const regionId = 'fac-qr-region';
+  const regionId = 'facilitator-qr-region';
 
   const stopActiveScanner = React.useCallback(async () => {
     const scanner = scannerRef.current;
@@ -152,91 +152,13 @@ function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; su
     } catch {}
     scannerRef.current = null;
   }, []);
-  React.useEffect(() => {
-    closingRef.current = false;
-    const scanner = new Html5Qrcode(regionId);
-    scannerRef.current = scanner;
-    let cancelled = false;
-    let handled = false;
-    const stopScanner = async () => {
-      try {
-        await scanner.stop();
-      } catch {}
-      try {
-        scanner.clear();
-      } catch {}
-    };
-
-    const handleDecoded = (decoded: string) => {
-      if (handled) return;
-      handled = true;
-      stopScanner().finally(() => {
-        finishSuccessfulScan(decoded);
-      });
-    };
-
-    const startScanner = async () => {
-      setCamError(null);
-      setCameraReady(false);
-      const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1 };
-      try {
-        await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
-        if (!cancelled) setCameraReady(true);
-        return;
-      } catch {
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          const preferredCamera =
-            cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
-            cameras[0]?.id;
-          if (!preferredCamera) {
-            throw new Error('No camera found');
-          }
-          if (!cancelled) {
-            await scanner.start(preferredCamera, config, handleDecoded, () => {});
-            setCameraReady(true);
-          }
-        } catch {
-          if (!cancelled) {
-            setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
-            setCameraReady(false);
-          }
-        }
-      }
-    };
-
-    restartCameraRef.current = startScanner;
-    void startScanner();
-
-    const historyTimer = window.setTimeout(() => {
-      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
-      historyPushedRef.current = true;
-    }, 0);
-    const handlePopState = () => {
-      historyPushedRef.current = false;
-      closingRef.current = true;
-      void stopActiveScanner().finally(() => onClose());
-    };
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(historyTimer);
-      if (successTimerRef.current) {
-        window.clearTimeout(successTimerRef.current);
-      }
-      window.removeEventListener('popstate', handlePopState);
-      if (!closingRef.current) {
-        void stopActiveScanner();
-      }
-    };
-  }, [onClose, onResult, stopActiveScanner]);
 
   const closeScanner = React.useCallback(async () => {
     if (closingRef.current) return;
     closingRef.current = true;
     if (successTimerRef.current) {
       window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
     }
     await stopActiveScanner();
     if (
@@ -250,40 +172,130 @@ function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; su
     onClose();
   }, [onClose, stopActiveScanner]);
 
-  const finishSuccessfulScan = React.useCallback((decoded: string) => {
-    setScanSuccess(true);
-    successTimerRef.current = window.setTimeout(() => {
-      onResult(decoded);
-      void closeScanner();
-    }, 950);
-  }, [closeScanner, onResult]);
+  const finishSuccessfulScan = React.useCallback(
+    (decoded: string) => {
+      if (handledRef.current) return;
+      handledRef.current = true;
+      setScanSuccess(true);
+      successTimerRef.current = window.setTimeout(() => {
+        onResult(decoded);
+        void closeScanner();
+      }, 950);
+    },
+    [closeScanner, onResult],
+  );
+
+  const startScanner = React.useCallback(async () => {
+    await stopActiveScanner();
+
+    setCamError(null);
+    setCameraReady(false);
+
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    if (!document.getElementById(regionId)) {
+      setCamError('Scanner failed to initialize. Please try again.');
+      return;
+    }
+
+    const scanner = new Html5Qrcode(regionId);
+    scannerRef.current = scanner;
+
+    const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1 };
+
+    const handleDecoded = (decoded: string) => {
+      if (handledRef.current) return;
+      void stopActiveScanner().finally(() => finishSuccessfulScan(decoded));
+    };
+
+    try {
+      await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
+      setCameraReady(true);
+      return;
+    } catch {}
+
+    try {
+      const cameras = await Html5Qrcode.getCameras();
+      const preferredCamera =
+        cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
+        cameras[0]?.id;
+      if (!preferredCamera) {
+        throw new Error('No camera found');
+      }
+      await scanner.start(preferredCamera, config, handleDecoded, () => {});
+      setCameraReady(true);
+    } catch {
+      setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
+      setCameraReady(false);
+    }
+  }, [finishSuccessfulScan, regionId, stopActiveScanner]);
+
+  React.useEffect(() => {
+    closingRef.current = false;
+    handledRef.current = false;
+
+    void startScanner();
+
+    const historyTimer = window.setTimeout(() => {
+      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
+      historyPushedRef.current = true;
+    }, 0);
+
+    const handlePopState = () => {
+      historyPushedRef.current = false;
+      closingRef.current = true;
+      void stopActiveScanner().catch(() => {}).finally(() => onClose());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.clearTimeout(historyTimer);
+      if (successTimerRef.current) {
+        window.clearTimeout(successTimerRef.current);
+      }
+      window.removeEventListener('popstate', handlePopState);
+      void stopActiveScanner().catch(() => {});
+    };
+  }, [onClose, startScanner, stopActiveScanner]);
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    const scanner = scannerRef.current;
-    if (!file || !scanner) return;
+    if (!file || handledRef.current) return;
 
     setUploadingImage(true);
     setCamError(null);
     setCameraReady(false);
 
     try {
-      try {
-        await scanner.stop();
-      } catch {}
+      await stopActiveScanner();
+
+      if (!document.getElementById(regionId)) {
+        await startScanner();
+        return;
+      }
+
+      const scanner = new Html5Qrcode(regionId);
+      scannerRef.current = scanner;
+
       const decoded = await scanner.scanFile(file, true);
+
       try {
         scanner.clear();
       } catch {}
+      scannerRef.current = null;
+
       finishSuccessfulScan(decoded);
     } catch {
       setCamError('No QR code was found in that image. Try another image or use the live camera.');
-      await restartCameraRef.current();
+      await startScanner();
     } finally {
       setUploadingImage(false);
       event.target.value = '';
     }
   };
+
+  const controlsDisabled = uploadingImage || scanSuccess;
+
   return (
     <div className="fixed inset-0 z-[80] bg-slate-950">
       <style>{`
@@ -317,11 +329,22 @@ function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; su
       <div className="absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/80 to-transparent z-10" />
 
       <header className="absolute top-0 inset-x-0 z-20 flex items-center p-4">
-        <button type="button" onClick={() => { void closeScanner(); }} className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => void closeScanner()}
+          disabled={controlsDisabled}
+          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
+        >
           <ArrowLeft size={20} />
         </button>
-        <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">iSCENE 2026 Scan</h2>
-        <button type="button" onClick={() => fileInputRef.current?.click()} className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md">
+        <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">{title}</h2>
+        <button
+          type="button"
+          onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+          disabled={controlsDisabled}
+          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
+          title="Upload QR image"
+        >
           <ImageUp size={20} />
         </button>
       </header>
@@ -353,13 +376,23 @@ function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; su
 
       <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
         <div className="flex items-center justify-center gap-8">
-          <button type="button" onClick={() => fileInputRef.current?.click()} className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+          <button
+            type="button"
+            onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+            disabled={controlsDisabled}
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+          >
             <ImageUp size={20} />
           </button>
           <div className="flex size-20 items-center justify-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-500/30 ring-4 ring-blue-200/60">
             <QrCode size={30} />
           </div>
-          <button type="button" onClick={() => void restartCameraRef.current()} className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+          <button
+            type="button"
+            onClick={() => void startScanner()}
+            disabled={controlsDisabled}
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+          >
             <RefreshCw size={20} className={!cameraReady && !camError ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -367,14 +400,13 @@ function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; su
       </div>
 
       {scanSuccess && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md">
-          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white/95 p-6 text-center shadow-2xl">
-            <img src="/iscene.png" alt="iSCENE" className="mx-auto mb-4 h-16 w-16 rounded-full object-contain bg-white p-1 shadow-md" />
-            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-              <CheckCircle2 size={30} />
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/80 backdrop-blur-md">
+          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white p-6 text-center shadow-2xl border border-emerald-200">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-4 ring-emerald-200/50">
+              <CheckCircle2 size={36} strokeWidth={2.5} />
             </div>
-            <p className="text-lg font-black text-slate-900">Scan Successful</p>
-            <p className="mt-1 text-sm text-slate-500">QR code verified by iSCENE 2026.</p>
+            <p className="text-xl font-black text-slate-900">Scanned successfully</p>
+            <p className="mt-2 text-sm text-slate-500">Closing camera…</p>
           </div>
         </div>
       )}

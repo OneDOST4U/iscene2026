@@ -68,9 +68,21 @@ type Room = {
 type MealWindow = {
   id: string;
   type: string;
+  itemType?: 'food' | 'kit' | 'both';
+  name?: string;
+  location?: string;
+  assignedBoothUid?: string;
+  eligibleSectors?: string[];
+  eligibleParticipantIds?: string[];
   sessionDate: string;
   startTime: string;
   endTime: string;
+};
+
+type FoodClaim = {
+  id: string;
+  mealId: string;
+  claimedAt: any;
 };
 
 type Reservation = {
@@ -98,6 +110,7 @@ const MEAL_LABELS: Record<string, string> = {
   lunch: '🍱 Lunch',
   snacks_pm: '🥤 Snacks (PM)',
   dinner: '🍽️ Dinner',
+  kit: 'Kit',
 };
 
 const SECTOR_COLORS = [
@@ -135,14 +148,15 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
   const [cameraReady, setCameraReady] = React.useState(false);
   const [uploadingImage, setUploadingImage] = React.useState(false);
   const [scanSuccess, setScanSuccess] = React.useState(false);
+
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
-  const restartCameraRef = React.useRef<() => Promise<void>>(async () => {});
   const closingRef = React.useRef(false);
+  const handledRef = React.useRef(false);
+  const successTimerRef = React.useRef<number | null>(null);
   const historyTokenRef = React.useRef(`participant-scan-${Math.random().toString(36).slice(2)}`);
   const historyPushedRef = React.useRef(false);
-  const successTimerRef = React.useRef<number | null>(null);
-  const regionId = 'qr-scan-region';
+  const regionId = 'participant-qr-scan-region';
 
   const stopActiveScanner = React.useCallback(async () => {
     const scanner = scannerRef.current;
@@ -156,91 +170,12 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     scannerRef.current = null;
   }, []);
 
-  React.useEffect(() => {
-    closingRef.current = false;
-    const scanner = new Html5Qrcode(regionId);
-    scannerRef.current = scanner;
-    let cancelled = false;
-    let handled = false;
-    const stopScanner = async () => {
-      try {
-        await scanner.stop();
-      } catch {}
-      try {
-        scanner.clear();
-      } catch {}
-    };
-
-    const handleDecoded = (decoded: string) => {
-      if (handled) return;
-      handled = true;
-      stopScanner().finally(() => {
-        finishSuccessfulScan(decoded);
-      });
-    };
-
-    const startScanner = async () => {
-      setCamError(null);
-      setCameraReady(false);
-      const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1 };
-      try {
-        await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
-        if (!cancelled) setCameraReady(true);
-        return;
-      } catch {
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          const preferredCamera =
-            cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
-            cameras[0]?.id;
-          if (!preferredCamera) {
-            throw new Error('No camera found');
-          }
-          if (!cancelled) {
-            await scanner.start(preferredCamera, config, handleDecoded, () => {});
-            setCameraReady(true);
-          }
-        } catch {
-          if (!cancelled) {
-            setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
-            setCameraReady(false);
-          }
-        }
-      }
-    };
-
-    restartCameraRef.current = startScanner;
-    void startScanner();
-
-    const historyTimer = window.setTimeout(() => {
-      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
-      historyPushedRef.current = true;
-    }, 0);
-    const handlePopState = () => {
-      historyPushedRef.current = false;
-      closingRef.current = true;
-      void stopActiveScanner().finally(() => onClose());
-    };
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(historyTimer);
-      if (successTimerRef.current) {
-        window.clearTimeout(successTimerRef.current);
-      }
-      window.removeEventListener('popstate', handlePopState);
-      if (!closingRef.current) {
-        void stopActiveScanner();
-      }
-    };
-  }, [onClose, onResult, stopActiveScanner]);
-
   const closeScanner = React.useCallback(async () => {
     if (closingRef.current) return;
     closingRef.current = true;
     if (successTimerRef.current) {
       window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
     }
     await stopActiveScanner();
     if (
@@ -254,40 +189,136 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     onClose();
   }, [onClose, stopActiveScanner]);
 
-  const finishSuccessfulScan = React.useCallback((decoded: string) => {
-    setScanSuccess(true);
-    successTimerRef.current = window.setTimeout(() => {
-      onResult(decoded);
-      void closeScanner();
-    }, 950);
-  }, [closeScanner, onResult]);
+  const finishSuccessfulScan = React.useCallback(
+    (decoded: string) => {
+      if (handledRef.current) return;
+      handledRef.current = true;
+      setScanSuccess(true);
+      successTimerRef.current = window.setTimeout(() => {
+        onResult(decoded);
+        void closeScanner();
+      }, 950);
+    },
+    [closeScanner, onResult],
+  );
+
+  const startScanner = React.useCallback(async () => {
+    await stopActiveScanner();
+
+    setCamError(null);
+    setCameraReady(false);
+
+    // Ensure DOM element exists (handles close/reopen and React's async commit)
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    if (!document.getElementById(regionId)) {
+      setCamError('Scanner failed to initialize. Please try again.');
+      return;
+    }
+
+    const scanner = new Html5Qrcode(regionId);
+    scannerRef.current = scanner;
+
+    const config = {
+      fps: 10,
+      qrbox: { width: 250, height: 250 },
+      aspectRatio: 1,
+    };
+
+    const handleDecoded = (decoded: string) => {
+      if (handledRef.current) return;
+      void stopActiveScanner().finally(() => finishSuccessfulScan(decoded));
+    };
+
+    try {
+      await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
+      setCameraReady(true);
+      return;
+    } catch {}
+
+    try {
+      const cameras = await Html5Qrcode.getCameras();
+      const preferredCamera =
+        cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
+        cameras[0]?.id;
+
+      if (!preferredCamera) {
+        throw new Error('No camera found');
+      }
+
+      await scanner.start(preferredCamera, config, handleDecoded, () => {});
+      setCameraReady(true);
+    } catch {
+      setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
+      setCameraReady(false);
+    }
+  }, [finishSuccessfulScan, regionId, stopActiveScanner]);
+
+  React.useEffect(() => {
+    closingRef.current = false;
+    handledRef.current = false;
+
+    void startScanner();
+
+    const historyTimer = window.setTimeout(() => {
+      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
+      historyPushedRef.current = true;
+    }, 0);
+
+    const handlePopState = () => {
+      historyPushedRef.current = false;
+      closingRef.current = true;
+      void stopActiveScanner().catch(() => {}).finally(() => onClose());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.clearTimeout(historyTimer);
+      if (successTimerRef.current) {
+        window.clearTimeout(successTimerRef.current);
+      }
+      window.removeEventListener('popstate', handlePopState);
+      void stopActiveScanner().catch(() => {});
+    };
+  }, [onClose, startScanner, stopActiveScanner]);
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    const scanner = scannerRef.current;
-    if (!file || !scanner) return;
+    if (!file || handledRef.current) return;
 
     setUploadingImage(true);
     setCamError(null);
     setCameraReady(false);
 
     try {
-      try {
-        await scanner.stop();
-      } catch {}
+      await stopActiveScanner();
+
+      if (!document.getElementById(regionId)) {
+        await startScanner();
+        return;
+      }
+
+      const scanner = new Html5Qrcode(regionId);
+      scannerRef.current = scanner;
+
       const decoded = await scanner.scanFile(file, true);
+
       try {
         scanner.clear();
       } catch {}
+      scannerRef.current = null;
+
       finishSuccessfulScan(decoded);
     } catch {
       setCamError('No QR code was found in that image. Try another image or use the live camera.');
-      await restartCameraRef.current();
+      await startScanner();
     } finally {
       setUploadingImage(false);
       event.target.value = '';
     }
   };
+
+  const controlsDisabled = uploadingImage || scanSuccess;
 
   return (
     <div className="fixed inset-0 z-[80] bg-slate-950">
@@ -330,14 +361,20 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       <div className="absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/80 to-transparent z-10" />
 
       <header className="absolute top-0 inset-x-0 z-20 flex items-center p-4">
-        <button type="button" onClick={() => { void closeScanner(); }} className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => void closeScanner()}
+          disabled={controlsDisabled}
+          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
+        >
           <ArrowLeft size={20} />
         </button>
         <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">iSCENE 2026 Scan</h2>
         <button
           type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md"
+          onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+          disabled={controlsDisabled}
+          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
           title="Upload QR image"
         >
           <ImageUp size={20} />
@@ -373,8 +410,9 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
         <div className="flex items-center justify-center gap-8">
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600"
+            onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+            disabled={controlsDisabled}
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
           >
             <ImageUp size={20} />
           </button>
@@ -383,8 +421,9 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
           </div>
           <button
             type="button"
-            onClick={() => void restartCameraRef.current()}
-            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600"
+            onClick={() => void startScanner()}
+            disabled={controlsDisabled}
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
           >
             <RefreshCw size={20} className={!cameraReady && !camError ? 'animate-spin' : ''} />
           </button>
@@ -393,14 +432,13 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       </div>
 
       {scanSuccess && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md">
-          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white/95 p-6 text-center shadow-2xl">
-            <img src="/iscene.png" alt="iSCENE" className="mx-auto mb-4 h-16 w-16 rounded-full object-contain bg-white p-1 shadow-md" />
-            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-              <CheckCircle2 size={30} />
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/80 backdrop-blur-md">
+          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white p-6 text-center shadow-2xl border border-emerald-200">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-4 ring-emerald-200/50">
+              <CheckCircle2 size={36} strokeWidth={2.5} />
             </div>
-            <p className="text-lg font-black text-slate-900">Scan Successful</p>
-            <p className="mt-1 text-sm text-slate-500">QR code verified by iSCENE 2026.</p>
+            <p className="text-xl font-black text-slate-900">Scanned successfully</p>
+            <p className="mt-2 text-sm text-slate-500">Closing camera…</p>
           </div>
         </div>
       )}
@@ -449,6 +487,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   // ── Data ───────────────────────────────────────────────────────────────────
   const [rooms, setRooms] = React.useState<Room[]>([]);
   const [meals, setMeals] = React.useState<MealWindow[]>([]);
+  const [foodClaims, setFoodClaims] = React.useState<FoodClaim[]>([]);
   const [reservations, setReservations] = React.useState<Record<string, Reservation>>({});
   const [reviews, setReviews] = React.useState<Record<string, Review>>({});
   const [boothRegs, setBoothRegs] = React.useState<any[]>([]);
@@ -493,6 +532,18 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const reviewedRoomIds = Object.keys(reviews);
   const certReady = attendedRoomIds.length > 0 && attendedRoomIds.some((rid) => reviewedRoomIds.includes(rid));
 
+  const participantSector = (registration?.sector as string) || '';
+  const registrationId = registration?.id as string | undefined;
+  const eligibleMeals = React.useMemo(
+    () => meals.filter((m) => {
+      const byPerson = m.eligibleParticipantIds && m.eligibleParticipantIds.length > 0 && registrationId && m.eligibleParticipantIds.includes(registrationId);
+      const bySector = !m.eligibleSectors || m.eligibleSectors.length === 0 || m.eligibleSectors.includes(participantSector);
+      return byPerson || bySector;
+    }),
+    [meals, participantSector, registrationId],
+  );
+  const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
+
   const digitalIdQrData = `https://www.iscene.app/verify?uid=${user.uid}&name=${encodeURIComponent(fullName)}`;
   const digitalIdQrImg = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(digitalIdQrData)}`;
   const idNumber = user.uid.slice(0, 8).toUpperCase();
@@ -511,17 +562,23 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const loadAll = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [roomsSnap, mealsSnap, resSnap, revSnap, entryDoc, boothSnap] = await Promise.all([
-        getDocs(query(collection(db, 'rooms'), orderBy('createdAt', 'desc'))),
-        getDocs(query(collection(db, 'meals'), orderBy('createdAt', 'desc'))),
-        getDocs(query(collection(db, 'reservations'), where('uid', '==', user.uid))),
-        getDocs(query(collection(db, 'reviews'), where('uid', '==', user.uid))),
-        getDoc(doc(db, 'attendance', `${user.uid}_entrance`)),
-        getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)']))),
+      const load = async <T,>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+        try { return await fn(); } catch (e) { console.error('loadAll query failed', e); return fallback; }
+      };
+
+      const [roomsSnap, mealsSnap, resSnap, revSnap, entryDoc, boothSnap, claimsSnap] = await Promise.all([
+        load(() => getDocs(query(collection(db, 'rooms'), orderBy('createdAt', 'desc'))), { docs: [] } as { docs: any[] }),
+        load(() => getDocs(query(collection(db, 'meals'), orderBy('createdAt', 'desc'))), { docs: [] } as { docs: any[] }),
+        load(() => getDocs(query(collection(db, 'reservations'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
+        load(() => getDocs(query(collection(db, 'reviews'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
+        load(() => getDoc(doc(db, 'attendance', `${user.uid}_entrance`)), { exists: () => false } as any),
+        load(() => getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)']))), { docs: [] } as { docs: any[] }),
+        load(() => getDocs(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid))), { docs: [] } as { docs: any[] }),
       ]);
 
       setRooms(roomsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Room, 'id'>) })));
       setMeals(mealsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) })));
+      setFoodClaims(claimsSnap.docs.map((d) => ({ id: d.id, mealId: (d.data() as any).mealId, claimedAt: (d.data() as any).claimedAt })));
 
       const resMap: Record<string, Reservation> = {};
       resSnap.docs.forEach((d) => { const data = d.data() as Omit<Reservation, 'id'>; resMap[data.roomId] = { id: d.id, ...data }; });
@@ -531,7 +588,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       revSnap.docs.forEach((d) => { const data = d.data() as Omit<Review, 'id'>; revMap[data.roomId] = { id: d.id, ...data }; });
       setReviews(revMap);
 
-      setHasEntryAttendance(entryDoc.exists());
+      setHasEntryAttendance(entryDoc.exists?.() ? entryDoc.exists() : false);
       setBoothRegs(boothSnap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })));
     } catch (err) { console.error('loadAll', err); }
     finally { setLoading(false); }
@@ -964,22 +1021,30 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {activeTab === 'meals' && (
           <>
             <div className="px-4 pt-5 pb-2">
-              <h2 className="text-2xl font-black tracking-tight">My Meals</h2>
-              <p className="text-sm text-slate-500 mt-1">Claim at your assigned stall within the time window.</p>
+              <h2 className="text-2xl font-black tracking-tight">My Entitlements</h2>
+              <p className="text-sm text-slate-500 mt-1">Food, kits, and giveaways — claim at the assigned stall.</p>
             </div>
             <div className="px-4 flex flex-col gap-3 pb-4">
-              {meals.length === 0 ? (
-                <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No meal windows scheduled.</div>
-              ) : meals.map((meal) => {
+              {eligibleMeals.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No entitlements available for you.</div>
+              ) : eligibleMeals.map((meal) => {
                 const isToday = meal.sessionDate ? new Date(meal.sessionDate).toDateString() === new Date().toDateString() : false;
+                const claimed = hasClaimedMeal(meal.id);
                 return (
-                  <div key={meal.id} className={`rounded-2xl border shadow-sm p-4 ${isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
+                  <div key={meal.id} className={`rounded-2xl border shadow-sm p-4 ${claimed ? 'bg-emerald-50 border-emerald-200' : isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
                     <div className="flex items-center justify-between mb-1">
-                      <p className="font-bold">{MEAL_LABELS[meal.type] || meal.type}</p>
-                      {isToday && <span className="text-[10px] font-black bg-amber-500 text-white px-2 py-0.5 rounded-full">TODAY</span>}
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
+                        {meal.itemType && <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meal.itemType === 'kit' ? 'bg-violet-100 text-violet-700' : meal.itemType === 'both' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'}`}>{meal.itemType === 'kit' ? 'Kit' : meal.itemType === 'both' ? 'Food & Kit' : 'Food'}</span>}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {isToday && !claimed && <span className="text-[10px] font-black bg-amber-500 text-white px-2 py-0.5 rounded-full">TODAY</span>}
+                        {claimed && <span className="text-[10px] font-black bg-emerald-500 text-white px-2 py-0.5 rounded-full flex items-center gap-1"><CheckCircle2 size={10} /> Claimed</span>}
+                      </div>
                     </div>
                     <p className="text-xs text-slate-500">{meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' }) : '—'}</p>
                     {meal.startTime && meal.endTime && <p className="text-xs font-semibold text-blue-600 mt-0.5 flex items-center gap-1"><Clock size={11} /> {meal.startTime} – {meal.endTime}</p>}
+                    {meal.location && <p className="text-xs text-slate-500 mt-0.5">📍 {meal.location}</p>}
                   </div>
                 );
               })}
@@ -1401,17 +1466,28 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* MEALS */}
         {activeTab === 'meals' && (
           <div className="p-8">
-            <div className="mb-6"><h2 className="text-2xl font-black">My Meal Entitlements</h2><p className="text-slate-500 text-sm mt-1">Claim at your assigned stall within the time window.</p></div>
-            {meals.length === 0
-              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No meal windows scheduled yet.</div>
+            <div className="mb-6"><h2 className="text-2xl font-black">My Entitlements</h2><p className="text-slate-500 text-sm mt-1">Food, kits, and giveaways — claim at the assigned stall within the time window.</p></div>
+            {eligibleMeals.length === 0
+              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No entitlements available for you yet.</div>
               : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                  {meals.map((meal) => {
+                  {eligibleMeals.map((meal) => {
                     const isToday = meal.sessionDate ? new Date(meal.sessionDate).toDateString() === new Date().toDateString() : false;
+                    const claimed = hasClaimedMeal(meal.id);
                     return (
-                      <div key={meal.id} className={`rounded-2xl border shadow-sm p-5 ${isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
-                        <div className="flex items-center justify-between mb-2"><p className="font-bold text-base">{MEAL_LABELS[meal.type] || meal.type}</p>{isToday && <span className="text-[10px] font-black bg-amber-500 text-white px-2 py-0.5 rounded-full uppercase">Today</span>}</div>
+                      <div key={meal.id} className={`rounded-2xl border shadow-sm p-5 ${claimed ? 'bg-emerald-50 border-emerald-200' : isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <p className="font-bold text-base">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
+                            {meal.itemType && <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meal.itemType === 'kit' ? 'bg-violet-100 text-violet-700' : meal.itemType === 'both' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'}`}>{meal.itemType === 'kit' ? 'Kit' : meal.itemType === 'both' ? 'Food & Kit' : 'Food'}</span>}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {isToday && !claimed && <span className="text-[10px] font-black bg-amber-500 text-white px-2 py-0.5 rounded-full uppercase">Today</span>}
+                            {claimed && <span className="text-[10px] font-black bg-emerald-500 text-white px-2 py-0.5 rounded-full flex items-center gap-1"><CheckCircle2 size={10} /> Claimed</span>}
+                          </div>
+                        </div>
                         <p className="text-xs text-slate-500 mb-1">{meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH',{weekday:'long',month:'long',day:'numeric'}) : '—'}</p>
                         {meal.startTime && meal.endTime && <p className="text-xs font-semibold text-blue-600 flex items-center gap-1"><Clock size={12} /> {meal.startTime} – {meal.endTime}</p>}
+                        {meal.location && <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">📍 {meal.location}</p>}
                       </div>
                     );
                   })}
@@ -1457,19 +1533,55 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       {idModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl">
-            <div className="bg-blue-600 px-4 py-3 flex items-center justify-between">
-              <div><p className="text-white text-xs font-black tracking-widest uppercase">iSCENE 2026</p><p className="text-blue-200 text-[10px]">International Smart &amp; Sustainable Cities Expo</p></div>
-              <button type="button" onClick={() => setIdModal(false)} className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white"><X size={14} /></button>
+            <div className="relative bg-blue-600 px-4 py-3">
+              <div className="text-center">
+                <p className="text-white text-sm font-black tracking-widest uppercase">iSCENE 2026</p>
+                <p className="text-blue-200 text-[10px]">International Smart &amp; Sustainable Cities Expo</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIdModal(false)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white"
+                aria-label="Close"
+              >
+                <X size={14} />
+              </button>
             </div>
-            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50">
+            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50 relative overflow-hidden">
+              {/* Hologram watermark behind profile/info */}
+              <div className="absolute top-10 left-6 pointer-events-none">
+                <div className="relative flex items-center justify-center">
+                  <div
+                    className="absolute h-44 w-44 rounded-full bg-white/20 blur-2xl animate-ping"
+                    style={{ animationDuration: '2.8s' }}
+                  />
+                  <div
+                    className="absolute h-32 w-32 rounded-full bg-white/15 blur-xl animate-ping"
+                    style={{ animationDuration: '2.8s', animationDelay: '0.9s' }}
+                  />
+                  <img
+                    src="/iscene.png"
+                    alt=""
+                    className="h-24 w-24 object-contain opacity-[0.16] mix-blend-multiply animate-[pulse_2.6s_ease-in-out_infinite]"
+                  />
+                </div>
+              </div>
               {profilePicUrl
                 ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
                 : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
               <h3 className="text-base font-black text-slate-900 text-center">{fullName}</h3>
               <p className="text-xs text-slate-500 mt-0.5 text-center">{registration?.positionTitle}{registration?.sectorOffice ? ` · ${registration.sectorOffice}` : ''}</p>
               <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{registration?.sector || 'Participant'}</span>
-              <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100"><img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44" /></div>
-              <p className="mt-2 text-[11px] text-slate-400 font-mono tracking-widest">ID #{idNumber}</p>
+              <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+                <img
+                  src={digitalIdQrImg}
+                  alt="Digital ID QR"
+                  className="w-44 h-44 relative z-10"
+                />
+              </div>
+              <p className="mt-3 text-[11px] text-slate-500 font-mono tracking-widest text-center">
+                ID <span className="text-slate-400">#</span>{idNumber}
+              </p>
             </div>
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
               <span className="text-[10px] text-slate-400">April 9–11, 2026</span>

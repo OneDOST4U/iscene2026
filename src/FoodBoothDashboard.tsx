@@ -35,6 +35,7 @@ import {
   Timestamp,
   limit,
   getDoc,
+  documentId,
 } from 'firebase/firestore';
 import { Html5Qrcode } from 'html5-qrcode';
 import { db, auth } from './firebase';
@@ -47,6 +48,12 @@ type Tab = 'dashboard' | 'participants' | 'sessions' | 'reports' | 'profile';
 type MealWindow = {
   id: string;
   type: string;
+  itemType?: 'food' | 'kit' | 'both';
+  name?: string;
+  location?: string;
+  assignedBoothUid?: string;
+  eligibleSectors?: string[];
+  eligibleParticipantIds?: string[];
   sessionDate: string;
   startTime: string;
   endTime: string;
@@ -60,6 +67,7 @@ type FoodClaim = {
   sector: string;
   mealId: string;
   mealType: string;
+  mealName?: string;
   sessionDate: string;
   claimedAt: any;
   claimedBy: string;
@@ -83,6 +91,7 @@ const MEAL_LABELS: Record<string, string> = {
   lunch: 'Lunch',
   snacks_pm: 'PM Snacks',
   dinner: 'Dinner',
+  kit: 'Kit',
 };
 
 function parseWindowTime(timeStr: string, dateStr: string): Date {
@@ -139,6 +148,16 @@ function sectorTier(sector: string) {
   return { label: 'Participant', cls: 'bg-blue-100 text-blue-600' };
 }
 
+function formatEligibility(meal: MealWindow): string {
+  if (meal.eligibleParticipantIds && meal.eligibleParticipantIds.length > 0) {
+    return `${meal.eligibleParticipantIds.length} specific person${meal.eligibleParticipantIds.length !== 1 ? 's' : ''}`;
+  }
+  if (meal.eligibleSectors && meal.eligibleSectors.length > 0) {
+    return `Sectors: ${meal.eligibleSectors.join(', ')}`;
+  }
+  return 'All participants';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // QR Scanner
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,13 +166,14 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
   const [cameraReady, setCameraReady] = React.useState(false);
   const [uploadingImage, setUploadingImage] = React.useState(false);
   const [scanSuccess, setScanSuccess] = React.useState(false);
+
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
-  const restartCameraRef = React.useRef<() => Promise<void>>(async () => {});
   const closingRef = React.useRef(false);
+  const handledRef = React.useRef(false);
+  const successTimerRef = React.useRef<number | null>(null);
   const historyTokenRef = React.useRef(`food-scan-${Math.random().toString(36).slice(2)}`);
   const historyPushedRef = React.useRef(false);
-  const successTimerRef = React.useRef<number | null>(null);
   const regionId = 'food-qr-region';
 
   const stopActiveScanner = React.useCallback(async () => {
@@ -168,92 +188,12 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     scannerRef.current = null;
   }, []);
 
-  React.useEffect(() => {
-    closingRef.current = false;
-    const scanner = new Html5Qrcode(regionId);
-    scannerRef.current = scanner;
-    let cancelled = false;
-    let handled = false;
-
-    const stopScanner = async () => {
-      try {
-        await scanner.stop();
-      } catch {}
-      try {
-        scanner.clear();
-      } catch {}
-    };
-
-    const handleDecoded = (decoded: string) => {
-      if (handled) return;
-      handled = true;
-      stopScanner().finally(() => {
-        finishSuccessfulScan(decoded);
-      });
-    };
-
-    const startScanner = async () => {
-      setCamError(null);
-      setCameraReady(false);
-      const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1 };
-      try {
-        await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
-        if (!cancelled) setCameraReady(true);
-        return;
-      } catch {
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          const preferredCamera =
-            cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
-            cameras[0]?.id;
-          if (!preferredCamera) {
-            throw new Error('No camera found');
-          }
-          if (!cancelled) {
-            await scanner.start(preferredCamera, config, handleDecoded, () => {});
-            setCameraReady(true);
-          }
-        } catch {
-          if (!cancelled) {
-            setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
-            setCameraReady(false);
-          }
-        }
-      }
-    };
-
-    restartCameraRef.current = startScanner;
-    void startScanner();
-
-    const historyTimer = window.setTimeout(() => {
-      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
-      historyPushedRef.current = true;
-    }, 0);
-    const handlePopState = () => {
-      historyPushedRef.current = false;
-      closingRef.current = true;
-      void stopActiveScanner().finally(() => onClose());
-    };
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(historyTimer);
-      if (successTimerRef.current) {
-        window.clearTimeout(successTimerRef.current);
-      }
-      window.removeEventListener('popstate', handlePopState);
-      if (!closingRef.current) {
-        void stopActiveScanner();
-      }
-    };
-  }, [onClose, onResult, stopActiveScanner]);
-
   const closeScanner = React.useCallback(async () => {
     if (closingRef.current) return;
     closingRef.current = true;
     if (successTimerRef.current) {
       window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
     }
     await stopActiveScanner();
     if (
@@ -267,40 +207,129 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     onClose();
   }, [onClose, stopActiveScanner]);
 
-  const finishSuccessfulScan = React.useCallback((decoded: string) => {
-    setScanSuccess(true);
-    successTimerRef.current = window.setTimeout(() => {
-      onResult(decoded);
-      void closeScanner();
-    }, 950);
-  }, [closeScanner, onResult]);
+  const finishSuccessfulScan = React.useCallback(
+    (decoded: string) => {
+      if (handledRef.current) return;
+      handledRef.current = true;
+      setScanSuccess(true);
+      successTimerRef.current = window.setTimeout(() => {
+        onResult(decoded);
+        void closeScanner();
+      }, 950);
+    },
+    [closeScanner, onResult],
+  );
+
+  const startScanner = React.useCallback(async () => {
+    await stopActiveScanner();
+
+    setCamError(null);
+    setCameraReady(false);
+
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    if (!document.getElementById(regionId)) {
+      setCamError('Scanner failed to initialize. Please try again.');
+      return;
+    }
+
+    const scanner = new Html5Qrcode(regionId);
+    scannerRef.current = scanner;
+
+    const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1 };
+
+    const handleDecoded = (decoded: string) => {
+      if (handledRef.current) return;
+      void stopActiveScanner().finally(() => finishSuccessfulScan(decoded));
+    };
+
+    try {
+      await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
+      setCameraReady(true);
+      return;
+    } catch {}
+
+    try {
+      const cameras = await Html5Qrcode.getCameras();
+      const preferredCamera =
+        cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
+        cameras[0]?.id;
+      if (!preferredCamera) {
+        throw new Error('No camera found');
+      }
+      await scanner.start(preferredCamera, config, handleDecoded, () => {});
+      setCameraReady(true);
+    } catch {
+      setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
+      setCameraReady(false);
+    }
+  }, [finishSuccessfulScan, regionId, stopActiveScanner]);
+
+  React.useEffect(() => {
+    closingRef.current = false;
+    handledRef.current = false;
+
+    void startScanner();
+
+    const historyTimer = window.setTimeout(() => {
+      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
+      historyPushedRef.current = true;
+    }, 0);
+
+    const handlePopState = () => {
+      historyPushedRef.current = false;
+      closingRef.current = true;
+      void stopActiveScanner().catch(() => {}).finally(() => onClose());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.clearTimeout(historyTimer);
+      if (successTimerRef.current) {
+        window.clearTimeout(successTimerRef.current);
+      }
+      window.removeEventListener('popstate', handlePopState);
+      void stopActiveScanner().catch(() => {});
+    };
+  }, [onClose, startScanner, stopActiveScanner]);
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    const scanner = scannerRef.current;
-    if (!file || !scanner) return;
+    if (!file || handledRef.current) return;
 
     setUploadingImage(true);
     setCamError(null);
     setCameraReady(false);
 
     try {
-      try {
-        await scanner.stop();
-      } catch {}
+      await stopActiveScanner();
+
+      if (!document.getElementById(regionId)) {
+        await startScanner();
+        return;
+      }
+
+      const scanner = new Html5Qrcode(regionId);
+      scannerRef.current = scanner;
+
       const decoded = await scanner.scanFile(file, true);
+
       try {
         scanner.clear();
       } catch {}
+      scannerRef.current = null;
+
       finishSuccessfulScan(decoded);
     } catch {
       setCamError('No QR code was found in that image. Try another image or use the live camera.');
-      await restartCameraRef.current();
+      await startScanner();
     } finally {
       setUploadingImage(false);
       event.target.value = '';
     }
   };
+
+  const controlsDisabled = uploadingImage || scanSuccess;
   return (
     <div className="fixed inset-0 z-[80] bg-slate-950">
       <style>{`
@@ -334,11 +363,22 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       <div className="absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/80 to-transparent z-10" />
 
       <header className="absolute top-0 inset-x-0 z-20 flex items-center p-4">
-        <button type="button" onClick={() => { void closeScanner(); }} className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => void closeScanner()}
+          disabled={controlsDisabled}
+          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
+        >
           <ArrowLeft size={20} />
         </button>
         <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">iSCENE 2026 Scan</h2>
-        <button type="button" onClick={() => fileInputRef.current?.click()} className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+          disabled={controlsDisabled}
+          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
+          title="Upload QR image"
+        >
           <ImageUp size={20} />
         </button>
       </header>
@@ -370,13 +410,23 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
 
       <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
         <div className="flex items-center justify-center gap-8">
-          <button type="button" onClick={() => fileInputRef.current?.click()} className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+          <button
+            type="button"
+            onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+            disabled={controlsDisabled}
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+          >
             <ImageUp size={20} />
           </button>
           <div className="flex size-20 items-center justify-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-500/30 ring-4 ring-blue-200/60">
             <QrCode size={30} />
           </div>
-          <button type="button" onClick={() => void restartCameraRef.current()} className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+          <button
+            type="button"
+            onClick={() => void startScanner()}
+            disabled={controlsDisabled}
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+          >
             <RefreshCw size={20} className={!cameraReady && !camError ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -384,14 +434,13 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       </div>
 
       {scanSuccess && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-md">
-          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white/95 p-6 text-center shadow-2xl">
-            <img src="/iscene.png" alt="iSCENE" className="mx-auto mb-4 h-16 w-16 rounded-full object-contain bg-white p-1 shadow-md" />
-            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-              <CheckCircle2 size={30} />
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/80 backdrop-blur-md">
+          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white p-6 text-center shadow-2xl border border-emerald-200">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-4 ring-emerald-200/50">
+              <CheckCircle2 size={36} strokeWidth={2.5} />
             </div>
-            <p className="text-lg font-black text-slate-900">Scan Successful</p>
-            <p className="mt-1 text-sm text-slate-500">QR code verified by iSCENE 2026.</p>
+            <p className="text-xl font-black text-slate-900">Scanned successfully</p>
+            <p className="mt-2 text-sm text-slate-500">Closing camera…</p>
           </div>
         </div>
       )}
@@ -425,6 +474,10 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
   const [claimingFor, setClaimingFor] = React.useState<string | null>(null);
   const [scanModal, setScanModal] = React.useState(false);
 
+  // ── Eligible participants list (who can claim for active meal) ───────────
+  const [eligibleParticipants, setEligibleParticipants] = React.useState<FoundParticipant[]>([]);
+  const [loadingEligible, setLoadingEligible] = React.useState(false);
+
   // ── Modals ─────────────────────────────────────────────────────────────
   const [idModal, setIdModal] = React.useState(false);
 
@@ -437,7 +490,20 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
 
   // ── Derived ────────────────────────────────────────────────────────────
   const now = new Date();
-  const activeMeal = meals.find(isWithinWindow) || null;
+  const activeMeals = meals.filter(isWithinWindow);
+  const [selectedMealId, setSelectedMealId] = React.useState<string | null>(null);
+  const activeMeal = React.useMemo(() => {
+    if (activeMeals.length === 0) return null;
+    if (activeMeals.length === 1) return activeMeals[0];
+    const selected = activeMeals.find((m) => m.id === selectedMealId);
+    return selected || activeMeals[0];
+  }, [activeMeals, selectedMealId]);
+  React.useEffect(() => {
+    if (activeMeals.length > 0 && (!selectedMealId || !activeMeals.some((m) => m.id === selectedMealId))) {
+      setSelectedMealId(activeMeals[0].id);
+    }
+    if (activeMeals.length === 0) setSelectedMealId(null);
+  }, [activeMeals, selectedMealId]);
   const upcomingMeals = meals.filter((m) => !isWithinWindow(m) && parseWindowTime(m.startTime, m.sessionDate) > now);
   const pastMeals = meals.filter((m) => !isWithinWindow(m) && parseWindowTime(m.endTime, m.sessionDate) <= now);
 
@@ -454,9 +520,10 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
     const load = async () => {
       setLoading(true);
       try {
-        // Meals
+        // Meals (only those assigned to this booth, or unassigned = any booth)
         const mealsSnap = await getDocs(query(collection(db, 'meals'), orderBy('createdAt', 'desc')));
-        const mealList: MealWindow[] = mealsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) }));
+        const allMeals: MealWindow[] = mealsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) }));
+        const mealList = allMeals.filter((m) => !m.assignedBoothUid || m.assignedBoothUid === user.uid);
         if (!cancelled) setMeals(mealList);
 
         // Today's claims by this booth
@@ -478,6 +545,58 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
     load();
     return () => { cancelled = true; };
   }, [user.uid]);
+
+  // ── Load eligible participants for active meal ─────────────────────────
+  React.useEffect(() => {
+    if (!activeMeal) {
+      setEligibleParticipants([]);
+      return;
+    }
+    let cancelled = false;
+    const loadEligible = async () => {
+      setLoadingEligible(true);
+      try {
+        const regRef = collection(db, 'registrations');
+        let snap;
+        if (activeMeal.eligibleParticipantIds && activeMeal.eligibleParticipantIds.length > 0) {
+          const ids = activeMeal.eligibleParticipantIds;
+          const results: FoundParticipant[] = [];
+          for (let i = 0; i < ids.length; i += 30) {
+            const chunk = ids.slice(i, i + 30);
+            const refs = chunk.map((id) => doc(db, 'registrations', id));
+            const q = query(regRef, where(documentId(), 'in', refs));
+            const chunkSnap = await getDocs(q);
+            chunkSnap.docs.forEach((d) => {
+              const data = d.data() as any;
+              if (data.uid) results.push({ id: d.id, uid: data.uid, fullName: data.fullName, sector: data.sector, status: data.status, profilePictureUrl: data.profilePictureUrl });
+            });
+          }
+          results.sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
+          if (!cancelled) setEligibleParticipants(results);
+        } else if (activeMeal.eligibleSectors && activeMeal.eligibleSectors.length > 0) {
+          const sectors = activeMeal.eligibleSectors.slice(0, 30);
+          snap = await getDocs(query(regRef, where('sector', 'in', sectors), where('status', '==', 'approved'), limit(150)));
+          const results: FoundParticipant[] = snap.docs.map((d) => {
+            const data = d.data() as any;
+            return { id: d.id, uid: data.uid, fullName: data.fullName, sector: data.sector, status: data.status, profilePictureUrl: data.profilePictureUrl };
+          }).filter((r) => r.uid);
+          results.sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
+          if (!cancelled) setEligibleParticipants(results);
+        } else {
+          snap = await getDocs(query(regRef, where('status', '==', 'approved'), limit(150)));
+          const results: FoundParticipant[] = snap.docs.map((d) => {
+            const data = d.data() as any;
+            return { id: d.id, uid: data.uid, fullName: data.fullName, sector: data.sector, status: data.status, profilePictureUrl: data.profilePictureUrl };
+          }).filter((r) => r.uid);
+          results.sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
+          if (!cancelled) setEligibleParticipants(results);
+        }
+      } catch (err) { console.error(err); setEligibleParticipants([]); }
+      finally { if (!cancelled) setLoadingEligible(false); }
+    };
+    loadEligible();
+    return () => { cancelled = true; };
+  }, [activeMeal?.id]);
 
   // ── Helpers ────────────────────────────────────────────────────────────
   const hasClaimed = (participantUid: string, mealId: string) =>
@@ -513,8 +632,17 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
   const handleScanResult = async (text: string) => {
     setScanModal(false);
     try {
-      const url = new URL(text);
-      const uid = url.searchParams.get('uid');
+      let uid: string | null = null;
+      const trimmed = (text || '').trim();
+      if (!trimmed) { showToast('❌ Empty scan.', false); return; }
+      try {
+        const urlStr = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
+        const url = new URL(urlStr);
+        uid = url.searchParams.get('uid');
+      } catch {
+        const match = trimmed.match(/[?&]uid=([^&\s]+)/);
+        uid = match ? decodeURIComponent(match[1]) : null;
+      }
       if (!uid) { showToast('❌ Invalid QR — no UID found.', false); return; }
       const snap = await getDocs(query(collection(db, 'registrations'), where('uid', '==', uid), limit(1)));
       if (snap.empty) { showToast('❌ No registration found for this QR.', false); return; }
@@ -529,12 +657,38 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
 
   // ── Claim meal ─────────────────────────────────────────────────────────
   const handleClaim = async (participant: FoundParticipant) => {
-    if (!activeMeal) { showToast('❌ No active meal window right now.', false); return; }
+    if (!activeMeal) { showToast('❌ No active entitlement window right now.', false); return; }
     if (participant.status !== 'approved') { showToast('❌ Participant is not approved.', false); return; }
+    const isEligibleByPerson = activeMeal.eligibleParticipantIds && activeMeal.eligibleParticipantIds.length > 0 && activeMeal.eligibleParticipantIds.includes(participant.id);
+    const isEligibleBySector = !activeMeal.eligibleSectors || activeMeal.eligibleSectors.length === 0 || activeMeal.eligibleSectors.includes(participant.sector);
+    const isEligible = isEligibleByPerson || isEligibleBySector;
+    if (!isEligible) {
+      showToast(activeMeal.eligibleParticipantIds?.length ? '❌ Not in the specific persons list.' : `❌ Not eligible. Sectors: ${activeMeal.eligibleSectors?.join(', ')}.`, false);
+      return;
+    }
     if (hasClaimed(participant.uid, activeMeal.id)) { showToast('⚠️ Already claimed for this session.', false); return; }
 
     setClaimingFor(participant.uid);
     try {
+      // Check globally to prevent duplicate claims (e.g. claimed at another booth)
+      const existingSnap = await getDocs(
+        query(
+          collection(db, 'foodClaims'),
+          where('participantUid', '==', participant.uid),
+          where('mealId', '==', activeMeal.id)
+        )
+      );
+      if (!existingSnap.empty) {
+        const existing = existingSnap.docs[0].data();
+        setAllClaims((prev) => {
+          if (prev.some((c) => c.participantUid === participant.uid && c.mealId === activeMeal.id)) return prev;
+          return [{ id: existingSnap.docs[0].id, ...existing } as FoodClaim, ...prev];
+        });
+        showToast('⚠️ Already received — cannot claim again for this entitlement.', false);
+        setClaimingFor(null);
+        return;
+      }
+
       const newClaim: Omit<FoodClaim, 'id'> = {
         participantUid: participant.uid,
         participantName: participant.fullName,
@@ -542,6 +696,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         sector: participant.sector,
         mealId: activeMeal.id,
         mealType: activeMeal.type,
+        mealName: activeMeal.name,
         sessionDate: activeMeal.sessionDate,
         claimedAt: Timestamp.now(),
         claimedBy: user.uid,
@@ -550,7 +705,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
       const claim: FoodClaim = { id: docRef.id, ...newClaim };
       setAllClaims((prev) => [claim, ...prev]);
       setTodayClaims((prev) => [claim, ...prev]);
-      showToast(`✅ ${participant.fullName} — ${MEAL_LABELS[activeMeal.type] || activeMeal.type} claimed!`);
+      showToast(`✅ ${participant.fullName} — ${activeMeal.name || MEAL_LABELS[activeMeal.type] || activeMeal.type} claimed!`);
     } catch (err) { console.error(err); showToast('❌ Failed to record claim. Try again.', false); }
     finally { setClaimingFor(null); }
   };
@@ -597,29 +752,17 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
           <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${tier.cls}`}>{tier.label}</span>
         </td>
         <td className="px-6 py-4 text-center">
-          {!isApproved
-            ? <Ban size={18} className="text-slate-200 mx-auto" />
-            : activeMeal?.type === 'breakfast' || activeMeal?.type === 'snacks'
-              ? (claimed ? <CheckCircle2 size={18} className="text-emerald-500 mx-auto" /> : <div className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-4 ring-amber-400/20 animate-pulse mx-auto" />)
-              : <CheckCircle2 size={18} className="text-emerald-500 mx-auto" />}
-        </td>
-        <td className="px-6 py-4 text-center">
-          {!isApproved
-            ? <Ban size={18} className="text-slate-200 mx-auto" />
-            : activeMeal?.type === 'lunch'
-              ? claimed
-                ? <div className="flex items-center justify-center gap-1 text-[10px] font-bold text-slate-400"><CheckCircle2 size={13} />{claimedTime}</div>
-                : <div className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-4 ring-amber-400/20 animate-pulse mx-auto" />
-              : <Circle size={18} className="text-slate-200 mx-auto" />}
-        </td>
-        <td className="px-6 py-4 text-center">
-          {!isApproved
-            ? <Ban size={18} className="text-slate-200 mx-auto" />
-            : activeMeal?.type === 'dinner'
-              ? claimed
-                ? <CheckCircle2 size={18} className="text-emerald-500 mx-auto" />
-                : <div className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-4 ring-amber-400/20 animate-pulse mx-auto" />
-              : <Circle size={18} className="text-slate-200 mx-auto" />}
+          {!isApproved ? (
+            <span className="text-xs font-medium text-slate-400">Not Approved</span>
+          ) : claimed ? (
+            <div className="flex items-center justify-center gap-1 text-[10px] font-bold text-emerald-600">
+              <CheckCircle2 size={14} /> Claimed {claimedTime ? `(${claimedTime})` : ''}
+            </div>
+          ) : active ? (
+            <div className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-4 ring-amber-400/20 animate-pulse mx-auto" />
+          ) : (
+            <span className="text-xs font-medium text-slate-400">—</span>
+          )}
         </td>
         <td className="px-6 py-4 text-right">
           {!isApproved ? (
@@ -634,7 +777,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
               onClick={() => handleClaim(p)}
               className="px-4 py-1.5 rounded-full text-xs font-bold bg-blue-600 text-white hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-60 flex items-center gap-1 ml-auto">
               {claimingFor === p.uid ? <Loader2 size={12} className="animate-spin" /> : null}
-              Claim {MEAL_LABELS[activeMeal!.type] || activeMeal!.type}
+              Claim {activeMeal!.name || MEAL_LABELS[activeMeal!.type] || activeMeal!.type}
             </button>
           )}
         </td>
@@ -668,7 +811,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
             {([
               { id: 'dashboard' as Tab, label: 'Dashboard' },
               { id: 'participants' as Tab, label: 'Participants' },
-              { id: 'sessions' as Tab, label: 'Meal Sessions' },
+              { id: 'sessions' as Tab, label: 'Sessions' },
               { id: 'reports' as Tab, label: 'Reports' },
             ]).map(({ id, label }) => (
               <button key={id} type="button" onClick={() => setActiveTab(id)}
@@ -710,14 +853,17 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         {searchResults.length > 0 && (activeTab === 'dashboard' || activeTab === 'participants') && (
           <div className="mb-6 bg-white rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
-              <p className="text-sm font-bold text-slate-700">
-                Search Results — {activeMeal ? `Active: ${MEAL_LABELS[activeMeal.type] || activeMeal.type}` : 'No Active Meal Window'}
-              </p>
+              <div>
+                <p className="text-sm font-bold text-slate-700">
+                  Search Results — {activeMeal ? `Active: ${activeMeal.name || MEAL_LABELS[activeMeal.type] || activeMeal.type}` : 'No Active Entitlement'}
+                </p>
+                {activeMeal && <p className="text-xs text-slate-500 mt-0.5">Who can claim: {formatEligibility(activeMeal)}</p>}
+              </div>
               <button type="button" onClick={() => { setSearchResults([]); setSearchQuery(''); }} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
             </div>
             {!activeMeal && (
               <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 flex items-center gap-2 text-sm text-amber-700">
-                <AlertCircle size={16} /> No active meal window. Claims can only be made during a live session.
+                <AlertCircle size={16} /> No active entitlement. Claims can only be made during a live session.
               </div>
             )}
             <table className="w-full text-left">
@@ -725,9 +871,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 <tr>
                   <th className="px-6 py-3">Participant</th>
                   <th className="px-6 py-3">Sector</th>
-                  <th className="px-6 py-3 text-center">Snacks</th>
-                  <th className="px-6 py-3 text-center">Lunch</th>
-                  <th className="px-6 py-3 text-center">Dinner</th>
+                  <th className="px-6 py-3 text-center">Status</th>
                   <th className="px-6 py-3 text-right">Action</th>
                 </tr>
               </thead>
@@ -751,8 +895,25 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 </div>
                 {activeMeal ? (
                   <>
-                    <p className="text-2xl font-black">{MEAL_LABELS[activeMeal.type] || activeMeal.type}</p>
+                    {activeMeals.length > 1 ? (
+                      <select
+                        value={activeMeal.id}
+                        onChange={(e) => setSelectedMealId(e.target.value)}
+                        className="text-lg font-bold text-slate-900 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 w-full focus:ring-2 focus:ring-blue-500 outline-none"
+                      >
+                        {activeMeals.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name || MEAL_LABELS[m.type] || m.type} ({m.startTime} – {m.endTime})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="text-2xl font-black">{activeMeal.name || MEAL_LABELS[activeMeal.type] || activeMeal.type}</p>
+                    )}
                     <p className="text-xs text-slate-400">{timeUntilEnd(activeMeal)} · {activeMeal.startTime} – {activeMeal.endTime}</p>
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      <span className="font-medium">Who can claim:</span> {formatEligibility(activeMeal)}
+                    </p>
                   </>
                 ) : (
                   <>
@@ -800,8 +961,8 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
             {meals.length > 0 && (
               <div className="mb-8 overflow-x-auto pb-4">
                 <div className="flex items-start gap-4 min-w-[600px]">
-                  {[...pastMeals, ...(activeMeal ? [activeMeal] : []), ...upcomingMeals].map((meal) => {
-                    const isActive = activeMeal?.id === meal.id;
+                  {[...pastMeals, ...activeMeals, ...upcomingMeals].map((meal) => {
+                    const isActive = activeMeals.some((m) => m.id === meal.id);
                     const isPast = !isActive && parseWindowTime(meal.endTime, meal.sessionDate) <= now;
                     return (
                       <div key={meal.id} className={`flex-1 flex flex-col gap-2 ${isPast ? 'opacity-50' : ''}`}>
@@ -816,6 +977,102 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* People who can claim — list with status */}
+            {activeMeal && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-md overflow-hidden mb-8">
+                <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-base font-black">People Who Can Claim</h3>
+                    <p className="text-sm text-slate-400 mt-0.5">
+                      {activeMeal.name || MEAL_LABELS[activeMeal.type] || activeMeal.type} — {formatEligibility(activeMeal)}
+                    </p>
+                  </div>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {loadingEligible ? (
+                    <div className="py-12 flex items-center justify-center">
+                      <Loader2 className="animate-spin text-blue-600" size={28} />
+                    </div>
+                  ) : eligibleParticipants.length === 0 ? (
+                    <div className="py-12 text-center text-slate-400">
+                      <User size={32} className="mx-auto mb-2 text-slate-200" />
+                      <p className="text-sm font-medium">No eligible participants found</p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider font-bold sticky top-0">
+                        <tr>
+                          <th className="px-6 py-3">Participant</th>
+                          <th className="px-6 py-3">Sector</th>
+                          <th className="px-6 py-3 text-center">Status</th>
+                          <th className="px-6 py-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {eligibleParticipants.map((p) => {
+                          const claimed = hasClaimed(p.uid, activeMeal.id);
+                          const isApproved = p.status === 'approved';
+                          return (
+                            <tr key={p.uid} className="hover:bg-slate-50/50 transition-colors">
+                              <td className="px-6 py-3">
+                                <div className="flex items-center gap-3">
+                                  {p.profilePictureUrl ? (
+                                    <img src={p.profilePictureUrl} alt={p.fullName} className="w-9 h-9 rounded-full object-cover" />
+                                  ) : (
+                                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p.fullName)}`}>{initials(p.fullName)}</div>
+                                  )}
+                                  <div>
+                                    <p className="font-bold text-sm">{p.fullName}</p>
+                                    <p className="text-[11px] text-slate-400">ISC-26-{p.id.slice(0, 4).toUpperCase()}</p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-6 py-3">
+                                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${sectorTier(p.sector).cls}`}>{sectorTier(p.sector).label}</span>
+                              </td>
+                              <td className="px-6 py-3 text-center">
+                                {!isApproved ? (
+                                  <span className="text-xs font-medium text-amber-600">Not Approved</span>
+                                ) : claimed ? (
+                                  <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600">
+                                    <CheckCircle2 size={14} /> Claimed
+                                  </span>
+                                ) : (
+                                  <span className="text-xs font-medium text-slate-500">Not yet</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-3 text-right">
+                                {!isApproved ? (
+                                  <span className="text-xs text-slate-400">—</span>
+                                ) : claimed ? (
+                                  <button disabled className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-400 cursor-not-allowed">Claimed ✓</button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={claimingFor === p.uid}
+                                    onClick={() => handleClaim(p)}
+                                    className="px-3 py-1 rounded-full text-xs font-bold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60 flex items-center gap-1 ml-auto"
+                                  >
+                                    {claimingFor === p.uid ? <Loader2 size={10} className="animate-spin" /> : null}
+                                    Claim
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                {eligibleParticipants.length > 0 && (
+                  <div className="px-5 py-2 bg-slate-50 border-t border-slate-100 text-xs text-slate-500">
+                    {eligibleParticipants.filter((p) => p.status === 'approved' && hasClaimed(p.uid, activeMeal.id)).length} of {eligibleParticipants.filter((p) => p.status === 'approved').length} approved claimed
+                  </div>
+                )}
               </div>
             )}
 
@@ -852,18 +1109,32 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                             <tr>
                               <th className="px-6 py-3">Participant</th>
                               <th className="px-6 py-3">Sector</th>
-                              <th className="px-6 py-3 text-center">Snacks</th>
-                              <th className="px-6 py-3 text-center">Lunch</th>
-                              <th className="px-6 py-3 text-center">Dinner</th>
-                              <th className="px-6 py-3 text-right">Action</th>
+                              <th className="px-6 py-3">Item</th>
+                              <th className="px-6 py-3 text-right">Time</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {todayClaims.slice(0, 6).map((c) => (
-                              <React.Fragment key={c.participantUid + c.mealId}>
-                                {ParticipantRow({ p: { id: c.participantRegId, uid: c.participantUid, fullName: c.participantName, sector: c.sector, status: 'approved' } })}
-                              </React.Fragment>
-                            ))}
+                            {todayClaims.slice(0, 6).map((c) => {
+                              const time = c.claimedAt?.toDate ? c.claimedAt.toDate().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }) : '—';
+                              return (
+                                <tr key={c.id} className="hover:bg-slate-50 transition-colors">
+                                  <td className="px-6 py-3">
+                                    <div className="flex items-center gap-3">
+                                      <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(c.participantName)}`}>{initials(c.participantName)}</div>
+                                      <div>
+                                        <p className="font-bold text-sm">{c.participantName}</p>
+                                        <p className="text-[11px] text-slate-400">ISC-26-{c.participantRegId?.slice(0, 4) || '—'}</p>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-3">
+                                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${sectorTier(c.sector).cls}`}>{sectorTier(c.sector).label}</span>
+                                  </td>
+                                  <td className="px-6 py-3">{c.mealName || MEAL_LABELS[c.mealType] || c.mealType}</td>
+                                  <td className="px-6 py-3 text-right text-sm font-medium">{time}</td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -904,13 +1175,31 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 </button>
               </div>
               {activeMeal ? (
-                <div className="mt-4 flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 rounded-xl px-4 py-2.5">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Active: <strong>{MEAL_LABELS[activeMeal.type] || activeMeal.type}</strong> · {activeMeal.startTime} – {activeMeal.endTime} · {timeUntilEnd(activeMeal)}
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  {activeMeals.length > 1 ? (
+                    <select
+                      value={activeMeal.id}
+                      onChange={(e) => setSelectedMealId(e.target.value)}
+                      className="text-sm font-semibold text-slate-800 bg-white border border-emerald-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                    >
+                      {activeMeals.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name || MEAL_LABELS[m.type] || m.type} ({m.startTime} – {m.endTime})
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 rounded-xl px-4 py-2.5">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      Active: <strong>{activeMeal.name || MEAL_LABELS[activeMeal.type] || activeMeal.type}</strong> · {activeMeal.startTime} – {activeMeal.endTime} · {timeUntilEnd(activeMeal)}
+                    </div>
+                    <p className="text-xs text-slate-600"><span className="font-medium">Who can claim:</span> {formatEligibility(activeMeal)}</p>
+                  </div>
                 </div>
               ) : (
                 <div className="mt-4 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 rounded-xl px-4 py-2.5">
-                  <AlertCircle size={16} /> No active meal window. Claims can only be made during a live session.
+                  <AlertCircle size={16} /> No active entitlement. Claims can only be made during a live session.
                 </div>
               )}
             </div>
@@ -924,9 +1213,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                     <tr>
                       <th className="px-6 py-3">Participant</th>
                       <th className="px-6 py-3">Sector</th>
-                      <th className="px-6 py-3 text-center">Snacks</th>
-                      <th className="px-6 py-3 text-center">Lunch</th>
-                      <th className="px-6 py-3 text-center">Dinner</th>
+                      <th className="px-6 py-3 text-center">Status</th>
                       <th className="px-6 py-3 text-right">Action</th>
                     </tr>
                   </thead>
@@ -949,18 +1236,18 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         {activeTab === 'sessions' && (
           <div>
             <div className="mb-6">
-              <h2 className="text-2xl font-black">Meal Sessions</h2>
-              <p className="text-slate-500 text-sm mt-1">All scheduled meal windows for the event</p>
+              <h2 className="text-2xl font-black">Entitlement Sessions</h2>
+              <p className="text-slate-500 text-sm mt-1">Items assigned to your booth — claim windows</p>
             </div>
             {meals.length === 0 ? (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm py-16 text-center text-slate-400">
                 <CalendarDays size={40} className="mx-auto mb-3 text-slate-200" />
-                <p className="font-medium">No meal sessions scheduled yet</p>
+                <p className="font-medium">No entitlements assigned to your booth yet</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {[...pastMeals, ...(activeMeal ? [activeMeal] : []), ...upcomingMeals].map((meal) => {
-                  const isActive = activeMeal?.id === meal.id;
+                {[...pastMeals, ...activeMeals, ...upcomingMeals].map((meal) => {
+                  const isActive = activeMeals.some((m) => m.id === meal.id);
                   const isPast = !isActive && parseWindowTime(meal.endTime, meal.sessionDate) <= now;
                   const claimCount = allClaims.filter((c) => c.mealId === meal.id).length;
                   return (
@@ -970,13 +1257,15 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-black">{MEAL_LABELS[meal.type] || meal.type}</p>
+                          <p className="font-black">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
                           {isActive && <span className="text-[10px] font-black bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase animate-pulse">LIVE</span>}
                           {isPast && <span className="text-[10px] font-bold bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full uppercase">Ended</span>}
                         </div>
                         <p className="text-xs text-slate-400 mt-0.5">
                           {meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH', { weekday: 'short', month: 'long', day: 'numeric' }) : '—'} · {meal.startTime} – {meal.endTime}
+                          {meal.location && <span className="ml-1">· 📍 {meal.location}</span>}
                         </p>
+                        <p className="text-[11px] text-slate-500 mt-1"><span className="font-medium">Who can claim:</span> {formatEligibility(meal)}</p>
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-xl font-black text-blue-600">{claimCount}</p>
@@ -1045,7 +1334,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                               <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${sectorTier(c.sector).cls}`}>{sectorTier(c.sector).label}</span>
                             </td>
                             <td className="px-6 py-4">
-                              <span className="text-sm font-semibold text-slate-700">{MEAL_LABELS[c.mealType] || c.mealType}</span>
+                              <span className="text-sm font-semibold text-slate-700">{c.mealName || MEAL_LABELS[c.mealType] || c.mealType}</span>
                             </td>
                             <td className="px-6 py-4 text-sm text-slate-500">{date.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</td>
                             <td className="px-6 py-4 text-sm text-slate-500">{date.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</td>
