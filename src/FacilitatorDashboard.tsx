@@ -580,7 +580,8 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   // ── QR Scan result handler ─────────────────────────────────────────────
   const handleScanResult = async (text: string) => {
     if (!scanMode) return;
-    setScanLoading(true);
+    // Delay showing loading spinner so the QrScanModal's 1500ms success animation can finish
+    const startLoading = setTimeout(() => setScanLoading(true), 1600);
     try {
       const trimmed = (text || '').trim();
       let uid: string | null = null;
@@ -637,6 +638,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       console.error(err);
       showToast('❌ Failed to process QR. Try again.', false);
     } finally {
+      clearTimeout(startLoading);
       setScanLoading(false);
       setTimeout(() => setScanMode(null), 2000);
     }
@@ -1318,7 +1320,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       )}
 
       {/* ═══════════════ QR SCANNER ═══════════════ */}
-      {scanMode && !scanLoading && (
+      {scanMode && (
         <QrScanModal
           title={scanMode.type === 'entrance' ? 'Scan Entrance QR' : `Scan for: ${scanMode.room.name}`}
           subtitle={scanMode.type === 'entrance' ? 'Scan participant digital ID to record main entrance check-in' : `Verify reservation and mark attendance for this room`}
