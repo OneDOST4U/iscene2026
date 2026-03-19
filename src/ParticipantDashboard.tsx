@@ -30,6 +30,7 @@ import {
   ChevronDown,
   ArrowLeft,
   ImageUp,
+  Camera,
   RefreshCw,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
@@ -150,6 +151,7 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
   const [scanSuccess, setScanSuccess] = React.useState(false);
 
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const captureInputRef = React.useRef<HTMLInputElement | null>(null);
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
   const closingRef = React.useRef(false);
   const handledRef = React.useRef(false);
@@ -197,7 +199,7 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       successTimerRef.current = window.setTimeout(() => {
         onResult(decoded);
         void closeScanner();
-      }, 950);
+      }, 1500);
     },
     [closeScanner, onResult],
   );
@@ -219,9 +221,11 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     scannerRef.current = scanner;
 
     const config = {
-      fps: 10,
-      qrbox: { width: 250, height: 250 },
-      aspectRatio: 1,
+      fps: 15,
+      qrbox: (w: number, h: number) => {
+        const side = Math.round(Math.min(w, h) * 0.75);
+        return { width: side, height: side };
+      },
     };
 
     const handleDecoded = (decoded: string) => {
@@ -293,10 +297,13 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     try {
       await stopActiveScanner();
 
-      if (!document.getElementById(regionId)) {
+      const scanEl = document.getElementById(regionId);
+      if (!scanEl) {
         await startScanner();
         return;
       }
+      // Clear any leftover HTML from the previous scanner instance
+      scanEl.innerHTML = '';
 
       const scanner = new Html5Qrcode(regionId);
       scannerRef.current = scanner;
@@ -339,7 +346,9 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
           object-fit: cover !important;
         }
         #${regionId} canvas {
-          display: none !important;
+          opacity: 0 !important;
+          position: absolute !important;
+          pointer-events: none !important;
         }
         #${regionId}__dashboard_section,
         #${regionId}__dashboard_section_csr,
@@ -352,6 +361,14 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
         ref={fileInputRef}
         type="file"
         accept="image/*"
+        onChange={handleImageUpload}
+        className="hidden"
+      />
+      <input
+        ref={captureInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
         onChange={handleImageUpload}
         className="hidden"
       />
@@ -407,14 +424,30 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       </main>
 
       <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
-        <div className="flex items-center justify-center gap-8">
+        <div className="flex items-center justify-center gap-3">
           <button
             type="button"
             onClick={() => !controlsDisabled && fileInputRef.current?.click()}
             disabled={controlsDisabled}
-            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+            title="Upload from Gallery"
+            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
           >
-            <ImageUp size={20} />
+            <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+              <ImageUp size={18} />
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500">Gallery</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => !controlsDisabled && captureInputRef.current?.click()}
+            disabled={controlsDisabled}
+            title="Take Photo"
+            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+              <Camera size={18} />
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500">Take Photo</span>
           </button>
           <div className="flex size-20 items-center justify-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-500/30 ring-4 ring-blue-200/60">
             <QrCode size={30} />
@@ -423,12 +456,16 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
             type="button"
             onClick={() => void startScanner()}
             disabled={controlsDisabled}
-            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+            title="Restart Camera"
+            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
           >
-            <RefreshCw size={20} className={!cameraReady && !camError ? 'animate-spin' : ''} />
+            <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+              <RefreshCw size={18} className={!cameraReady && !camError ? 'animate-spin' : ''} />
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500">Restart</span>
           </button>
         </div>
-        <p className="mt-3 text-center text-xs font-medium text-slate-500">Live camera and image upload are both supported.</p>
+        <p className="mt-3 text-center text-xs font-medium text-slate-500">Scan live · Upload from gallery · Take a photo</p>
       </div>
 
       {scanSuccess && (
