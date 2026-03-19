@@ -205,13 +205,29 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     const scanner = new Html5Qrcode(regionId);
     scannerRef.current = scanner;
 
-    const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1 };
+    const config = {
+      fps: 20,
+      qrbox: (w: number, h: number) => {
+        const side = Math.round(Math.min(w, h) * 0.85);
+        return { width: side, height: side };
+      },
+      aspectRatio: 1,
+      useBarCodeDetectorIfSupported: false,
+    } as const;
 
     const handleDecoded = (decoded: string) => {
       if (handledRef.current) return;
       void stopActiveScanner().finally(() => finishSuccessfulScan(decoded));
     };
 
+    // Try user (front) camera first - better for laptop webcam
+    try {
+      await scanner.start({ facingMode: 'user' }, config, handleDecoded, () => {});
+      setCameraReady(true);
+      return;
+    } catch {}
+
+    // Fallback: environment (back camera) for phones
     try {
       await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
       setCameraReady(true);
@@ -319,6 +335,9 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
           height: 100% !important;
           object-fit: cover !important;
         }
+        #${regionId} video {
+          filter: brightness(1.2) contrast(1.15) saturate(1.05);
+        }
         #${regionId} canvas {
           display: none !important;
         }
@@ -343,15 +362,6 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
           <ArrowLeft size={20} />
         </button>
         <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">iSCENE 2026 Scan</h2>
-        <button
-          type="button"
-          onClick={() => !controlsDisabled && fileInputRef.current?.click()}
-          disabled={controlsDisabled}
-          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
-          title="Upload QR image"
-        >
-          <ImageUp size={20} />
-        </button>
       </header>
 
       <main className="relative z-20 flex h-full flex-col items-center justify-center px-6 pb-28 pt-24">
@@ -380,12 +390,12 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       </main>
 
       <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
-        <div className="flex items-center justify-center gap-8">
+        <div className="grid grid-cols-3 items-center justify-items-center gap-4 max-w-sm mx-auto">
           <button
             type="button"
             onClick={() => !controlsDisabled && fileInputRef.current?.click()}
             disabled={controlsDisabled}
-            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none justify-self-end"
           >
             <ImageUp size={20} />
           </button>
@@ -396,7 +406,7 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
             type="button"
             onClick={() => void startScanner()}
             disabled={controlsDisabled}
-            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none"
+            className="flex size-12 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50 disabled:pointer-events-none justify-self-start"
           >
             <RefreshCw size={20} className={!cameraReady && !camError ? 'animate-spin' : ''} />
           </button>

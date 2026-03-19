@@ -227,24 +227,34 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
     scannerRef.current = scanner;
 
     const config = {
-      fps: 15,
+      fps: 20,
       qrbox: (w: number, h: number) => {
-        const side = Math.round(Math.min(w, h) * 0.75);
+        const side = Math.round(Math.min(w, h) * 0.85);
         return { width: side, height: side };
       },
-    };
+      useBarCodeDetectorIfSupported: false,
+    } as const;
 
     const handleDecoded = (decoded: string) => {
       if (handledRef.current) return;
       void stopActiveScanner().finally(() => finishSuccessfulScan(decoded));
     };
 
+    // Try user (front) camera first - better for laptop webcam
+    try {
+      await scanner.start({ facingMode: 'user' }, config, handleDecoded, () => {});
+      setCameraReady(true);
+      return;
+    } catch {}
+
+    // Fallback: environment (back camera) for phones
     try {
       await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
       setCameraReady(true);
       return;
     } catch {}
 
+    // Last: first available camera
     try {
       const cameras = await Html5Qrcode.getCameras();
       const preferredCamera =
@@ -351,6 +361,9 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
           height: 100% !important;
           object-fit: cover !important;
         }
+        #${regionId} video {
+          filter: brightness(1.2) contrast(1.15) saturate(1.05);
+        }
         #${regionId} canvas {
           opacity: 0 !important;
           position: absolute !important;
@@ -393,15 +406,6 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
           <ArrowLeft size={20} />
         </button>
         <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">iSCENE 2026 Scan</h2>
-        <button
-          type="button"
-          onClick={() => !controlsDisabled && fileInputRef.current?.click()}
-          disabled={controlsDisabled}
-          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
-          title="Upload QR image"
-        >
-          <ImageUp size={20} />
-        </button>
       </header>
 
       <main className="relative z-20 flex h-full flex-col items-center justify-center px-6 pb-28 pt-24">
@@ -430,31 +434,33 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
       </main>
 
       <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
-        <div className="flex items-center justify-center gap-3">
-          <button
-            type="button"
-            onClick={() => !controlsDisabled && fileInputRef.current?.click()}
-            disabled={controlsDisabled}
-            title="Upload from Gallery"
-            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
-              <ImageUp size={18} />
-            </span>
-            <span className="text-[10px] font-semibold text-slate-500">Gallery</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => !controlsDisabled && captureInputRef.current?.click()}
-            disabled={controlsDisabled}
-            title="Take Photo"
-            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
-              <Camera size={18} />
-            </span>
-            <span className="text-[10px] font-semibold text-slate-500">Take Photo</span>
-          </button>
+        <div className="grid grid-cols-3 items-center justify-items-center gap-4 max-w-sm mx-auto">
+          <div className="flex items-center gap-3 justify-self-end">
+            <button
+              type="button"
+              onClick={() => !controlsDisabled && fileInputRef.current?.click()}
+              disabled={controlsDisabled}
+              title="Upload from Gallery"
+              className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+                <ImageUp size={18} />
+              </span>
+              <span className="text-[10px] font-semibold text-slate-500">Gallery</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => !controlsDisabled && captureInputRef.current?.click()}
+              disabled={controlsDisabled}
+              title="Take Photo"
+              className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
+                <Camera size={18} />
+              </span>
+              <span className="text-[10px] font-semibold text-slate-500">Take Photo</span>
+            </button>
+          </div>
           <div className="flex size-20 items-center justify-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-500/30 ring-4 ring-blue-200/60">
             <QrCode size={30} />
           </div>
@@ -463,7 +469,7 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
             onClick={() => void startScanner()}
             disabled={controlsDisabled}
             title="Restart Camera"
-            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
+            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none justify-self-start"
           >
             <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
               <RefreshCw size={18} className={!cameraReady && !camError ? 'animate-spin' : ''} />
