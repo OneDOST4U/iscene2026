@@ -1331,7 +1331,31 @@ export function AdminDashboard({
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
                     <QrCode size={18} className="text-blue-600" />
-                    QR Preview
+                    Main Entrance QR
+                  </h4>
+                  <div className="mb-6 flex flex-col items-center gap-3 rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+                    <p className="text-sm font-semibold text-slate-700">Place this QR at the main entrance for self check-in</p>
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <img
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent('https://www.iscene.app/scan?type=entrance')}`}
+                        alt="Main entrance QR"
+                        className="h-44 w-44"
+                      />
+                    </div>
+                    <a
+                      href={`https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent('https://www.iscene.app/scan?type=entrance')}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                    >
+                      <Download size={14} />
+                      Download Main Entrance QR
+                    </a>
+                  </div>
+
+                  <h4 className="mb-4 mt-6 flex items-center gap-2 text-lg font-black">
+                    <QrCode size={18} className="text-blue-600" />
+                    Room QR Preview
                   </h4>
                   {selectedQrRoom ? (
                     <div className="flex h-full flex-col items-center justify-center gap-4 text-center">

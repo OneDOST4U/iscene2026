@@ -503,20 +503,43 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     return () => { cancelled = true; };
   }, [fullName, user.uid]);
 
+  // ── Parse QR content (robust: handles URL, query string, or plain text) ───
+  const parseQrContent = (raw: string): string | null => {
+    const trimmed = (raw || '').trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (lower === 'entrance' || lower === 'main' || lower === 'mainentrance' || lower.includes('main entrance')) return 'entrance';
+    try {
+      const urlStr = trimmed.startsWith('http') ? trimmed : `https://iscene.app/scan${trimmed.startsWith('?') ? trimmed : '?' + trimmed}`;
+      const url = new URL(urlStr);
+      return url.searchParams.get('type') || url.searchParams.get('Type') || null;
+    } catch {}
+    const m = trimmed.match(/[?&]type=([^&\s#]+)/i);
+    return m ? m[1].trim() : null;
+  };
+
   // ── Handlers ──────────────────────────────────────────────────────────
   const handleScanResult = async (text: string) => {
     setScanModal(false);
     try {
-      const url = new URL(text);
-      const type = url.searchParams.get('type');
+      const type = parseQrContent(text);
       if (type === 'entrance') {
-        await setDoc(doc(db, 'attendance', `${user.uid}_entrance`), {
-          uid: user.uid, name: fullName, type: 'entrance', scannedAt: Timestamp.now(),
+        const docRef = doc(db, 'attendance', `${user.uid}_entrance`);
+        await setDoc(docRef, {
+          uid: user.uid,
+          name: fullName,
+          type: 'entrance',
+          scannedAt: Timestamp.now(),
         });
         setHasEntryAttendance(true);
         setScanToast('✅ Entrance check-in successful!');
-      } else { setScanToast('❌ Invalid QR code.'); }
-    } catch { setScanToast('❌ Invalid QR code.'); }
+      } else {
+        setScanToast('❌ Unrecognized QR. Use main entrance QR.');
+      }
+    } catch (err) {
+      console.error('Scan error:', err);
+      setScanToast('❌ Could not process scan. Try again.');
+    }
     setTimeout(() => setScanToast(null), 4000);
   };
 
