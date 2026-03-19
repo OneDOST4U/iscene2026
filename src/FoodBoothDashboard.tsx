@@ -210,14 +210,20 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
   }, [onClose, stopActiveScanner]);
 
   const finishSuccessfulScan = React.useCallback(
-    (decoded: string) => {
+    async (decoded: string) => {
       if (handledRef.current) return;
       handledRef.current = true;
       setScanSuccess(true);
-      successTimerRef.current = window.setTimeout(() => {
-        onResult(decoded);
-        void closeScanner();
-      }, 1500);
+      // Wait for success animation and ensure handler starts
+      await new Promise((resolve) => {
+        successTimerRef.current = window.setTimeout(resolve, 1500);
+      });
+      try {
+        await onResult(decoded);
+      } catch (err) {
+        console.error('onResult error:', err);
+      }
+      void closeScanner();
     },
     [closeScanner, onResult],
   );
@@ -682,7 +688,6 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
       setSearchQuery(data.fullName);
       setActiveTab('dashboard');
     } catch { showToast('❌ Invalid QR code.', false); }
-    finally { setTimeout(() => setScanModal(false), 2000); }
   };
 
   // ── Claim meal ─────────────────────────────────────────────────────────

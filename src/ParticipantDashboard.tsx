@@ -192,14 +192,20 @@ function QrScanModal({ onClose, onResult }: { onClose: () => void; onResult: (te
   }, [onClose, stopActiveScanner]);
 
   const finishSuccessfulScan = React.useCallback(
-    (decoded: string) => {
+    async (decoded: string) => {
       if (handledRef.current) return;
       handledRef.current = true;
       setScanSuccess(true);
-      successTimerRef.current = window.setTimeout(() => {
-        onResult(decoded);
-        void closeScanner();
-      }, 1500);
+      // Wait for success animation and ensure Firestore operation starts
+      await new Promise((resolve) => {
+        successTimerRef.current = window.setTimeout(resolve, 1500);
+      });
+      try {
+        await onResult(decoded);
+      } catch (err) {
+        console.error('onResult error:', err);
+      }
+      void closeScanner();
     },
     [closeScanner, onResult],
   );
@@ -674,7 +680,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           name: fullName,
           type: 'entrance',
           scannedAt: Timestamp.now(),
-        });
+        }, { merge: true });
         setHasEntryAttendance(true);
         setScanToast('✅ Entrance check-in successful!');
       } else if (type === 'room' && id) {
@@ -686,7 +692,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           await updateDoc(resDocRef, { attended: true, attendedAt: Timestamp.now() });
           setReservations((prev) => ({ ...prev, [id]: { ...prev[id], attended: true } }));
         } else {
-          await setDoc(resDocRef, { uid: user.uid, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now(), attendedAt: Timestamp.now() });
+          await setDoc(resDocRef, { uid: user.uid, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now(), attendedAt: Timestamp.now() }, { merge: true });
           setReservations((prev) => ({ ...prev, [id]: { id: resId, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now() } }));
         }
         setScanToast('✅ Room check-in recorded!');
