@@ -638,7 +638,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       showToast('❌ Failed to process QR. Try again.', false);
     } finally {
       setScanLoading(false);
-      setScanMode(null);
+      setTimeout(() => setScanMode(null), 2000);
     }
   };
 

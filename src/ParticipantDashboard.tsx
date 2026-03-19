@@ -664,7 +664,6 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleScanResult = async (text: string) => {
-    setScanModal(false);
     try {
       const { type, id } = parseQrContent(text);
 

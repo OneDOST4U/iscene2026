@@ -660,7 +660,6 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
 
   // ── QR scan result ─────────────────────────────────────────────────────
   const handleScanResult = async (text: string) => {
-    setScanModal(false);
     try {
       let uid: string | null = null;
       const trimmed = (text || '').trim();
@@ -683,6 +682,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
       setSearchQuery(data.fullName);
       setActiveTab('dashboard');
     } catch { showToast('❌ Invalid QR code.', false); }
+    finally { setTimeout(() => setScanModal(false), 2000); }
   };
 
   // ── Claim meal ─────────────────────────────────────────────────────────
