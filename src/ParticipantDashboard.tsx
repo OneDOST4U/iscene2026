@@ -304,7 +304,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
     // Try full URL or URL-like string
     try {
-      const urlStr = trimmed.startsWith('http') ? trimmed : `https://iscene.app/scan${trimmed.startsWith('?') ? trimmed : '?' + trimmed}`;
+      let urlStr = trimmed;
+      if (!trimmed.startsWith('http')) {
+        urlStr = trimmed.startsWith('?') ? `https://iscene.app/scan${trimmed}` : `https://iscene.app/scan?${trimmed}`;
+      }
       const url = new URL(urlStr);
       const type = url.searchParams.get('type') || url.searchParams.get('Type');
       const id = url.searchParams.get('id') || url.searchParams.get('roomId');

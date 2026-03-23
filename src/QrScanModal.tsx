@@ -1,8 +1,6 @@
 import React from 'react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import QrScanner from 'qr-scanner';
 import { ArrowLeft, Camera, CheckCircle2, ImageUp, QrCode, RefreshCw } from 'lucide-react';
-
-const SCANNER_READER_ID = 'qr-reader';
 
 export type QrScanModalProps = {
   title?: string;
@@ -26,22 +24,27 @@ export function QrScanModal({
 
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const captureInputRef = React.useRef<HTMLInputElement | null>(null);
-  const scannerRef = React.useRef<Html5Qrcode | null>(null);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const scannerRef = React.useRef<QrScanner | null>(null);
   const closingRef = React.useRef(false);
   const handledRef = React.useRef(false);
   const historyTokenRef = React.useRef(`qr-scan-${Math.random().toString(36).slice(2)}`);
   const historyPushedRef = React.useRef(false);
   const successTimerRef = React.useRef<number | null>(null);
+  const onCloseRef = React.useRef(onClose);
+  const onResultRef = React.useRef(onResult);
+  onCloseRef.current = onClose;
+  onResultRef.current = onResult;
 
-  const stopActiveScanner = React.useCallback(async () => {
+  const stopActiveScanner = React.useCallback(() => {
     const scanner = scannerRef.current;
     scannerRef.current = null;
     if (scanner) {
-      try { await scanner.stop(); } catch {}
-      try { scanner.clear(); } catch {}
+      try {
+        scanner.stop();
+        scanner.destroy();
+      } catch {}
     }
-    const el = document.getElementById(SCANNER_READER_ID);
-    if (el) el.innerHTML = '';
   }, []);
 
   const closeScanner = React.useCallback(async () => {
@@ -51,21 +54,21 @@ export function QrScanModal({
       window.clearTimeout(successTimerRef.current);
       successTimerRef.current = null;
     }
-    await stopActiveScanner();
+    stopActiveScanner();
     if (
       historyPushedRef.current &&
       (window.history.state as { scannerModal?: string } | null)?.scannerModal === historyTokenRef.current
     ) {
       historyPushedRef.current = false;
       window.history.back();
-      return;
     }
-    onClose();
-  }, [onClose, stopActiveScanner]);
+    onCloseRef.current();
+  }, [stopActiveScanner]);
 
   const playSuccessSound = React.useCallback(() => {
     try {
-      const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      const ctx = new (window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -79,109 +82,95 @@ export function QrScanModal({
     } catch {}
   }, []);
 
-  const createScanConfig = React.useCallback(() => ({
-    fps: 15,
-    qrbox: (w: number, h: number) => {
-      const side = Math.round(Math.max(200, Math.min(Math.min(w, h) * 0.75, 320)));
-      return { width: side, height: side };
-    },
-    aspectRatio: 1,
-    disableFlip: false,
-    useBarCodeDetectorIfSupported: false,
-    formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-  } as const), []);
+  const handleScanSuccess = React.useCallback(
+    (trimmed: string) => {
+      if (handledRef.current || closingRef.current) return;
+      handledRef.current = true;
+      setScanResult(trimmed);
+      playSuccessSound();
 
-  const startScanner = React.useCallback(
-    async (preferredCameraId?: string) => {
-      await stopActiveScanner();
-      if (closingRef.current) return;
-
-      setCamError(null);
-      setCameraReady(false);
-
-      const reader = document.getElementById(SCANNER_READER_ID);
-      if (!reader) {
-        setCamError('Scanner failed to initialize. Please try again.');
-        return;
-      }
-
-      const handleDecoded = async (decoded: string) => {
-        if (handledRef.current || closingRef.current) return;
-        handledRef.current = true;
-        const sc = scannerRef.current;
-        scannerRef.current = null;
-        if (sc) {
-          try {
-            await sc.stop();
-          } catch {}
-          try { sc.clear(); } catch {}
-        }
-        const trimmed = (decoded || '').trim();
-        setScanResult(trimmed);
-        playSuccessSound();
-        successTimerRef.current = window.setTimeout(async () => {
-          successTimerRef.current = null;
-          try {
-            await onResult(trimmed);
-          } catch (err) {
-            console.error('onResult error:', err);
-          }
-          await closeScanner();
-        }, 1500);
-      };
-
-      const tryStart = async (camera: string | { facingMode: 'user' | 'environment' }) => {
-        if (closingRef.current) return false;
-        const prev = scannerRef.current;
-        if (prev) {
-          try { await prev.stop(); } catch {}
-          try { prev.clear(); } catch {}
-        }
-        reader.innerHTML = '';
-        const sc = new Html5Qrcode(SCANNER_READER_ID);
-        scannerRef.current = sc;
+      successTimerRef.current = window.setTimeout(async () => {
+        successTimerRef.current = null;
         try {
-          await sc.start(camera, createScanConfig(), handleDecoded, () => {});
+          await onResultRef.current(trimmed);
+        } catch (err) {
+          console.error('onResult error:', err);
+        }
+        await closeScanner();
+      }, 1500);
+    },
+    [closeScanner, playSuccessSound],
+  );
+
+  const startScanner = React.useCallback(() => {
+    stopActiveScanner();
+    if (closingRef.current) return;
+
+    setCamError(null);
+    setCameraReady(false);
+
+    const video = videoRef.current;
+    if (!video) {
+      setCamError('Scanner failed to initialize. Please try again.');
+      return;
+    }
+
+    const isMobile =
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 0 && window.innerWidth < 768);
+    const preferredCamera: QrScanner.FacingMode = isMobile ? 'environment' : 'user';
+
+    const scanner = new QrScanner(
+      video,
+      (result) => {
+        const data = typeof result === 'string' ? result : result.data;
+        const trimmed = (data || '').trim();
+        if (!trimmed || handledRef.current || closingRef.current) return;
+        stopActiveScanner();
+        handleScanSuccess(trimmed);
+      },
+      {
+        preferredCamera,
+        maxScansPerSecond: 25,
+        highlightScanRegion: false,
+        highlightCodeOutline: false,
+        onDecodeError: () => {},
+        calculateScanRegion: (v) => {
+          const w = v.videoWidth || 640;
+          const h = v.videoHeight || 480;
+          const size = Math.max(100, Math.min(w, h) * 0.75);
+          const x = (w - size) / 2;
+          const y = (h - size) / 2;
+          return { x, y, width: size, height: size, downScaledWidth: 400, downScaledHeight: 400 };
+        },
+      },
+    );
+    scannerRef.current = scanner;
+    scanner.setInversionMode('both'); // Detect dark-on-light and light-on-dark QR codes
+
+    scanner
+      .start()
+      .then(() => {
+        if (!closingRef.current && scannerRef.current === scanner) {
           setCameraReady(true);
           setCamError(null);
-          return true;
-        } catch {
+        }
+      })
+      .catch((err) => {
+        if (scannerRef.current === scanner) {
           scannerRef.current = null;
-          return false;
+          scanner.destroy();
+          setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
+          console.error('QR scanner start error:', err);
         }
-      };
-
-      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-        || (navigator.maxTouchPoints > 0 && window.innerWidth < 768);
-      const backFirst = { facingMode: 'environment' as const };
-      const frontFirst = { facingMode: 'user' as const };
-
-      try {
-        if (preferredCameraId && (await tryStart(preferredCameraId))) return;
-        if (isMobile) {
-          if (await tryStart(backFirst)) return;
-          if (await tryStart(frontFirst)) return;
-        } else {
-          if (await tryStart(frontFirst)) return;
-          if (await tryStart(backFirst)) return;
-        }
-        const cameras = await Html5Qrcode.getCameras();
-        const preferred = cameras.find((c) => /back|rear|environment/i.test(c.label))?.id || cameras[0]?.id;
-        if (preferred && (await tryStart(preferred))) return;
-        setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
-      } catch (err) {
-        console.error('startScanner error:', err);
-        setCamError('Camera failed to start. Please retry or upload a QR image instead.');
-      }
-    },
-    [createScanConfig, closeScanner, onResult, playSuccessSound, stopActiveScanner],
-  );
+      });
+  }, [handleScanSuccess, stopActiveScanner]);
 
   React.useEffect(() => {
     closingRef.current = false;
     handledRef.current = false;
     setScanResult(null);
-    void startScanner();
+    startScanner();
 
     const historyTimer = window.setTimeout(() => {
       try {
@@ -193,7 +182,8 @@ export function QrScanModal({
     const handlePopState = () => {
       historyPushedRef.current = false;
       closingRef.current = true;
-      void stopActiveScanner().catch(() => {}).finally(() => onClose());
+      stopActiveScanner();
+      onCloseRef.current();
     };
     window.addEventListener('popstate', handlePopState);
 
@@ -204,9 +194,9 @@ export function QrScanModal({
         successTimerRef.current = null;
       }
       window.removeEventListener('popstate', handlePopState);
-      void stopActiveScanner().catch(() => {});
+      stopActiveScanner();
     };
-  }, [onClose, startScanner, stopActiveScanner]);
+  }, [startScanner, stopActiveScanner]);
 
   const handleImageUpload = React.useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -218,42 +208,40 @@ export function QrScanModal({
       setCameraReady(false);
 
       try {
-        await stopActiveScanner();
+        stopActiveScanner();
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-        const reader = document.getElementById(SCANNER_READER_ID);
-        if (!reader) {
-          setCamError('Scanner region not available. Please try again.');
+        const result = await QrScanner.scanImage(file, { returnDetailedScanResult: true });
+        const decoded = result?.data ?? '';
+        const trimmed = decoded.trim();
+        if (!trimmed) {
+          setCamError('No QR code was found in that image. Try another image or use the live camera.');
+          startScanner();
           return;
         }
-        reader.innerHTML = '';
-
-        const tempScanner = new Html5Qrcode(SCANNER_READER_ID);
-        const decoded = await tempScanner.scanFile(file, true);
-        try { tempScanner.clear(); } catch {}
 
         handledRef.current = true;
-        setScanResult(decoded);
+        setScanResult(trimmed);
         playSuccessSound();
 
         successTimerRef.current = window.setTimeout(async () => {
           successTimerRef.current = null;
           try {
-            await onResult(decoded);
+            await onResultRef.current(trimmed);
           } catch (err) {
             console.error('onResult error:', err);
           }
-          void closeScanner();
+          await closeScanner();
         }, 1500);
       } catch {
         setCamError('No QR code was found in that image. Try another image or use the live camera.');
-        await startScanner();
+        startScanner();
       } finally {
         setUploadingImage(false);
         event.target.value = '';
       }
     },
-    [closeScanner, onResult, playSuccessSound, startScanner, stopActiveScanner],
+    [closeScanner, playSuccessSound, startScanner, stopActiveScanner],
   );
 
   const controlsDisabled = uploadingImage || !!scanResult;
@@ -261,33 +249,12 @@ export function QrScanModal({
   return (
     <div className="fixed inset-0 z-[80] bg-slate-950">
       <style>{`
-        #${SCANNER_READER_ID},
-        #${SCANNER_READER_ID} > div,
-        #${SCANNER_READER_ID}__scan_region,
-        #${SCANNER_READER_ID}__dashboard {
-          width: 100% !important;
-          height: 100% !important;
-          border: 0 !important;
-          background: transparent !important;
-        }
-        #${SCANNER_READER_ID} video,
-        #${SCANNER_READER_ID} canvas {
-          width: 100% !important;
-          height: 100% !important;
-          object-fit: cover !important;
-        }
-        #${SCANNER_READER_ID} video {
-          filter: brightness(1.2) contrast(1.15) saturate(1.05);
-        }
-        #${SCANNER_READER_ID} canvas {
-          opacity: 0 !important;
-          position: absolute !important;
-          pointer-events: none !important;
-        }
-        #${SCANNER_READER_ID}__dashboard_section,
-        #${SCANNER_READER_ID}__dashboard_section_csr,
-        #${SCANNER_READER_ID}__dashboard_section_swaplink {
-          display: none !important;
+        .qr-scan-video {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          transform: translateZ(0);
+          will-change: transform;
         }
       `}</style>
 
@@ -321,7 +288,9 @@ export function QrScanModal({
         </div>
       ) : (
         <>
-          <div id={SCANNER_READER_ID} className="absolute inset-0 overflow-hidden bg-slate-900" />
+          <div className="absolute inset-0 overflow-hidden bg-slate-900">
+            <video ref={videoRef} className="qr-scan-video" playsInline muted />
+          </div>
           <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/75 to-transparent z-10" />
           <div className="absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/80 to-transparent z-10" />
 
@@ -357,7 +326,9 @@ export function QrScanModal({
               <h3 className="text-white text-2xl font-bold">Align QR Code within frame</h3>
               <p className="mt-2 text-sm text-slate-300">{subtitle}</p>
               {uploadingImage && <p className="mt-3 text-sm font-semibold text-blue-300">Reading uploaded image…</p>}
-              {!uploadingImage && !camError && !cameraReady && <p className="mt-3 text-sm font-semibold text-blue-300">Starting live camera…</p>}
+              {!uploadingImage && !camError && !cameraReady && (
+                <p className="mt-3 text-sm font-semibold text-blue-300">Starting live camera…</p>
+              )}
               {cameraReady && !camError && !uploadingImage && (
                 <p className="mt-3 text-sm font-semibold text-emerald-300">Camera is ready. Point it at the QR code.</p>
               )}
@@ -400,7 +371,7 @@ export function QrScanModal({
               </div>
               <button
                 type="button"
-                onClick={() => void startScanner()}
+                onClick={() => startScanner()}
                 disabled={controlsDisabled}
                 title="Restart Camera"
                 className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none justify-self-start"
@@ -411,7 +382,9 @@ export function QrScanModal({
                 <span className="text-[10px] font-semibold text-slate-500">Restart</span>
               </button>
             </div>
-            <p className="mt-3 text-center text-xs font-medium text-slate-500">Scan live · Upload from gallery{showTakePhoto ? ' · Take a photo' : ''}</p>
+            <p className="mt-3 text-center text-xs font-medium text-slate-500">
+              Scan live · Upload from gallery{showTakePhoto ? ' · Take a photo' : ''}
+            </p>
           </div>
         </>
       )}
