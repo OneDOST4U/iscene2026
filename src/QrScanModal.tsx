@@ -148,10 +148,20 @@ export function QrScanModal({
         }
       };
 
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        || (navigator.maxTouchPoints > 0 && window.innerWidth < 768);
+      const backFirst = { facingMode: 'environment' as const };
+      const frontFirst = { facingMode: 'user' as const };
+
       try {
         if (preferredCameraId && (await tryStart(preferredCameraId))) return;
-        if (await tryStart({ facingMode: 'user' })) return;
-        if (await tryStart({ facingMode: 'environment' })) return;
+        if (isMobile) {
+          if (await tryStart(backFirst)) return;
+          if (await tryStart(frontFirst)) return;
+        } else {
+          if (await tryStart(frontFirst)) return;
+          if (await tryStart(backFirst)) return;
+        }
         const cameras = await Html5Qrcode.getCameras();
         const preferred = cameras.find((c) => /back|rear|environment/i.test(c.label))?.id || cameras[0]?.id;
         if (preferred && (await tryStart(preferred))) return;
