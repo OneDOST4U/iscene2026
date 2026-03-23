@@ -72,6 +72,7 @@ type FoodClaim = {
   sessionDate: string;
   claimedAt: any;
   claimedBy: string;
+  claimedByName?: string;
 };
 
 type FoundParticipant = {
@@ -414,7 +415,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         claimedBy: user.uid,
       };
       const docRef = await addDoc(collection(db, 'foodClaims'), { ...newClaim, claimedByName: fullName });
-      const claim: FoodClaim = { id: docRef.id, ...newClaim };
+      const claim: FoodClaim = { id: docRef.id, ...newClaim, claimedByName: fullName };
       setAllClaims((prev) => [claim, ...prev]);
       setTodayClaims((prev) => [claim, ...prev]);
       showToast(`✅ ${participant.fullName} — ${activeMeal.name || MEAL_LABELS[activeMeal.type] || activeMeal.type} claimed!`);
@@ -425,8 +426,38 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
   // ── Pagination ─────────────────────────────────────────────────────────
   const [page, setPage] = React.useState(1);
   const PAGE_SIZE = 8;
-  const paginatedClaims = allClaims.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const totalPages = Math.max(1, Math.ceil(allClaims.length / PAGE_SIZE));
+
+  // Group claims by day, then by booth (for this dashboard, booth = current user's claims only)
+  const claimsByDayAndBooth = React.useMemo(() => {
+    const byDay = new Map<string, Map<string, FoodClaim[]>>();
+    for (const c of allClaims) {
+      const d = c.claimedAt?.toDate ? c.claimedAt.toDate() : new Date(c.claimedAt);
+      const dateKey = d.toISOString().slice(0, 10);
+      const boothKey = c.claimedByName ?? fullName ?? 'This booth';
+      if (!byDay.has(dateKey)) byDay.set(dateKey, new Map());
+      const dayMap = byDay.get(dateKey)!;
+      if (!dayMap.has(boothKey)) dayMap.set(boothKey, []);
+      dayMap.get(boothKey)!.push(c);
+    }
+    // Sort days descending (most recent first)
+    return Array.from(byDay.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([dateKey, boothMap]) => ({
+        dateKey,
+        dateLabel: new Date(dateKey + 'T12:00:00').toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }),
+        booths: Array.from(boothMap.entries()).map(([boothKey, claims]) => ({
+          boothName: boothKey,
+          claims: claims.sort((a, b) => {
+            const ta = a.claimedAt?.toDate ? a.claimedAt.toDate().getTime() : new Date(a.claimedAt).getTime();
+            const tb = b.claimedAt?.toDate ? b.claimedAt.toDate().getTime() : new Date(b.claimedAt).getTime();
+            return tb - ta;
+          }),
+        })),
+      }));
+  }, [allClaims, fullName]);
+
+  const paginatedDays = claimsByDayAndBooth.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(claimsByDayAndBooth.length / PAGE_SIZE));
 
   if (loading) {
     return (
@@ -949,7 +980,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
           <div>
             <div className="mb-6">
               <h2 className="text-2xl font-black">Entitlement Sessions</h2>
-              <p className="text-slate-500 text-sm mt-1">Items assigned to your booth — claim windows</p>
+              <p className="text-slate-500 text-sm mt-1">What can be claimed, by day — who can claim each item</p>
             </div>
             {meals.length === 0 ? (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm py-16 text-center text-slate-400">
@@ -957,42 +988,73 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 <p className="font-medium">No entitlements assigned to your booth yet</p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {[...pastMeals, ...activeMeals, ...upcomingMeals].map((meal) => {
-                  const isActive = activeMeals.some((m) => m.id === meal.id);
-                  const isPast = !isActive && parseWindowTime(meal.endTime, meal.sessionDate) <= now;
-                  const claimCount = allClaims.filter((c) => c.mealId === meal.id).length;
-                  return (
-                    <div key={meal.id} className={`bg-white rounded-2xl border shadow-sm p-5 flex items-center gap-5 ${isActive ? 'border-blue-300 shadow-blue-100' : 'border-slate-200'} ${isPast ? 'opacity-60' : ''}`}>
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${isActive ? 'bg-blue-600' : 'bg-slate-100'}`}>
-                        <UtensilsCrossed size={22} className={isActive ? 'text-white' : 'text-slate-400'} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-black">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
-                          {isActive && <span className="text-[10px] font-black bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase animate-pulse">LIVE</span>}
-                          {isPast && <span className="text-[10px] font-bold bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full uppercase">Ended</span>}
+              (() => {
+                const allOrdered = [...pastMeals, ...activeMeals, ...upcomingMeals];
+                const byDay = new Map<string, MealWindow[]>();
+                for (const meal of allOrdered) {
+                  const dateKey = meal.sessionDate ? (meal.sessionDate.includes('T') ? meal.sessionDate.slice(0, 10) : meal.sessionDate) : 'unscheduled';
+                  if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+                  byDay.get(dateKey)!.push(meal);
+                }
+                const days = Array.from(byDay.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+                return (
+                  <div className="space-y-6">
+                    {days.map(([dateKey, dayMeals]) => {
+                      const dateLabel = dateKey === 'unscheduled' ? 'Unscheduled' : new Date(dateKey + 'T12:00:00').toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+                      return (
+                        <div key={dateKey} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                          <div className="px-6 py-4 bg-slate-50 border-b border-slate-200">
+                            <h3 className="font-black text-slate-800 flex items-center gap-2">
+                              <CalendarDays size={18} className="text-blue-500" />
+                              {dateLabel}
+                            </h3>
+                            <p className="text-xs text-slate-500 mt-0.5">{dayMeals.length} item{dayMeals.length !== 1 ? 's' : ''} on this day</p>
+                          </div>
+                          <div className="divide-y divide-slate-100">
+                            {dayMeals.map((meal) => {
+                              const isActive = activeMeals.some((m) => m.id === meal.id);
+                              const isPast = !isActive && parseWindowTime(meal.endTime, meal.sessionDate) <= now;
+                              const claimCount = allClaims.filter((c) => c.mealId === meal.id).length;
+                              return (
+                                <div key={meal.id} className={`p-5 flex items-center gap-5 ${isActive ? 'bg-blue-50/50' : ''} ${isPast ? 'opacity-65' : ''}`}>
+                                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${isActive ? 'bg-blue-600' : 'bg-slate-100'}`}>
+                                    <UtensilsCrossed size={22} className={isActive ? 'text-white' : 'text-slate-400'} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <p className="font-black text-slate-800">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
+                                      {isActive && <span className="text-[10px] font-black bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase animate-pulse">LIVE</span>}
+                                      {isPast && <span className="text-[10px] font-bold bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full uppercase">Ended</span>}
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-0.5">
+                                      {meal.startTime} – {meal.endTime}
+                                      {meal.location && <span className="ml-1">· 📍 {meal.location}</span>}
+                                    </p>
+                                    <div className="mt-2 flex items-center gap-2 text-[11px]">
+                                      <span className="font-semibold text-slate-600">Who can claim:</span>
+                                      <span className="text-slate-600">{formatEligibility(meal)}</span>
+                                    </div>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <p className="text-xl font-black text-blue-600">{claimCount}</p>
+                                    <p className="text-[11px] text-slate-400">claims</p>
+                                  </div>
+                                  {isActive && (
+                                    <button type="button" onClick={() => { setSearchQuery(''); setActiveTab('participants'); }}
+                                      className="shrink-0 px-4 py-2 bg-blue-600 text-white rounded-full text-xs font-bold hover:bg-blue-700">
+                                      Validate Now
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          {meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH', { weekday: 'short', month: 'long', day: 'numeric' }) : '—'} · {meal.startTime} – {meal.endTime}
-                          {meal.location && <span className="ml-1">· 📍 {meal.location}</span>}
-                        </p>
-                        <p className="text-[11px] text-slate-500 mt-1"><span className="font-medium">Who can claim:</span> {formatEligibility(meal)}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-xl font-black text-blue-600">{claimCount}</p>
-                        <p className="text-[11px] text-slate-400">claims</p>
-                      </div>
-                      {isActive && (
-                        <button type="button" onClick={() => { setSearchQuery(''); setActiveTab('participants'); }}
-                          className="shrink-0 px-4 py-2 bg-blue-600 text-white rounded-full text-xs font-bold hover:bg-blue-700">
-                          Validate Now
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()
             )}
           </div>
         )}
@@ -1000,10 +1062,20 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         {/* ══════════════ REPORTS ══════════════ */}
         {activeTab === 'reports' && (
           <div>
+            <div className="flex items-center gap-4 mb-6">
+              <button
+                type="button"
+                onClick={() => setActiveTab('dashboard')}
+                className="flex items-center gap-2 text-slate-600 hover:text-blue-600 font-semibold transition-colors"
+              >
+                <ArrowLeft size={20} />
+                Back to Home
+              </button>
+            </div>
             <div className="flex items-end justify-between mb-6">
               <div>
                 <h2 className="text-2xl font-black">Claim Reports</h2>
-                <p className="text-slate-500 text-sm mt-1">All meal claims processed by your stall</p>
+                <p className="text-slate-500 text-sm mt-1">All meal claims grouped by day and booth</p>
               </div>
               <div className="text-right">
                 <p className="text-2xl font-black text-blue-600">{allClaims.length}</p>
@@ -1018,45 +1090,63 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 </div>
               ) : (
                 <>
-                  <table className="w-full text-left">
-                    <thead className="bg-slate-50 text-slate-400 text-[10px] uppercase tracking-widest font-bold">
-                      <tr>
-                        <th className="px-6 py-4">Participant</th>
-                        <th className="px-6 py-4">Sector</th>
-                        <th className="px-6 py-4">Meal</th>
-                        <th className="px-6 py-4">Date</th>
-                        <th className="px-6 py-4">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {paginatedClaims.map((c) => {
-                        const date = c.claimedAt?.toDate ? c.claimedAt.toDate() : new Date(c.claimedAt);
-                        return (
-                          <tr key={c.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-6 py-4">
-                              <div className="flex items-center gap-3">
-                                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(c.participantName)}`}>{initials(c.participantName)}</div>
-                                <div>
-                                  <p className="font-bold text-sm">{c.participantName}</p>
-                                  <p className="text-[10px] text-slate-400">ISC-26-{c.participantRegId?.slice(0, 4) || '—'}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4">
-                              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${sectorTier(c.sector).cls}`}>{sectorTier(c.sector).label}</span>
-                            </td>
-                            <td className="px-6 py-4">
-                              <span className="text-sm font-semibold text-slate-700">{c.mealName || MEAL_LABELS[c.mealType] || c.mealType}</span>
-                            </td>
-                            <td className="px-6 py-4 text-sm text-slate-500">{date.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}</td>
-                            <td className="px-6 py-4 text-sm text-slate-500">{date.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  {paginatedDays.map((day) => (
+                    <div key={day.dateKey} className="border-b border-slate-100 last:border-b-0">
+                      <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
+                        <h3 className="font-black text-slate-800">{day.dateLabel}</h3>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {day.booths.reduce((sum, b) => sum + b.claims.length, 0)} claim{day.booths.reduce((sum, b) => sum + b.claims.length, 0) !== 1 ? 's' : ''} across {day.booths.length} booth{day.booths.length !== 1 ? 's' : ''}
+                        </p>
+                      </div>
+                      {day.booths.map((booth) => (
+                        <div key={booth.boothName} className="border-b border-slate-50 last:border-b-0">
+                          <div className="px-6 py-2 bg-slate-100/60">
+                            <p className="text-xs font-bold text-slate-600">{booth.boothName}</p>
+                            <p className="text-[10px] text-slate-400">{booth.claims.length} claim{booth.claims.length !== 1 ? 's' : ''}</p>
+                          </div>
+                          <table className="w-full text-left">
+                            <thead className="bg-slate-50 text-slate-400 text-[10px] uppercase tracking-widest font-bold">
+                              <tr>
+                                <th className="px-6 py-3">Participant</th>
+                                <th className="px-6 py-3">Sector</th>
+                                <th className="px-6 py-3">Meal</th>
+                                <th className="px-6 py-3">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {booth.claims.map((c) => {
+                                const date = c.claimedAt?.toDate ? c.claimedAt.toDate() : new Date(c.claimedAt);
+                                return (
+                                  <tr key={c.id} className="hover:bg-slate-50 transition-colors">
+                                    <td className="px-6 py-3">
+                                      <div className="flex items-center gap-3">
+                                        <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(c.participantName)}`}>{initials(c.participantName)}</div>
+                                        <div>
+                                          <p className="font-bold text-sm">{c.participantName}</p>
+                                          <p className="text-[10px] text-slate-400">ISC-26-{c.participantRegId?.slice(0, 4) || '—'}</p>
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td className="px-6 py-3">
+                                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${sectorTier(c.sector).cls}`}>{sectorTier(c.sector).label}</span>
+                                    </td>
+                                    <td className="px-6 py-3">
+                                      <span className="text-sm font-semibold text-slate-700">{c.mealName || MEAL_LABELS[c.mealType] || c.mealType}</span>
+                                    </td>
+                                    <td className="px-6 py-3 text-sm text-slate-500">{date.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
                   <div className="p-5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-                    <p className="text-xs text-slate-400">Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, allClaims.length)} of {allClaims.length}</p>
+                    <p className="text-xs text-slate-400">
+                      Showing day {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, claimsByDayAndBooth.length)} of {claimsByDayAndBooth.length} day{claimsByDayAndBooth.length !== 1 ? 's' : ''}
+                    </p>
                     <div className="flex items-center gap-2">
                       <button disabled={page === 1} onClick={() => setPage((p) => p - 1)} className="w-8 h-8 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-blue-600 disabled:opacity-40"><ChevronLeft size={16} /></button>
                       {Array.from({ length: Math.min(5, totalPages) }, (_, i) => i + 1).map((p) => (

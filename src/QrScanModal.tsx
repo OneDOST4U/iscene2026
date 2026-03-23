@@ -244,7 +244,7 @@ export function QrScanModal({
     [closeScanner, playSuccessSound, startScanner, stopActiveScanner],
   );
 
-  const controlsDisabled = uploadingImage || !!scanResult;
+  const controlsDisabled = uploadingImage;
 
   return (
     <div className="fixed inset-0 z-[80] bg-slate-950">
@@ -277,7 +277,7 @@ export function QrScanModal({
       )}
 
       {scanResult ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950">
           <div className="mx-6 w-full max-w-xs rounded-3xl bg-white p-6 text-center shadow-2xl border border-emerald-200">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-4 ring-emerald-200/50">
               <CheckCircle2 size={36} strokeWidth={2.5} />
@@ -285,6 +285,14 @@ export function QrScanModal({
             <p className="text-xl font-black text-slate-900">Scanned successfully</p>
             <p className="mt-2 text-sm text-slate-500">Closing camera…</p>
           </div>
+          <button
+            type="button"
+            onClick={() => void closeScanner()}
+            className="mt-6 flex items-center gap-2 px-5 py-3 rounded-full bg-white/20 text-white backdrop-blur-md hover:bg-white/30 font-semibold transition-colors"
+          >
+            <ArrowLeft size={18} />
+            Close now
+          </button>
         </div>
       ) : (
         <>
@@ -294,7 +302,7 @@ export function QrScanModal({
           <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/75 to-transparent z-10" />
           <div className="absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/80 to-transparent z-10" />
 
-          <header className="absolute top-0 inset-x-0 z-20 flex items-center p-4">
+          <header className="absolute top-0 inset-x-0 z-30 flex items-center p-4">
             <button
               type="button"
               onClick={() => void closeScanner()}
