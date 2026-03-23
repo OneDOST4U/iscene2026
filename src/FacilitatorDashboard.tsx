@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -47,12 +47,12 @@ import {
   Timestamp,
   limit,
 } from 'firebase/firestore';
-import { Html5Qrcode } from 'html5-qrcode';
 import { db, auth } from './firebase';
+import { QrScanModal } from './QrScanModal';
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Types
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 type Tab = 'overview' | 'participants' | 'accommodations' | 'travel' | 'calendar' | 'profile';
 
 type ParticipantReg = {
@@ -100,9 +100,9 @@ type AttendanceRecord = {
   createdAt: any;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const SECTOR_BADGE: Record<string, string> = {
   Speakers:     'bg-purple-100 text-purple-600',
   Facilitators: 'bg-indigo-100 text-indigo-600',
@@ -125,390 +125,59 @@ function shortId(id: string) {
   return '#ISC26-' + id.slice(0, 4).toUpperCase();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QR Scanner Modal
-// ─────────────────────────────────────────────────────────────────────────────
-function QrScanModal({ title, subtitle, onClose, onResult }: { title: string; subtitle: string; onClose: () => void; onResult: (text: string) => void }) {
-  const [camError, setCamError] = React.useState<string | null>(null);
-  const [cameraReady, setCameraReady] = React.useState(false);
-  const [uploadingImage, setUploadingImage] = React.useState(false);
-  const [scanSuccess, setScanSuccess] = React.useState(false);
-  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-  const captureInputRef = React.useRef<HTMLInputElement | null>(null);
-  const scannerRef = React.useRef<Html5Qrcode | null>(null);
-  const closingRef = React.useRef(false);
-  const handledRef = React.useRef(false);
-  const successTimerRef = React.useRef<number | null>(null);
-  const historyTokenRef = React.useRef(`facilitator-scan-${Math.random().toString(36).slice(2)}`);
-  const historyPushedRef = React.useRef(false);
-  const regionId = 'facilitator-qr-region';
-
-  const stopActiveScanner = React.useCallback(async () => {
-    const scanner = scannerRef.current;
-    if (!scanner) return;
-    try {
-      await scanner.stop();
-    } catch {}
-    try {
-      scanner.clear();
-    } catch {}
-    scannerRef.current = null;
-  }, []);
-
-  const closeScanner = React.useCallback(async () => {
-    if (closingRef.current) return;
-    closingRef.current = true;
-    if (successTimerRef.current) {
-      window.clearTimeout(successTimerRef.current);
-      successTimerRef.current = null;
-    }
-    await stopActiveScanner();
-    if (
-      historyPushedRef.current &&
-      window.history.state?.scannerModal === historyTokenRef.current
-    ) {
-      historyPushedRef.current = false;
-      window.history.back();
-      return;
-    }
-    onClose();
-  }, [onClose, stopActiveScanner]);
-
-  const finishSuccessfulScan = React.useCallback(
-    async (decoded: string) => {
-      if (handledRef.current) return;
-      handledRef.current = true;
-      setScanSuccess(true);
-      // Wait for success animation and ensure handler starts
-      await new Promise((resolve) => {
-        successTimerRef.current = window.setTimeout(resolve, 1500);
-      });
-      try {
-        await onResult(decoded);
-      } catch (err) {
-        console.error('onResult error:', err);
-      }
-      void closeScanner();
-    },
-    [closeScanner, onResult],
-  );
-
-  const startScanner = React.useCallback(async () => {
-    await stopActiveScanner();
-
-    setCamError(null);
-    setCameraReady(false);
-
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    if (!document.getElementById(regionId)) {
-      setCamError('Scanner failed to initialize. Please try again.');
-      return;
-    }
-
-    const scanner = new Html5Qrcode(regionId);
-    scannerRef.current = scanner;
-
-    const config = {
-      fps: 20,
-      qrbox: (w: number, h: number) => {
-        const side = Math.round(Math.min(w, h) * 0.85);
-        return { width: side, height: side };
-      },
-      useBarCodeDetectorIfSupported: false,
-    } as const;
-
-    const handleDecoded = (decoded: string) => {
-      if (handledRef.current) return;
-      void stopActiveScanner().finally(() => finishSuccessfulScan(decoded));
-    };
-
-    // Try user (front) camera first - better for laptop webcam
-    try {
-      await scanner.start({ facingMode: 'user' }, config, handleDecoded, () => {});
-      setCameraReady(true);
-      return;
-    } catch {}
-
-    // Fallback: environment (back camera) for phones
-    try {
-      await scanner.start({ facingMode: { exact: 'environment' } }, config, handleDecoded, () => {});
-      setCameraReady(true);
-      return;
-    } catch {}
-
-    try {
-      const cameras = await Html5Qrcode.getCameras();
-      const preferredCamera =
-        cameras.find((camera) => /back|rear|environment/i.test(camera.label))?.id ||
-        cameras[0]?.id;
-      if (!preferredCamera) {
-        throw new Error('No camera found');
-      }
-      await scanner.start(preferredCamera, config, handleDecoded, () => {});
-      setCameraReady(true);
-    } catch {
-      setCamError('Unable to start the camera. Please allow permission or try another device/browser.');
-      setCameraReady(false);
-    }
-  }, [finishSuccessfulScan, regionId, stopActiveScanner]);
-
-  React.useEffect(() => {
-    closingRef.current = false;
-    handledRef.current = false;
-
-    void startScanner();
-
-    const historyTimer = window.setTimeout(() => {
-      window.history.pushState({ scannerModal: historyTokenRef.current }, '', window.location.href);
-      historyPushedRef.current = true;
-    }, 0);
-
-    const handlePopState = () => {
-      historyPushedRef.current = false;
-      closingRef.current = true;
-      void stopActiveScanner().catch(() => {}).finally(() => onClose());
-    };
-
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      window.clearTimeout(historyTimer);
-      if (successTimerRef.current) {
-        window.clearTimeout(successTimerRef.current);
-      }
-      window.removeEventListener('popstate', handlePopState);
-      void stopActiveScanner().catch(() => {});
-    };
-  }, [onClose, startScanner, stopActiveScanner]);
-
-  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file || handledRef.current) return;
-
-    setUploadingImage(true);
-    setCamError(null);
-    setCameraReady(false);
-
-    try {
-      await stopActiveScanner();
-
-      const scanEl = document.getElementById(regionId);
-      if (!scanEl) {
-        await startScanner();
-        return;
-      }
-      scanEl.innerHTML = '';
-
-      const scanner = new Html5Qrcode(regionId);
-      scannerRef.current = scanner;
-
-      const decoded = await scanner.scanFile(file, true);
-
-      try {
-        scanner.clear();
-      } catch {}
-      scannerRef.current = null;
-
-      finishSuccessfulScan(decoded);
-    } catch {
-      setCamError('No QR code was found in that image. Try another image or use the live camera.');
-      await startScanner();
-    } finally {
-      setUploadingImage(false);
-      event.target.value = '';
-    }
-  };
-
-  const controlsDisabled = uploadingImage || scanSuccess;
-
-  return (
-    <div className="fixed inset-0 z-[80] bg-slate-950">
-      <style>{`
-        #${regionId},
-        #${regionId} > div,
-        #${regionId}__scan_region,
-        #${regionId}__dashboard {
-          width: 100% !important;
-          height: 100% !important;
-          border: 0 !important;
-          background: transparent !important;
-        }
-        #${regionId} video,
-        #${regionId} canvas {
-          width: 100% !important;
-          height: 100% !important;
-          object-fit: cover !important;
-        }
-        #${regionId} video {
-          filter: brightness(1.2) contrast(1.15) saturate(1.05);
-        }
-        #${regionId} canvas {
-          opacity: 0 !important;
-          position: absolute !important;
-          pointer-events: none !important;
-        }
-        #${regionId}__dashboard_section,
-        #${regionId}__dashboard_section_csr,
-        #${regionId}__dashboard_section_swaplink {
-          display: none !important;
-        }
-      `}</style>
-      <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-      <input ref={captureInputRef} type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="hidden" />
-      <div id={regionId} className="absolute inset-0 overflow-hidden bg-slate-900" />
-      <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/75 to-transparent z-10" />
-      <div className="absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/80 to-transparent z-10" />
-
-      <header className="absolute top-0 inset-x-0 z-20 flex items-center p-4">
-        <button
-          type="button"
-          onClick={() => void closeScanner()}
-          disabled={controlsDisabled}
-          className="flex size-12 items-center justify-center rounded-full bg-black/25 text-white backdrop-blur-md disabled:opacity-50 disabled:pointer-events-none"
-        >
-          <ArrowLeft size={20} />
-        </button>
-        <h2 className="flex-1 text-center text-lg font-bold text-white drop-shadow-md">{title}</h2>
-      </header>
-
-      <main className="relative z-20 flex h-full flex-col items-center justify-center px-6 pb-28 pt-24">
-        <div className="relative h-64 w-64 max-w-[78vw] max-h-[46vh] sm:h-80 sm:w-80">
-          <div className="absolute inset-0 rounded-[28px] border border-white/15 shadow-[0_0_0_9999px_rgba(2,6,23,0.52)]" />
-          <div className="absolute left-0 top-0 h-7 w-7 rounded-tl-2xl border-l-4 border-t-4 border-blue-500" />
-          <div className="absolute right-0 top-0 h-7 w-7 rounded-tr-2xl border-r-4 border-t-4 border-blue-500" />
-          <div className="absolute bottom-0 left-0 h-7 w-7 rounded-bl-2xl border-b-4 border-l-4 border-blue-500" />
-          <div className="absolute bottom-0 right-0 h-7 w-7 rounded-br-2xl border-b-4 border-r-4 border-blue-500" />
-          <div className="absolute left-4 right-4 top-0 h-1 rounded-full bg-gradient-to-r from-transparent via-blue-500 to-transparent shadow-[0_0_18px_rgba(43,140,238,0.95)] animate-pulse" />
-          <div className="absolute inset-[18%] rounded-[22px] border-2 border-dashed border-white/35 bg-black/10 backdrop-blur-[1px] flex flex-col items-center justify-center text-center px-5">
-            <img src="/iscene.png" alt="iSCENE" className="w-10 h-10 rounded-full object-contain bg-white/90 p-1 shadow-md mb-3" />
-            <QrCode size={42} className="text-white/90 mb-3" />
-            <p className="text-white text-sm font-bold">Place QR code here</p>
-            <p className="text-slate-200 text-[11px] mt-1">Keep the code centered and steady</p>
-          </div>
-        </div>
-
-        <div className="mt-20 w-full max-w-md text-center">
-          <h3 className="text-white text-2xl font-bold">Align QR Code within frame</h3>
-          <p className="mt-2 text-sm text-slate-300">{subtitle}</p>
-          {uploadingImage && <p className="mt-3 text-sm font-semibold text-blue-300">Reading uploaded image…</p>}
-          {!uploadingImage && !camError && !cameraReady && <p className="mt-3 text-sm font-semibold text-blue-300">Starting live camera…</p>}
-          {camError && <p className="mt-3 text-sm font-semibold text-red-300">{camError}</p>}
-        </div>
-      </main>
-
-      <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
-        <div className="grid grid-cols-3 items-center justify-items-center gap-4 max-w-sm mx-auto">
-          <div className="flex items-center gap-3 justify-self-end">
-            <button
-              type="button"
-              onClick={() => !controlsDisabled && fileInputRef.current?.click()}
-              disabled={controlsDisabled}
-              title="Upload from Gallery"
-              className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
-            >
-              <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
-                <ImageUp size={18} />
-              </span>
-              <span className="text-[10px] font-semibold text-slate-500">Gallery</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => !controlsDisabled && captureInputRef.current?.click()}
-              disabled={controlsDisabled}
-              title="Take Photo"
-              className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
-            >
-              <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
-                <Camera size={18} />
-              </span>
-              <span className="text-[10px] font-semibold text-slate-500">Take Photo</span>
-            </button>
-          </div>
-          <div className="flex size-20 items-center justify-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-500/30 ring-4 ring-blue-200/60">
-            <QrCode size={30} />
-          </div>
-          <button
-            type="button"
-            onClick={() => void startScanner()}
-            disabled={controlsDisabled}
-            title="Restart Camera"
-            className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none justify-self-start"
-          >
-            <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
-              <RefreshCw size={18} className={!cameraReady && !camError ? 'animate-spin' : ''} />
-            </span>
-            <span className="text-[10px] font-semibold text-slate-500">Restart</span>
-          </button>
-        </div>
-        <p className="mt-3 text-center text-xs font-medium text-slate-500">Scan live · Upload from gallery · Take a photo</p>
-      </div>
-
-      {scanSuccess && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/80 backdrop-blur-md">
-          <div className="mx-6 w-full max-w-xs rounded-3xl bg-white p-6 text-center shadow-2xl border border-emerald-200">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-4 ring-emerald-200/50">
-              <CheckCircle2 size={36} strokeWidth={2.5} />
-            </div>
-            <p className="text-xl font-black text-slate-900">Scanned successfully</p>
-            <p className="mt-2 text-sm text-slate-500">Closing camera…</p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Main Component - QrScanModal imported from ./QrScanModal
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Main Component
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 type Props = { user: FirebaseUser; registration: any; onSignOut: () => Promise<void> };
 
-export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
+function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const fullName   = (registration?.fullName as string) || user.email || 'Facilitator';
   const profilePicUrl = (registration?.profilePictureUrl as string | undefined) || null;
   const myInitials = initials(fullName);
 
-  // ── Nav ────────────────────────────────────────────────────────────────
+  // â”€â”€ Nav â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [activeTab, setActiveTab] = React.useState<Tab>('overview');
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
-  // ── Data ───────────────────────────────────────────────────────────────
+  // â”€â”€ Data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [participants, setParticipants]   = React.useState<ParticipantReg[]>([]);
   const [rooms,        setRooms]          = React.useState<Room[]>([]);
   const [reservations, setReservations]   = React.useState<Reservation[]>([]);
   const [attendance,   setAttendance]     = React.useState<AttendanceRecord[]>([]);
   const [loading,      setLoading]        = React.useState(true);
 
-  // ── Participant table ──────────────────────────────────────────────────
+  // â”€â”€ Participant table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [searchQuery,   setSearchQuery]   = React.useState('');
   const [filterRole,    setFilterRole]    = React.useState('');
   const [filterStatus,  setFilterStatus]  = React.useState('');
   const [page,          setPage]          = React.useState(1);
   const PAGE_SIZE = 8;
 
-  // ── Detail modal ───────────────────────────────────────────────────────
+  // â”€â”€ Detail modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [selectedParticipant, setSelectedParticipant] = React.useState<ParticipantReg | null>(null);
 
-  // ── QR Scan state ──────────────────────────────────────────────────────
+  // â”€â”€ QR Scan state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   type ScanMode = { type: 'entrance' } | { type: 'room'; room: Room };
   const [scanMode,    setScanMode]    = React.useState<ScanMode | null>(null);
   const [scanLoading, setScanLoading] = React.useState(false);
 
-  // ── Modals ─────────────────────────────────────────────────────────────
+  // â”€â”€ Modals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [idModal, setIdModal] = React.useState(false);
 
-  // ── Toast ──────────────────────────────────────────────────────────────
+  // â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [toast, setToast] = React.useState<{ msg: string; ok: boolean } | null>(null);
   const showToast = (msg: string, ok = true) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 4500); };
 
-  // ── Profile ────────────────────────────────────────────────────────────
+  // â”€â”€ Profile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [pwResetSent, setPwResetSent] = React.useState(false);
 
-  // ── Digital ID ─────────────────────────────────────────────────────────
+  // â”€â”€ Digital ID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const qrData   = `https://iscene.app/verify?uid=${user.uid}&name=${encodeURIComponent(fullName)}&role=facilitator`;
   const qrImgSrc = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrData)}`;
 
-  // ── Load data ──────────────────────────────────────────────────────────
+  // â”€â”€ Load data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   React.useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -562,7 +231,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Derived stats ──────────────────────────────────────────────────────
+  // â”€â”€ Derived stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const approvedCount   = participants.filter((p) => p.status === 'approved').length;
   const checkedInCount  = new Set(attendance.filter((a) => a.type === 'entrance').map((a) => a.uid)).size;
   const speakersCount   = participants.filter((p) => p.sector === 'Speakers').length;
@@ -570,7 +239,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const checkedInSet    = new Set(attendance.filter((a) => a.type === 'entrance').map((a) => a.uid));
   const reservedSet     = new Set(reservations.map((r) => r.uid));
 
-  // ── Filtered participants ──────────────────────────────────────────────
+  // â”€â”€ Filtered participants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const filtered = React.useMemo(() => {
     return participants.filter((p) => {
       const fullName = (p.fullName || '').toLowerCase();
@@ -588,7 +257,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const paginated     = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const uniqueSectors = Array.from(new Set(participants.map((p) => p.sector).filter(Boolean)));
 
-  // ── QR Scan result handler ─────────────────────────────────────────────
+  // â”€â”€ QR Scan result handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleScanResult = async (text: string) => {
     if (!scanMode) return;
     // Delay showing loading spinner so the QrScanModal's 1500ms success animation can finish
@@ -604,16 +273,16 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         const match = trimmed.match(/[?&]uid=([^&\s]+)/);
         uid = match ? decodeURIComponent(match[1]) : null;
       }
-      if (!uid) { showToast('❌ Invalid QR — no UID found.', false); setScanMode(null); return; }
+      if (!uid) { showToast('âŒ Invalid QR â€” no UID found.', false); setScanMode(null); return; }
 
       const regQuery = query(collection(db, 'registrations'), where('uid', '==', uid), limit(1));
       const regSnap  = await getDocs(regQuery);
-      if (regSnap.empty) { showToast('❌ No registration found for this QR.', false); setScanMode(null); return; }
+      if (regSnap.empty) { showToast('âŒ No registration found for this QR.', false); setScanMode(null); return; }
       const regData  = regSnap.docs[0].data() as any;
       const pName    = regData.fullName || uid;
 
       if (regData.status !== 'approved') {
-        showToast(`⚠️ ${pName} is not yet approved.`, false);
+        showToast(`âš ï¸ ${pName} is not yet approved.`, false);
         setScanMode(null);
         return;
       }
@@ -627,12 +296,12 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           const filtered = prev.filter((a) => a.id !== docId);
           return [...filtered, { id: docId, uid, type: 'entrance', createdAt: Timestamp.now() }];
         });
-        showToast(`✅ ${pName} — Entrance check-in recorded!`);
+        showToast(`âœ… ${pName} â€” Entrance check-in recorded!`);
       } else {
         const room = scanMode.room;
         const hasReservation = reservations.some((r) => r.uid === uid && r.roomId === room.id);
         if (!hasReservation) {
-          showToast(`⚠️ ${pName} has no reservation for "${room.name}".`, false);
+          showToast(`âš ï¸ ${pName} has no reservation for "${room.name}".`, false);
         } else {
           const docId = `${uid}_${room.id}`;
           await setDoc(doc(db, 'attendance', docId), {
@@ -642,30 +311,30 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             const f = prev.filter((a) => a.id !== docId);
             return [...f, { id: docId, uid, type: 'room', roomId: room.id, createdAt: Timestamp.now() }];
           });
-          showToast(`✅ ${pName} — Checked into "${room.name}"!`);
+          showToast(`âœ… ${pName} â€” Checked into "${room.name}"!`);
         }
       }
     } catch (err) {
       console.error(err);
-      showToast('❌ Failed to process QR. Try again.', false);
+      showToast('âŒ Failed to process QR. Try again.', false);
     } finally {
       clearTimeout(startLoading);
       setScanLoading(false);
     }
   };
 
-  // ── Status badge ───────────────────────────────────────────────────────
+  // â”€â”€ Status badge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const statusBadge = (p: ParticipantReg) => {
     if (checkedInSet.has(p.uid))      return { label: 'Checked In', cls: 'text-blue-500' };
     if (p.status === 'approved')      return { label: 'Confirmed',  cls: 'text-emerald-500' };
     return                                   { label: 'Pending',    cls: 'text-amber-500' };
   };
 
-  // ── Participant detail getters ─────────────────────────────────────────
+  // â”€â”€ Participant detail getters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const participantReservations = (uid: string) => reservations.filter((r) => r.uid === uid);
   const participantAttendance   = (uid: string) => attendance.filter((a) => a.uid === uid);
 
-  // ── Sidebar nav items ─────────────────────────────────────────────────
+  // â”€â”€ Sidebar nav items â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const NAV = [
     { id: 'overview'      as Tab, label: 'Overview',        icon: <LayoutDashboard size={19} /> },
     { id: 'participants'  as Tab, label: 'Participants',     icon: <Users size={19} /> },
@@ -682,7 +351,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Page title mapping
   const PAGE_TITLES: Record<Tab, string> = {
     overview:       'Overview',
@@ -693,7 +362,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     profile:        'My Profile',
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
 
@@ -704,10 +373,10 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         </div>
       )}
 
-      {/* ── Mobile sidebar backdrop ─────────────────────────────────── */}
+      {/* â”€â”€ Mobile sidebar backdrop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/40 lg:hidden" onClick={() => setSidebarOpen(false)} />}
 
-      {/* ═══════════════ SIDEBAR ═══════════════ */}
+      {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• SIDEBAR â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       <aside className={`w-72 bg-white border-r border-slate-200 flex flex-col shrink-0 fixed lg:relative inset-y-0 left-0 z-40 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         {/* Logo */}
         <div className="p-6 flex items-center gap-3 border-b border-slate-100">
@@ -761,7 +430,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         </div>
       </aside>
 
-      {/* ═══════════════ MAIN CONTENT ═══════════════ */}
+      {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• MAIN CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       <main className="flex-1 flex flex-col overflow-hidden min-w-0">
 
         {/* Top header */}
@@ -784,7 +453,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
                   className="pl-9 pr-4 py-2 bg-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 w-56"
-                  placeholder="Search by name or ID…" />
+                  placeholder="Search by name or IDâ€¦" />
               </div>
             )}
             <button type="button" className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 relative">
@@ -801,7 +470,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
 
-          {/* ══ OVERVIEW ══ */}
+          {/* â•â• OVERVIEW â•â• */}
           {activeTab === 'overview' && (
             <>
               {/* Stats */}
@@ -855,7 +524,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             : <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p?.fullName || '')}`}>{initials(p?.fullName || '??')}</div>}
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold">{p?.fullName || a.uid}</p>
-                            <p className="text-[11px] text-slate-400">{p?.sector || '—'}</p>
+                            <p className="text-[11px] text-slate-400">{p?.sector || 'â€”'}</p>
                           </div>
                           <p className="text-xs text-slate-400 shrink-0">{date.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</p>
                           <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
@@ -868,7 +537,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             </>
           )}
 
-          {/* ══ PARTICIPANTS ══ */}
+          {/* â•â• PARTICIPANTS â•â• */}
           {activeTab === 'participants' && (
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
               {/* Filters */}
@@ -898,7 +567,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 <div className="sm:hidden relative w-full">
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
-                    className="w-full pl-9 pr-4 py-2 bg-slate-100 rounded-xl text-sm outline-none" placeholder="Search…" />
+                    className="w-full pl-9 pr-4 py-2 bg-slate-100 rounded-xl text-sm outline-none" placeholder="Searchâ€¦" />
                 </div>
               </div>
 
@@ -944,7 +613,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                                 <p className="text-sm font-medium">{p.accommodationHotel}{p.accommodationRoom ? ` ${p.accommodationRoom}` : ''}</p>
                                 {p.accommodationCheckIn && <p className="text-xs text-slate-400">Check-in: {p.accommodationCheckIn}</p>}
                               </div>
-                            ) : <span className="text-xs text-slate-300">—</span>}
+                            ) : <span className="text-xs text-slate-300">â€”</span>}
                           </td>
                           <td className="px-5 py-5 hidden xl:table-cell">
                             {p.flightRoute || p.flightNumber ? (
@@ -955,12 +624,12 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                                   : <Plane size={15} className="text-slate-400 mt-0.5 shrink-0" />}
                                 <div>
                                   <p className={`text-sm font-medium ${p.travelDelay ? 'text-red-500' : ''}`}>
-                                    {p.flightRoute || p.transportMode || '—'} {p.flightNumber ? `(${p.flightNumber})` : ''}
+                                    {p.flightRoute || p.transportMode || 'â€”'} {p.flightNumber ? `(${p.flightNumber})` : ''}
                                   </p>
                                   {p.arrivalTime && <p className="text-xs text-slate-400">{p.travelDelay ? 'Delayed: ' : 'Arriving '}{p.arrivalTime}</p>}
                                 </div>
                               </div>
-                            ) : <span className="text-xs text-slate-300">—</span>}
+                            ) : <span className="text-xs text-slate-300">â€”</span>}
                           </td>
                           <td className="px-5 py-5">
                             <div className={`flex items-center gap-1.5 ${sb.cls}`}>
@@ -982,20 +651,20 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
 
               {/* Pagination */}
               <div className="p-5 bg-slate-50 flex items-center justify-between flex-wrap gap-3">
-                <p className="text-xs text-slate-400 font-medium">Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length} participants</p>
+                <p className="text-xs text-slate-400 font-medium">Showing {(page - 1) * PAGE_SIZE + 1}â€“{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length} participants</p>
                 <div className="flex items-center gap-1.5">
                   <button disabled={page === 1} onClick={() => setPage((p) => p - 1)} className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 disabled:opacity-40 hover:border-blue-400 hover:text-blue-600 transition-all"><ChevronLeft size={15} /></button>
                   {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => i + 1).map((p) => (
                     <button key={p} onClick={() => setPage(p)} className={`w-8 h-8 flex items-center justify-center rounded-lg text-xs font-bold transition-colors ${p === page ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100 border border-slate-200'}`}>{p}</button>
                   ))}
-                  {totalPages > 5 && <><span className="text-slate-400 px-1">…</span><button onClick={() => setPage(totalPages)} className="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-bold text-slate-500 border border-slate-200 hover:bg-slate-100">{totalPages}</button></>}
+                  {totalPages > 5 && <><span className="text-slate-400 px-1">â€¦</span><button onClick={() => setPage(totalPages)} className="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-bold text-slate-500 border border-slate-200 hover:bg-slate-100">{totalPages}</button></>}
                   <button disabled={page === totalPages} onClick={() => setPage((p) => p + 1)} className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 disabled:opacity-40 hover:border-blue-400 hover:text-blue-600 transition-all"><ChevronRight size={15} /></button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* ══ ACCOMMODATIONS ══ */}
+          {/* â•â• ACCOMMODATIONS â•â• */}
           {activeTab === 'accommodations' && (
             <div>
               <div className="mb-5">
@@ -1031,9 +700,9 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             </div>
                           </td>
                           <td className="px-5 py-4"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${sectorBadge(p.sector)}`}>{p.sector || 'Participant'}</span></td>
-                          <td className="px-5 py-4 text-sm font-medium">{p.accommodationHotel || <span className="text-slate-300">—</span>}</td>
-                          <td className="px-5 py-4 text-sm">{p.accommodationRoom || <span className="text-slate-300">—</span>}</td>
-                          <td className="px-5 py-4 text-sm text-slate-500">{p.accommodationCheckIn || <span className="text-slate-300">—</span>}</td>
+                          <td className="px-5 py-4 text-sm font-medium">{p.accommodationHotel || <span className="text-slate-300">â€”</span>}</td>
+                          <td className="px-5 py-4 text-sm">{p.accommodationRoom || <span className="text-slate-300">â€”</span>}</td>
+                          <td className="px-5 py-4 text-sm text-slate-500">{p.accommodationCheckIn || <span className="text-slate-300">â€”</span>}</td>
                           <td className="px-5 py-4">
                             <div className={`flex items-center gap-1.5 ${sb.cls}`}>
                               <div className="w-1.5 h-1.5 rounded-full bg-current" />
@@ -1049,7 +718,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             </div>
           )}
 
-          {/* ══ TRAVEL ══ */}
+          {/* â•â• TRAVEL â•â• */}
           {activeTab === 'travel' && (
             <div>
               <div className="mb-5">
@@ -1089,12 +758,12 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                               <div className="flex items-center gap-2">
                                 {p.travelDelay ? <AlertTriangle size={14} className="text-red-500 shrink-0" /> : <Plane size={14} className="text-slate-400 shrink-0" />}
                                 <div>
-                                  <p className={`text-sm font-medium ${p.travelDelay ? 'text-red-500' : ''}`}>{p.flightRoute || p.transportMode || '—'} {p.flightNumber ? `(${p.flightNumber})` : ''}</p>
+                                  <p className={`text-sm font-medium ${p.travelDelay ? 'text-red-500' : ''}`}>{p.flightRoute || p.transportMode || 'â€”'} {p.flightNumber ? `(${p.flightNumber})` : ''}</p>
                                 </div>
                               </div>
-                            ) : <span className="text-sm text-slate-300">—</span>}
+                            ) : <span className="text-sm text-slate-300">â€”</span>}
                           </td>
-                          <td className="px-5 py-4 text-sm text-slate-500">{p.arrivalTime || <span className="text-slate-300">—</span>}</td>
+                          <td className="px-5 py-4 text-sm text-slate-500">{p.arrivalTime || <span className="text-slate-300">â€”</span>}</td>
                           <td className="px-5 py-4">
                             <div className={`flex items-center gap-1.5 ${sb.cls}`}>
                               <div className="w-1.5 h-1.5 rounded-full bg-current" />
@@ -1110,11 +779,11 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             </div>
           )}
 
-          {/* ══ CALENDAR (Rooms / Sessions) ══ */}
+          {/* â•â• CALENDAR (Rooms / Sessions) â•â• */}
           {activeTab === 'calendar' && (
             <div>
               <div className="mb-5">
-                <h2 className="text-xl font-black">Event Calendar — Session Rooms</h2>
+                <h2 className="text-xl font-black">Event Calendar â€” Session Rooms</h2>
                 <p className="text-slate-400 text-sm mt-1">Monitor session capacity and scan room attendance</p>
               </div>
               {rooms.length === 0 ? (
@@ -1166,7 +835,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             </div>
           )}
 
-          {/* ══ PROFILE ══ */}
+          {/* â•â• PROFILE â•â• */}
           {activeTab === 'profile' && (
             <div className="max-w-2xl">
               <div className="space-y-4">
@@ -1180,7 +849,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
                       <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">Facilitator</span>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${registration?.status === 'approved' ? 'text-emerald-600 bg-emerald-50' : 'text-amber-600 bg-amber-50'}`}>
-                        {registration?.status === 'approved' ? '✓ Approved' : '⏳ Pending'}
+                        {registration?.status === 'approved' ? 'âœ“ Approved' : 'â³ Pending'}
                       </span>
                     </div>
                   </div>
@@ -1197,7 +866,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                       { label: 'Position',     value: registration?.positionTitle },
                       { label: 'Contact',      value: registration?.contactNumber },
                     ].map(({ label, value }) => (
-                      <div key={label}><p className="text-[11px] text-slate-400 mb-0.5">{label}</p><p className="font-semibold text-xs">{value || '—'}</p></div>
+                      <div key={label}><p className="text-[11px] text-slate-400 mb-0.5">{label}</p><p className="font-semibold text-xs">{value || 'â€”'}</p></div>
                     ))}
                   </div>
                 </div>
@@ -1219,7 +888,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         </div>
       </main>
 
-      {/* ═══════════════ PARTICIPANT DETAIL DRAWER ═══════════════ */}
+      {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• PARTICIPANT DETAIL DRAWER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       {selectedParticipant && (
         <>
           <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" onClick={() => setSelectedParticipant(null)} />
@@ -1234,7 +903,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 <p className="text-xs text-slate-400">{shortId(selectedParticipant.id)}</p>
                 <div className="flex items-center gap-2 mt-1 flex-wrap">
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sectorBadge(selectedParticipant.sector)}`}>{selectedParticipant.sector || 'Participant'}</span>
-                  {(() => { const sb = statusBadge(selectedParticipant); return <span className={`text-[10px] font-bold ${sb.cls}`}>● {sb.label}</span>; })()}
+                  {(() => { const sb = statusBadge(selectedParticipant); return <span className={`text-[10px] font-bold ${sb.cls}`}>â— {sb.label}</span>; })()}
                 </div>
               </div>
               <button type="button" onClick={() => setSelectedParticipant(null)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 hover:bg-slate-200 shrink-0"><X size={15} /></button>
@@ -1329,7 +998,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         </>
       )}
 
-      {/* ═══════════════ QR SCANNER ═══════════════ */}
+      {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• QR SCANNER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       {scanMode && (
         <QrScanModal
           title={scanMode.type === 'entrance' ? 'Scan Entrance QR' : `Scan for: ${scanMode.room.name}`}
@@ -1343,12 +1012,12 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         <div className="fixed inset-0 z-[90] bg-black/70 flex items-center justify-center">
           <div className="bg-white rounded-2xl p-8 flex flex-col items-center gap-3">
             <Loader2 className="animate-spin text-blue-600" size={32} />
-            <p className="text-sm font-bold">Processing QR…</p>
+            <p className="text-sm font-bold">Processing QRâ€¦</p>
           </div>
         </div>
       )}
 
-      {/* ═══════════════ DIGITAL ID ═══════════════ */}
+      {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• DIGITAL ID â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       {idModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl">
@@ -1369,7 +1038,7 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
               <p className="mt-2 text-[11px] text-slate-400 font-mono tracking-widest">ID #{user.uid.slice(0, 8).toUpperCase()}</p>
             </div>
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-[10px] text-slate-400">April 9–11, 2026</span>
+              <span className="text-[10px] text-slate-400">April 9â€“11, 2026</span>
               <a href={`https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(qrData)}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:underline">
                 <Download size={11} /> Download
               </a>
@@ -1380,3 +1049,5 @@ export function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     </div>
   );
 }
+
+export { FacilitatorDashboard };
