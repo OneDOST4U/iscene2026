@@ -8,6 +8,8 @@ export type QrScanModalProps = {
   showTakePhoto?: boolean;
   onClose: () => void;
   onResult: (text: string) => void | Promise<void>;
+  /** Optional footer with Reserve and Cancel when opened from room detail */
+  footerActions?: React.ReactNode;
 };
 
 export function QrScanModal({
@@ -16,6 +18,7 @@ export function QrScanModal({
   showTakePhoto = true,
   onClose,
   onResult,
+  footerActions,
 }: QrScanModalProps) {
   const [camError, setCamError] = React.useState<string | null>(null);
   const [cameraReady, setCameraReady] = React.useState(false);
@@ -345,6 +348,11 @@ export function QrScanModal({
           </main>
 
           <div className="absolute inset-x-0 bottom-0 z-20 rounded-t-[28px] border-t border-white/10 bg-slate-50/95 px-6 py-5 backdrop-blur-xl">
+            {footerActions && (
+              <div className="flex gap-3 justify-center mb-4">
+                {footerActions}
+              </div>
+            )}
             <div className="grid grid-cols-3 items-center justify-items-center gap-4 max-w-sm mx-auto">
               <div className={`flex items-center gap-3 justify-self-end ${showTakePhoto ? '' : 'col-span-1'}`}>
                 <button

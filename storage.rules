@@ -60,6 +60,40 @@ service firebase.storage {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // BOOTH IMAGES  /boothImages/{uid}/{fileName}
+    // Food booth operators upload booth image and background.
+    // ─────────────────────────────────────────────────────────────
+    match /boothImages/{userId}/{fileName} {
+      allow create, update: if (isOwner(userId) || isAdmin())
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow read: if signedIn();
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    match /boothBackgrounds/{userId}/{fileName} {
+      allow create, update: if (isOwner(userId) || isAdmin())
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow read: if signedIn();
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ROOM BACKGROUNDS  /roomBackgrounds/{path=**}
+    // Admin and speakers upload room/session background images.
+    // Paths: roomBackgrounds/{timestamp}_{name} (create) or roomBackgrounds/{roomId}/{timestamp}_{name} (edit)
+    // Firestore rules control who can update the room doc; storage allows signed-in uploads.
+    // ─────────────────────────────────────────────────────────────
+    match /roomBackgrounds/{path=**} {
+      allow create, update: if signedIn()
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow read: if signedIn();
+      allow delete: if signedIn();
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // CERTIFICATE FILES  /certificates/{uid}/{fileName}
     // Admin creates/manages; owner can download their own.
     // ─────────────────────────────────────────────────────────────

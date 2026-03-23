@@ -670,7 +670,7 @@ iSCENE 2026 Organizing Team</p>`,
     updates: Record<string, any>,
   ) => {
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         fullName: (updates.fullName as string | undefined)?.trim() || '',
         email: (updates.email as string | undefined)?.trim() || '',
         sector: (updates.sector as string | undefined)?.trim() || '',
@@ -682,6 +682,11 @@ iSCENE 2026 Organizing Team</p>`,
         travelDetails: (updates.travelDetails as string | undefined) || '',
         notes: (updates.notes as string | undefined) || '',
       };
+      if (updates.boothDescription !== undefined) payload.boothDescription = (updates.boothDescription as string)?.trim() || '';
+      if (updates.boothProducts !== undefined) payload.boothProducts = (updates.boothProducts as string)?.trim() || '';
+      if (updates.boothWebsite !== undefined) payload.boothWebsite = (updates.boothWebsite as string)?.trim() || '';
+      if (updates.boothImageUrl !== undefined) payload.boothImageUrl = (updates.boothImageUrl as string)?.trim() || '';
+      if (updates.boothBackgroundUrl !== undefined) payload.boothBackgroundUrl = (updates.boothBackgroundUrl as string)?.trim() || '';
       await updateDoc(doc(db, 'registrations', registrationId), payload);
       setRegistrations((prev) =>
         prev.map((registration) =>
@@ -924,9 +929,9 @@ iSCENE 2026 Organizing Team</p>`,
           <SpeakerDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         ) : participantSector === 'Facilitators' ? (
           <FacilitatorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Food (Booth)' || participantSector === 'Exhibitor (Booth)' ? (
+        ) : participantSector === 'Food (Booth)' ? (
           <FoodBoothDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Exhibitor' ? (
+        ) : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)' ? (
           <ExhibitorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         ) : (
           <ParticipantDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
@@ -1758,8 +1763,9 @@ iSCENE 2026 Organizing Team</p>`,
                     <option value="Others">Others</option>
                     <option value="Speakers">Speakers</option>
                     <option value="Facilitators">Facilitators</option>
-                    <option value="Food (Booth)">Food (Booth)</option>
-                    <option value="Exhibitor (Booth)">Exhibitor (Booth)</option>
+                    <option value="Food (Booth)">Food (Booth) — Food service & concessions only</option>
+                    <option value="Exhibitor (Booth)">Exhibitor (Booth) — Products, research & company</option>
+                    <option value="Exhibitor">Exhibitor — Products, research & company</option>
                     <option value="DOST">DOST</option>
                   </select>
                 </div>

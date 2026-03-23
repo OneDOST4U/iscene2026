@@ -21,6 +21,10 @@ import {
   AlertCircle,
   ArrowLeft,
   ImageUp,
+  Edit2,
+  Save,
+  ImageIcon,
+  Upload,
   Camera,
   RefreshCw,
 } from 'lucide-react';
@@ -37,8 +41,10 @@ import {
   limit,
   getDoc,
   documentId,
+  updateDoc,
 } from 'firebase/firestore';
-import { db, auth } from './firebase';
+import { db, auth, storage } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { QrScanModal } from './QrScanModal';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +205,102 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
 
   // ── Profile ────────────────────────────────────────────────────────────
   const [pwResetSent, setPwResetSent] = React.useState(false);
+  const [profileEditing, setProfileEditing] = React.useState(false);
+  const [profileSaving, setProfileSaving] = React.useState(false);
+  const [registrationOverride, setRegistrationOverride] = React.useState<Record<string, unknown> | null>(null);
+  const [editSectorOffice, setEditSectorOffice] = React.useState('');
+  const [editPositionTitle, setEditPositionTitle] = React.useState('');
+  const [editContactNumber, setEditContactNumber] = React.useState('');
+  const [editBoothDescription, setEditBoothDescription] = React.useState('');
+  const [editBoothWebsite, setEditBoothWebsite] = React.useState('');
+  const [editBoothProducts, setEditBoothProducts] = React.useState('');
+  const [editBoothImageUrl, setEditBoothImageUrl] = React.useState('');
+  const [editBoothBackgroundUrl, setEditBoothBackgroundUrl] = React.useState('');
+  const [uploadingBoothImage, setUploadingBoothImage] = React.useState(false);
+  const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
+
+  React.useEffect(() => {
+    if (profileEditing && registration) {
+      setEditSectorOffice((registration.sectorOffice as string) || '');
+      setEditPositionTitle((registration.positionTitle as string) || '');
+      setEditContactNumber((registration.contactNumber as string) || '');
+      setEditBoothDescription((registration.boothDescription as string) || '');
+      setEditBoothWebsite((registration.boothWebsite as string) || '');
+      setEditBoothProducts((registration.boothProducts as string) || '');
+      setEditBoothImageUrl((registration.boothImageUrl as string) || '');
+      setEditBoothBackgroundUrl((registration.boothBackgroundUrl as string) || '');
+    }
+  }, [profileEditing, registration?.id]);
+
+  const handleSaveProfile = React.useCallback(async () => {
+    if (!registration?.id) return;
+    setProfileSaving(true);
+    try {
+      const payload: Record<string, string> = {
+        sectorOffice: editSectorOffice.trim() || '',
+        positionTitle: editPositionTitle.trim() || '',
+        contactNumber: editContactNumber.trim() || '',
+        boothDescription: editBoothDescription.trim() || '',
+        boothWebsite: editBoothWebsite.trim() || '',
+        boothProducts: editBoothProducts.trim() || '',
+        boothImageUrl: editBoothImageUrl.trim() || '',
+        boothBackgroundUrl: editBoothBackgroundUrl.trim() || '',
+      };
+      await updateDoc(doc(db, 'registrations', registration.id), payload);
+      setRegistrationOverride((prev) => ({ ...prev, ...payload }));
+      setProfileEditing(false);
+      showToast('Profile updated successfully');
+    } catch (err) {
+      console.error(err);
+      showToast('Failed to save. Try again.', false);
+    } finally {
+      setProfileSaving(false);
+    }
+  }, [registration?.id, editSectorOffice, editPositionTitle, editContactNumber, editBoothDescription, editBoothWebsite, editBoothProducts, editBoothImageUrl, editBoothBackgroundUrl]);
+
+  const handleBoothImageUpload = React.useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) { showToast('Please select an image file.', false); return; }
+    setUploadingBoothImage(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `boothImages/${user.uid}/${Date.now()}_${safeName}`;
+      const contentType = file.type || 'image/jpeg';
+      const snap = await uploadBytes(ref(storage, path), file, { contentType });
+      const url = await getDownloadURL(snap.ref);
+      setEditBoothImageUrl(url);
+      showToast('Booth image uploaded. Click Save to keep changes.');
+    } catch (err: unknown) {
+      console.error('Booth image upload error:', err);
+      const msg = err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'storage/unauthorized'
+        ? 'Storage rules not deployed. Run: firebase deploy --only storage'
+        : 'Upload failed. Try again or use a smaller image (<5MB).';
+      showToast(msg, false);
+    }
+    finally { setUploadingBoothImage(false); e.target.value = ''; }
+  }, [user.uid]);
+
+  const handleBoothBackgroundUpload = React.useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) { showToast('Please select an image file.', false); return; }
+    setUploadingBoothBackground(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `boothBackgrounds/${user.uid}/${Date.now()}_${safeName}`;
+      const contentType = file.type || 'image/jpeg';
+      const snap = await uploadBytes(ref(storage, path), file, { contentType });
+      const url = await getDownloadURL(snap.ref);
+      setEditBoothBackgroundUrl(url);
+      showToast('Background image uploaded. Click Save to keep changes.');
+    } catch (err: unknown) {
+      console.error('Booth background upload error:', err);
+      const msg = err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'storage/unauthorized'
+        ? 'Storage rules not deployed. Run: firebase deploy --only storage'
+        : 'Upload failed. Try again or use a smaller image (<5MB).';
+      showToast(msg, false);
+    }
+    finally { setUploadingBoothBackground(false); e.target.value = ''; }
+  }, [user.uid]);
 
   // ── Derived ────────────────────────────────────────────────────────────
   const now = new Date();
@@ -543,12 +645,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
       <header className="flex items-center justify-between border-b border-slate-200 bg-white/90 backdrop-blur-md px-6 md:px-10 py-4 sticky top-0 z-40">
         <div className="flex items-center gap-8">
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-xl text-white">
-              <UtensilsCrossed size={18} />
-            </div>
-            <h1 className="text-lg font-black tracking-tight">
-              iSCENE <span className="text-blue-600">2026</span>
-            </h1>
+            <img src="/iscene.png" alt="iSCENE 2026" className="h-9 w-auto object-contain" />
           </div>
           <nav className="hidden lg:flex items-center gap-6 text-sm font-medium">
             {([
@@ -1164,6 +1261,41 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         {/* ══════════════ PROFILE ══════════════ */}
         {activeTab === 'profile' && (
           <div className="max-w-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <button
+                type="button"
+                onClick={() => setActiveTab('dashboard')}
+                className="flex items-center gap-2 text-slate-600 hover:text-blue-600 font-semibold transition-colors"
+              >
+                <ArrowLeft size={20} />
+                Back to Home
+              </button>
+              {!profileEditing ? (
+                <button
+                  type="button"
+                  onClick={() => setProfileEditing(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-full text-sm font-bold hover:bg-blue-700"
+                >
+                  <Edit2 size={16} />
+                  Edit Profile
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setProfileEditing(false)} className="px-4 py-2 rounded-full text-sm font-bold border border-slate-200 text-slate-600 hover:bg-slate-50">
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveProfile()}
+                    disabled={profileSaving}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-full text-sm font-bold hover:bg-blue-700 disabled:opacity-70"
+                  >
+                    {profileSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                    {profileSaving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              )}
+            </div>
             <h2 className="text-2xl font-black mb-6">My Profile</h2>
             <div className="space-y-4">
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex items-center gap-4">
@@ -1186,16 +1318,106 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
               </div>
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-3">Registration Info</p>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  {[
-                    { label: 'Sector', value: registration?.sector },
-                    { label: 'Organization', value: registration?.sectorOffice },
-                    { label: 'Position', value: registration?.positionTitle },
-                    { label: 'Contact', value: registration?.contactNumber },
-                  ].map(({ label, value }) => (
-                    <div key={label}><p className="text-[11px] text-slate-400 mb-0.5">{label}</p><p className="font-semibold text-xs">{value || '—'}</p></div>
-                  ))}
-                </div>
+                {profileEditing ? (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Organization</label>
+                      <input value={editSectorOffice} onChange={(e) => setEditSectorOffice(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Mcdo" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Position</label>
+                      <input value={editPositionTitle} onChange={(e) => setEditPositionTitle(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Cashier" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Contact</label>
+                      <input value={editContactNumber} onChange={(e) => setEditContactNumber(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. 09568618070" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Booth Description (optional)</label>
+                      <textarea value={editBoothDescription} onChange={(e) => setEditBoothDescription(e.target.value)}
+                        rows={3} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Brief description of your booth…" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Booth Website (optional)</label>
+                      <input value={editBoothWebsite} onChange={(e) => setEditBoothWebsite(e.target.value)}
+                        type="url" className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="https://…" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Products / Services (optional)</label>
+                      <input value={editBoothProducts} onChange={(e) => setEditBoothProducts(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Burgers, Fries" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Booth Image (optional)</label>
+                      <div className="flex items-center gap-3">
+                        {editBoothImageUrl && (
+                          <img src={editBoothImageUrl} alt="Booth" className="h-16 w-16 rounded-xl object-cover border border-slate-200" />
+                        )}
+                        <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold cursor-pointer hover:bg-slate-50 transition-colors ${uploadingBoothImage ? 'opacity-60 pointer-events-none' : ''}`}>
+                          <input type="file" accept="image/*" className="hidden" onChange={handleBoothImageUpload} />
+                          {uploadingBoothImage ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                          {uploadingBoothImage ? 'Uploading…' : 'Upload'}
+                        </label>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Booth Background (optional)</label>
+                      <div className="flex items-center gap-3">
+                        {editBoothBackgroundUrl && (
+                          <img src={editBoothBackgroundUrl} alt="Background" className="h-12 w-20 rounded-xl object-cover border border-slate-200" />
+                        )}
+                        <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold cursor-pointer hover:bg-slate-50 transition-colors ${uploadingBoothBackground ? 'opacity-60 pointer-events-none' : ''}`}>
+                          <input type="file" accept="image/*" className="hidden" onChange={handleBoothBackgroundUpload} />
+                          {uploadingBoothBackground ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                          {uploadingBoothBackground ? 'Uploading…' : 'Upload'}
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    {[
+                      { label: 'Sector', value: registration?.sector },
+                      { label: 'Organization', value: (registrationOverride?.sectorOffice ?? registration?.sectorOffice) as string },
+                      { label: 'Position', value: (registrationOverride?.positionTitle ?? registration?.positionTitle) as string },
+                      { label: 'Contact', value: (registrationOverride?.contactNumber ?? registration?.contactNumber) as string },
+                    ].map(({ label, value }) => (
+                      <div key={label}><p className="text-[11px] text-slate-400 mb-0.5">{label}</p><p className="font-semibold text-xs">{value || '—'}</p></div>
+                    ))}
+                    {((registrationOverride?.boothDescription ?? registration?.boothDescription) || (registrationOverride?.boothWebsite ?? registration?.boothWebsite) || (registrationOverride?.boothProducts ?? registration?.boothProducts)) && (
+                      <div className="col-span-2 mt-2 pt-3 border-t border-slate-100 space-y-2">
+                        {(registrationOverride?.boothDescription ?? registration?.boothDescription) && (
+                          <div><p className="text-[11px] text-slate-400 mb-0.5">Booth Description</p><p className="font-semibold text-xs">{(registrationOverride?.boothDescription ?? registration?.boothDescription) as string}</p></div>
+                        )}
+                        {(registrationOverride?.boothWebsite ?? registration?.boothWebsite) && (
+                          <div><p className="text-[11px] text-slate-400 mb-0.5">Website</p><a href={(registrationOverride?.boothWebsite ?? registration?.boothWebsite) as string} target="_blank" rel="noopener noreferrer" className="text-blue-600 text-xs font-semibold hover:underline">{(registrationOverride?.boothWebsite ?? registration?.boothWebsite) as string}</a></div>
+                        )}
+                        {(registrationOverride?.boothProducts ?? registration?.boothProducts) && (
+                          <div><p className="text-[11px] text-slate-400 mb-0.5">Products / Services</p><p className="font-semibold text-xs">{(registrationOverride?.boothProducts ?? registration?.boothProducts) as string}</p></div>
+                        )}
+                        {((registrationOverride?.boothImageUrl ?? registration?.boothImageUrl) || (registrationOverride?.boothBackgroundUrl ?? registration?.boothBackgroundUrl)) && (
+                          <div className="col-span-2 mt-2 pt-3 border-t border-slate-100 flex flex-wrap gap-4">
+                            {(registrationOverride?.boothImageUrl ?? registration?.boothImageUrl) && (
+                              <div><p className="text-[11px] text-slate-400 mb-1">Booth Image</p><img src={(registrationOverride?.boothImageUrl ?? registration?.boothImageUrl) as string} alt="Booth" className="h-24 w-24 rounded-xl object-cover border border-slate-200" /></div>
+                            )}
+                            {(registrationOverride?.boothBackgroundUrl ?? registration?.boothBackgroundUrl) && (
+                              <div><p className="text-[11px] text-slate-400 mb-1">Background</p><img src={(registrationOverride?.boothBackgroundUrl ?? registration?.boothBackgroundUrl) as string} alt="Background" className="h-16 w-24 rounded-xl object-cover border border-slate-200" /></div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">Account</p>
@@ -1240,7 +1462,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-orange-100 shadow-md" />
                 : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-orange-100">{myInitials}</div>}
               <h3 className="text-base font-black text-center">{fullName}</h3>
-              <p className="text-xs text-slate-500 mt-0.5">{registration?.sectorOffice || 'Food Booth Operator'}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{(registrationOverride?.sectorOffice ?? registration?.sectorOffice) || 'Food Booth Operator'}</p>
               <span className="mt-2 px-3 py-1 rounded-full bg-orange-100 text-orange-700 text-[11px] font-bold">Food (Booth)</span>
               <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100">
                 <img src={digitalIdQrImg} alt="QR" className="w-44 h-44" />

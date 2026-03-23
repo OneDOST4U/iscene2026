@@ -21,12 +21,15 @@ import {
   KeyRound,
   Search,
   Save,
+  Image as ImageIcon,
+  MessageCircle,
   Mail,
   Phone,
-  Building2,
   Briefcase,
   UserCog,
   ShieldCheck,
+  Loader2,
+  ChevronRight,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -35,12 +38,16 @@ import {
   getDocs,
   deleteDoc,
   doc,
+  updateDoc,
   Timestamp,
   query,
   orderBy,
+  where,
+  onSnapshot,
+  deleteField,
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
-import { ref, getDownloadURL } from 'firebase/storage';
+import { ref, getDownloadURL, uploadBytes } from 'firebase/storage';
 
 type Tab = 'dashboard' | 'registrations' | 'rooms' | 'meals' | 'booths' | 'analytics';
 
@@ -75,8 +82,25 @@ type Room = {
   sessionDate: string;
   materials: string;
   presenterNames: string[];
+  presenterUids?: string[];
+  presenterTitles?: string[];
+  venue?: string;
+  backgroundImage?: string;
+  projectDetail?: string;
+  certificateProcessSteps?: string;
   createdAt: any;
 };
+
+type RoomChatMessage = {
+  id: string;
+  roomId: string;
+  uid: string;
+  participantName: string;
+  text: string;
+  createdAt: any;
+};
+
+type Venue = { id: string; name: string; order?: number };
 
 type Meal = {
   id: string;
@@ -111,6 +135,19 @@ const MEAL_LABELS: Record<string, string> = {
   snacks_pm: 'Snacks (PM)',
   dinner: 'Dinner',
 };
+
+const DEFAULT_VENUE_OPTIONS = [
+  'Main Hall',
+  'Conference Hall A',
+  'Conference Hall B',
+  'Room A',
+  'Room B',
+  'Room C',
+  'Exhibition Hall',
+  'Annex',
+  'Outdoor Area',
+  'TBD',
+];
 
 const TIME_OPTIONS = Array.from({ length: 27 }, (_, index) => {
   const totalMinutes = 7 * 60 + index * 30;
@@ -423,16 +460,23 @@ export function AdminDashboard({
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [searchText, setSearchText] = React.useState('');
   const [selectedQrRoom, setSelectedQrRoom] = React.useState<Room | null>(null);
+  const [editingRoom, setEditingRoom] = React.useState<Room | null>(null);
+  const [roomDetailView, setRoomDetailView] = React.useState<Room | null>(null);
+  const [roomChatMessages, setRoomChatMessages] = React.useState<RoomChatMessage[]>([]);
   const [editingRegistration, setEditingRegistration] = React.useState<any | null>(null);
   const [registrationSaving, setRegistrationSaving] = React.useState(false);
   const [registrationDeleting, setRegistrationDeleting] = React.useState(false);
   const [passwordResetting, setPasswordResetting] = React.useState(false);
   const [actionMessage, setActionMessage] = React.useState<string | null>(null);
   const [proofError, setProofError] = React.useState<string | null>(null);
+  const [uploadingBoothImage, setUploadingBoothImage] = React.useState(false);
+  const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
+  const [expandedExhibitorId, setExpandedExhibitorId] = React.useState<string | null>(null);
 
   const [rooms, setRooms] = React.useState<Room[]>([]);
   const [roomsLoading, setRoomsLoading] = React.useState(false);
   const [newRoomName, setNewRoomName] = React.useState('');
+  const [newRoomVenue, setNewRoomVenue] = React.useState('');
   const [newRoomCapacity, setNewRoomCapacity] = React.useState('');
   const [newRoomDesc, setNewRoomDesc] = React.useState('');
   const [newRoomStartTime, setNewRoomStartTime] = React.useState('');
@@ -442,7 +486,16 @@ export function AdminDashboard({
   const [newRoomPresenterChoice, setNewRoomPresenterChoice] = React.useState('');
   const [newRoomSelectedPresenters, setNewRoomSelectedPresenters] = React.useState<string[]>([]);
   const [newRoomPresenters, setNewRoomPresenters] = React.useState('');
+  const [newRoomProjectDetail, setNewRoomProjectDetail] = React.useState('');
+  const [newRoomCertificateProcessSteps, setNewRoomCertificateProcessSteps] = React.useState('');
+  const [newRoomBackgroundImage, setNewRoomBackgroundImage] = React.useState('');
+  const [roomBackgroundFile, setRoomBackgroundFile] = React.useState<File | null>(null);
   const [roomSaving, setRoomSaving] = React.useState(false);
+
+  const [venues, setVenues] = React.useState<Venue[]>([]);
+  const [editingVenue, setEditingVenue] = React.useState<Venue | null>(null);
+  const [newVenueName, setNewVenueName] = React.useState('');
+  const [venueSaving, setVenueSaving] = React.useState(false);
 
   const [meals, setMeals] = React.useState<Meal[]>([]);
   const [mealsLoading, setMealsLoading] = React.useState(false);
@@ -531,14 +584,45 @@ export function AdminDashboard({
     }
   }, []);
 
+  const venueNames = React.useMemo(
+    () => venues.map((v) => v.name).sort((a, b) => a.localeCompare(b)),
+    [venues],
+  );
+  const displayedVenueOptions = venueNames;
+
   React.useEffect(() => {
     loadRooms();
     loadMeals();
   }, [loadMeals, loadRooms]);
 
   React.useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'venues'), (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Venue, 'id'>) }));
+      list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setVenues(list);
+    });
+    return () => unsub();
+  }, []);
+
+  React.useEffect(() => {
     setSidebarOpen(false);
   }, [activeTab]);
+
+  React.useEffect(() => {
+    if (!roomDetailView?.id) {
+      setRoomChatMessages([]);
+      return;
+    }
+    const q = query(
+      collection(db, 'roomChat'),
+      where('roomId', '==', roomDetailView.id),
+      orderBy('createdAt', 'asc')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setRoomChatMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<RoomChatMessage, 'id'>) })));
+    });
+    return () => unsub();
+  }, [roomDetailView?.id]);
 
   const addSelectedPresenter = React.useCallback(() => {
     const presenterName = newRoomPresenterChoice.trim();
@@ -552,6 +636,84 @@ export function AdminDashboard({
   const removeSelectedPresenter = React.useCallback((presenterName: string) => {
     setNewRoomSelectedPresenters((prev) => prev.filter((item) => item !== presenterName));
   }, []);
+
+  const handleCreateVenue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newVenueName.trim();
+    if (!name) return;
+    setVenueSaving(true);
+    setActionMessage(null);
+    try {
+      await addDoc(collection(db, 'venues'), { name, order: venues.length });
+      setNewVenueName('');
+      setEditingVenue(null);
+      clearMessageSoon('Room added.');
+    } catch (err: any) {
+      console.error('createVenue', err);
+      const msg = err?.code === 'permission-denied'
+        ? 'Permission denied. Deploy Firestore rules (firebase deploy --only firestore:rules) and ensure your account has the admin custom claim.'
+        : `Failed to save room: ${err?.message || err}`;
+      setActionMessage(msg);
+      setTimeout(() => setActionMessage(null), 6000);
+    } finally {
+      setVenueSaving(false);
+    }
+  };
+
+  const handleUpdateVenue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingVenue) return;
+    const name = newVenueName.trim();
+    if (!name) return;
+    setVenueSaving(true);
+    try {
+      await updateDoc(doc(db, 'venues', editingVenue.id), { name });
+      setNewVenueName('');
+      setEditingVenue(null);
+      clearMessageSoon('Room updated.');
+    } catch (err) {
+      console.error('updateVenue', err);
+    } finally {
+      setVenueSaving(false);
+    }
+  };
+
+  const handleDeleteVenue = async (id: string) => {
+    if (!window.confirm('Delete this room? Breakout sessions using it will keep the name as custom text.')) return;
+    try {
+      await deleteDoc(doc(db, 'venues', id));
+      if (editingVenue?.id === id) { setEditingVenue(null); setNewVenueName(''); }
+      clearMessageSoon('Room deleted.');
+    } catch (err) {
+      console.error('deleteVenue', err);
+    }
+  };
+
+  const openEditVenue = (venue: Venue) => {
+    setEditingVenue(venue);
+    setNewVenueName(venue.name);
+  };
+
+  const seedDefaultVenues = async () => {
+    if (venues.length > 0) return;
+    setVenueSaving(true);
+    setActionMessage(null);
+    try {
+      for (let i = 0; i < DEFAULT_VENUE_OPTIONS.length; i++) {
+        await addDoc(collection(db, 'venues'), { name: DEFAULT_VENUE_OPTIONS[i], order: i });
+      }
+      clearMessageSoon('Default rooms added.');
+    } catch (err: any) {
+      console.error('seedVenues', err);
+      const msg = err?.code === 'permission-denied'
+        ? 'Permission denied. Deploy Firestore rules and ensure your account has the admin claim.'
+        : `Failed to load defaults: ${err?.message || err}`;
+      setActionMessage(msg);
+      setTimeout(() => setActionMessage(null), 6000);
+    } finally {
+      setVenueSaving(false);
+    }
+  };
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -575,22 +737,46 @@ export function AdminDashboard({
       const presenterNames = Array.from(
         new Set([...newRoomSelectedPresenters, ...manualPresenterNames]),
       );
+      const presenterUids = Array.from(
+        new Set(
+          presenterNames
+            .map((name) => presenterRegs.find((r) => (r.fullName as string)?.trim() === name)?.uid)
+            .filter((uid): uid is string => !!uid),
+        ),
+      );
+      const presenterTitles = presenterNames
+        .map((name) => presenterRegs.find((r) => (r.fullName as string)?.trim() === name)?.positionTitle as string | undefined)
+        .map((t) => (t && String(t).trim()) || undefined);
       const timeline = `${newRoomStartTime} - ${newRoomEndTime}`;
-      const payload = {
+      let backgroundImageUrl = newRoomBackgroundImage;
+      if (roomBackgroundFile) {
+        const path = `roomBackgrounds/${Date.now()}_${roomBackgroundFile.name}`;
+        await uploadBytes(ref(storage, path), roomBackgroundFile, { contentType: roomBackgroundFile.type || 'image/jpeg' });
+        backgroundImageUrl = await getDownloadURL(ref(storage, path));
+      }
+      const venue = newRoomVenue?.trim() || '';
+      const payload: Record<string, any> = {
         name: newRoomName.trim(),
+        ...(venue && { venue }),
         capacity: parseInt(newRoomCapacity, 10) || 0,
         description: newRoomDesc.trim(),
         timeline,
         sessionDate: newRoomDate,
         materials: newRoomMaterials.trim(),
         presenterNames,
+        presenterUids: presenterUids.length > 0 ? presenterUids : undefined,
+        presenterTitles: presenterTitles.some(Boolean) ? presenterTitles : undefined,
+        projectDetail: newRoomProjectDetail.trim() || null,
+        certificateProcessSteps: newRoomCertificateProcessSteps.trim() || null,
         createdAt: Timestamp.now(),
       };
+      if (backgroundImageUrl) payload.backgroundImage = backgroundImageUrl;
       const docRef = await addDoc(collection(db, 'rooms'), payload);
       const createdRoom = { id: docRef.id, ...payload };
       setRooms((prev) => [createdRoom, ...prev]);
       setSelectedQrRoom(createdRoom);
       setNewRoomName('');
+      setNewRoomVenue('');
       setNewRoomCapacity('');
       setNewRoomDesc('');
       setNewRoomStartTime('');
@@ -600,6 +786,10 @@ export function AdminDashboard({
       setNewRoomPresenterChoice('');
       setNewRoomSelectedPresenters([]);
       setNewRoomPresenters('');
+      setNewRoomProjectDetail('');
+      setNewRoomCertificateProcessSteps('');
+      setNewRoomBackgroundImage('');
+      setRoomBackgroundFile(null);
       clearMessageSoon('Breakout room created.');
     } catch (err) {
       console.error('createRoom', err);
@@ -614,9 +804,129 @@ export function AdminDashboard({
       await deleteDoc(doc(db, 'rooms', id));
       setRooms((prev) => prev.filter((room) => room.id !== id));
       if (selectedQrRoom?.id === id) setSelectedQrRoom(null);
+      if (editingRoom?.id === id) setEditingRoom(null);
+      if (roomDetailView?.id === id) setRoomDetailView(null);
       clearMessageSoon('Breakout room deleted.');
     } catch (err) {
       console.error('deleteRoom', err);
+    }
+  };
+
+  const openEditRoom = (room: Room) => {
+    setEditingRoom(room);
+    setNewRoomName(room.name);
+    const venueMatch = room.venue && displayedVenueOptions.includes(room.venue) ? room.venue : '';
+    setNewRoomVenue(venueMatch);
+    setNewRoomCapacity(String(room.capacity || ''));
+    setNewRoomDesc(room.description || '');
+    setNewRoomDate(room.sessionDate || '');
+    setNewRoomMaterials(room.materials || '');
+    setNewRoomSelectedPresenters(room.presenterNames || []);
+    setNewRoomPresenters('');
+    setNewRoomProjectDetail(room.projectDetail || '');
+    setNewRoomCertificateProcessSteps(room.certificateProcessSteps || '');
+    setNewRoomBackgroundImage(room.backgroundImage || '');
+    setRoomBackgroundFile(null);
+    const [start, end] = (room.timeline || '').split(/\s*-\s*/);
+    setNewRoomStartTime(start?.trim() || '');
+    setNewRoomEndTime(end?.trim() || '');
+  };
+
+  const closeEditRoom = () => {
+    setEditingRoom(null);
+    setNewRoomName('');
+    setNewRoomVenue('');
+    setNewRoomCapacity('');
+    setNewRoomDesc('');
+    setNewRoomStartTime('');
+    setNewRoomEndTime('');
+    setNewRoomDate('');
+    setNewRoomMaterials('');
+    setNewRoomPresenterChoice('');
+    setNewRoomSelectedPresenters([]);
+    setNewRoomPresenters('');
+    setNewRoomProjectDetail('');
+    setNewRoomCertificateProcessSteps('');
+    setNewRoomBackgroundImage('');
+    setRoomBackgroundFile(null);
+  };
+
+  const handleUpdateRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRoom) return;
+    if (!newRoomName.trim()) return;
+    if (!newRoomStartTime || !newRoomEndTime) {
+      setActionMessage('Please choose both a start time and an end time.');
+      return;
+    }
+    const startIndex = TIME_OPTIONS.indexOf(newRoomStartTime);
+    const endIndex = TIME_OPTIONS.indexOf(newRoomEndTime);
+    if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+      setActionMessage('End time must be later than the start time.');
+      return;
+    }
+    setRoomSaving(true);
+    // #region agent log
+    try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:start',message:'Admin update room start',data:{roomId:editingRoom.id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{}); } catch(_) {}
+    // #endregion
+    try {
+      let backgroundImageUrl: string | null = newRoomBackgroundImage || null;
+      if (roomBackgroundFile) {
+        const path = `roomBackgrounds/${editingRoom.id}/${Date.now()}_${roomBackgroundFile.name}`;
+        await uploadBytes(ref(storage, path), roomBackgroundFile, { contentType: roomBackgroundFile.type || 'image/jpeg' });
+        backgroundImageUrl = await getDownloadURL(ref(storage, path));
+      }
+      const manualPresenterNames = newRoomPresenters.split(',').map((p) => p.trim()).filter(Boolean);
+      const presenterNames = Array.from(new Set([...newRoomSelectedPresenters, ...manualPresenterNames]));
+      const presenterUids = Array.from(
+        new Set(
+          presenterNames
+            .map((name) => presenterRegs.find((r) => (r.fullName as string)?.trim() === name)?.uid)
+            .filter((uid): uid is string => !!uid),
+        ),
+      );
+      const presenterTitles = presenterNames
+        .map((name) => presenterRegs.find((r) => (r.fullName as string)?.trim() === name)?.positionTitle as string | undefined)
+        .map((t) => (t && String(t).trim()) || undefined);
+      const timeline = `${newRoomStartTime} - ${newRoomEndTime}`;
+      const venueValue = newRoomVenue?.trim() || '';
+      const payload: Record<string, any> = {
+        name: newRoomName.trim(),
+        venue: venueValue ? venueValue : deleteField(),
+        capacity: parseInt(newRoomCapacity, 10) || 0,
+        description: newRoomDesc.trim(),
+        timeline,
+        sessionDate: newRoomDate,
+        materials: newRoomMaterials.trim(),
+        presenterNames,
+        presenterUids: presenterUids.length > 0 ? presenterUids : undefined,
+        presenterTitles: presenterTitles.some(Boolean) ? presenterTitles : undefined,
+        projectDetail: newRoomProjectDetail.trim() || null,
+        certificateProcessSteps: newRoomCertificateProcessSteps.trim() || null,
+      };
+      payload.backgroundImage = backgroundImageUrl ? backgroundImageUrl : deleteField();
+      Object.keys(payload).forEach((k) => { if (payload[k] === undefined) delete payload[k]; });
+      // #region agent log
+      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:preUpdate',message:'Admin payload before update',data:{roomId:editingRoom.id,keys:Object.keys(payload),hasUndefined:Object.values(payload).some(v=>v===undefined)},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{}); } catch(_) {}
+      // #endregion
+      await updateDoc(doc(db, 'rooms', editingRoom.id), payload);
+      const payloadForState = { ...payload };
+      if (payloadForState.backgroundImage && typeof payloadForState.backgroundImage !== 'string') payloadForState.backgroundImage = undefined;
+      const updated = { ...editingRoom, ...payloadForState };
+      setRooms((prev) => prev.map((r) => (r.id === editingRoom.id ? updated : r)));
+      if (selectedQrRoom?.id === editingRoom.id) setSelectedQrRoom(updated);
+      if (roomDetailView?.id === editingRoom.id) setRoomDetailView(updated);
+      closeEditRoom();
+      clearMessageSoon('Breakout room updated.');
+    } catch (err: any) {
+      // #region agent log
+      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:catch',message:'Admin update error',data:{roomId:editingRoom?.id,errCode:err?.code,errMessage:String(err?.message||err)},timestamp:Date.now(),hypothesisId:'A,B,C,D,E'})}).catch(()=>{}); } catch(_) {}
+      // #endregion
+      console.error('updateRoom', err);
+      setActionMessage('Failed to update room. Please try again.');
+      setTimeout(() => setActionMessage(null), 4000);
+    } finally {
+      setRoomSaving(false);
     }
   };
 
@@ -682,7 +992,7 @@ export function AdminDashboard({
     if (!editingRegistration?.id) return;
     setRegistrationSaving(true);
     try {
-      const updates = {
+      const updates: Record<string, any> = {
         fullName: editingRegistration.fullName || '',
         email: editingRegistration.email || '',
         sector: editingRegistration.sector || '',
@@ -694,6 +1004,13 @@ export function AdminDashboard({
         travelDetails: editingRegistration.travelDetails || '',
         notes: editingRegistration.notes || '',
       };
+      if (['Exhibitor', 'Exhibitor (Booth)'].includes(editingRegistration.sector)) {
+        updates.boothDescription = editingRegistration.boothDescription || '';
+        updates.boothProducts = editingRegistration.boothProducts || '';
+        updates.boothWebsite = editingRegistration.boothWebsite || '';
+        updates.boothImageUrl = editingRegistration.boothImageUrl || '';
+        updates.boothBackgroundUrl = editingRegistration.boothBackgroundUrl || '';
+      }
       await onSaveRegistration(editingRegistration.id, updates);
       clearMessageSoon('Participant details updated.');
       setEditingRegistration(null);
@@ -832,23 +1149,28 @@ export function AdminDashboard({
               >
                 <Menu size={18} />
               </button>
-              <div>
-                <h2 className="text-xl font-black sm:text-2xl">
-                  {activeTab === 'registrations'
-                    ? 'Participant Management'
-                    : activeTab === 'rooms'
-                    ? 'Breakout Rooms'
-                    : activeTab === 'meals'
-                    ? 'Meals & Food'
-                    : activeTab === 'booths'
-                    ? 'Booth Management'
-                    : activeTab === 'analytics'
-                    ? 'Analytics'
-                    : 'Event Overview'}
-                </h2>
-                <p className="text-xs text-slate-500 sm:text-sm">
-                  Responsive admin controls for mobile, tablet, and desktop.
-                </p>
+              <div className="flex items-center gap-3">
+                {activeTab === 'booths' && (
+                  <img src="/iscene.png" alt="iSCENE 2026" className="h-8 w-auto object-contain hidden sm:block" />
+                )}
+                <div>
+                  <h2 className="text-xl font-black sm:text-2xl">
+                    {activeTab === 'registrations'
+                      ? 'Participant Management'
+                      : activeTab === 'rooms'
+                      ? 'Breakout Rooms'
+                      : activeTab === 'meals'
+                      ? 'Meals & Food'
+                      : activeTab === 'booths'
+                      ? 'Booth Management'
+                      : activeTab === 'analytics'
+                      ? 'Analytics'
+                      : 'Event Overview'}
+                  </h2>
+                  <p className="text-xs text-slate-500 sm:text-sm">
+                    Responsive admin controls for mobile, tablet, and desktop.
+                  </p>
+                </div>
               </div>
             </div>
             {activeTab === 'registrations' && (
@@ -876,7 +1198,7 @@ export function AdminDashboard({
 
         <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
           {actionMessage && (
-            <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700">
+            <div className={`mb-4 rounded-2xl border px-4 py-3 text-sm font-semibold ${actionMessage.includes('Permission') || actionMessage.includes('Failed') ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-100 bg-blue-50 text-blue-700'}`}>
               {actionMessage}
             </div>
           )}
@@ -1228,18 +1550,28 @@ export function AdminDashboard({
 
           {activeTab === 'rooms' && (
             <section>
-
-              <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
-                    <Plus size={18} className="text-blue-600" />
-                    Create Breakout Room
-                  </h4>
-                  <form onSubmit={handleCreateRoom} className="space-y-4">
+              <div id="create-room-form" className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
+                <div className="space-y-6">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
+                      {editingRoom ? <Pencil size={18} className="text-amber-600" /> : <Plus size={18} className="text-blue-600" />}
+                      {editingRoom ? 'Edit Breakout Session' : 'Create Breakout Session'}
+                    </h4>
+                  <form onSubmit={editingRoom ? handleUpdateRoom : handleCreateRoom} className="space-y-4">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <Field label="Room Name *">
                         <input value={newRoomName} onChange={(e) => setNewRoomName(e.target.value)} required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="AI & Smart Cities" />
                       </Field>
+                      <Field label="Conduct Venue">
+                        <select value={newRoomVenue} onChange={(e) => setNewRoomVenue(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                          <option value="">Select room where session will be held</option>
+                          {displayedVenueOptions.map((v) => (
+                            <option key={v} value={v}>{v}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <Field label="Max Capacity">
                         <input value={newRoomCapacity} onChange={(e) => setNewRoomCapacity(e.target.value)} type="number" min="0" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="50" />
                       </Field>
@@ -1322,18 +1654,178 @@ export function AdminDashboard({
                     <Field label="Materials / Equipment">
                       <input value={newRoomMaterials} onChange={(e) => setNewRoomMaterials(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Projector, Whiteboard, Laptops" />
                     </Field>
-                    <button type="submit" disabled={roomSaving} className="w-full rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-50">
-                      {roomSaving ? 'Creating...' : 'Create Room & Generate QR'}
-                    </button>
+                    <Field label="Background Image">
+                      <div className="space-y-2">
+                        {newRoomBackgroundImage && (
+                          <div className="relative rounded-xl overflow-hidden border border-slate-200 h-24">
+                            <img src={newRoomBackgroundImage} alt="Room background" className="w-full h-full object-contain bg-slate-100" />
+                            <button type="button" onClick={() => { setNewRoomBackgroundImage(''); setRoomBackgroundFile(null); }} className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"><X size={12} /></button>
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setRoomBackgroundFile(f); setNewRoomBackgroundImage(URL.createObjectURL(f)); } }} className="hidden" id="room-bg-upload" />
+                          <label htmlFor="room-bg-upload" className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 cursor-pointer">
+                            <ImageIcon size={16} /> Upload Image
+                          </label>
+                        </div>
+                      </div>
+                    </Field>
+                    <Field label="Project Detail">
+                      <textarea value={newRoomProjectDetail} onChange={(e) => setNewRoomProjectDetail(e.target.value)} rows={4} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Detailed project description, objectives, outcomes..." />
+                    </Field>
+                    <Field label="Certificate Process Steps">
+                      <textarea value={newRoomCertificateProcessSteps} onChange={(e) => setNewRoomCertificateProcessSteps(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder={'Step 1: Attend the session\nStep 2: Submit a review\nStep 3: Download certificate from dashboard'} />
+                    </Field>
+                    <div className="flex gap-2">
+                      <button type="submit" disabled={roomSaving} className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-50">
+                        {roomSaving ? (editingRoom ? 'Updating...' : 'Creating...') : (editingRoom ? 'Update Session' : 'Create Session & Generate QR')}
+                      </button>
+                      {editingRoom && <button type="button" onClick={closeEditRoom} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>}
+                    </div>
                   </form>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <h4 className="text-lg font-black">Breakout Sessions ({rooms.length})</h4>
+                      <button
+                        type="button"
+                        onClick={() => { closeEditRoom(); document.getElementById('create-room-form')?.scrollIntoView({ behavior: 'smooth' }); }}
+                        className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
+                      >
+                        <Plus size={18} />
+                        Create Session
+                      </button>
+                    </div>
+                    {roomsLoading && <p className="text-sm text-slate-400">Loading...</p>}
+                    {!roomsLoading && rooms.length === 0 && (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                        No breakout sessions yet. Use the form above to create one.
+                      </div>
+                    )}
+                    <div className="space-y-3">
+                      {rooms.map((room) => (
+                        <div key={room.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-black">{room.name}</p>
+                                {room.capacity > 0 && (
+                                  <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">
+                                    {room.capacity} seats
+                                  </span>
+                                )}
+                              </div>
+                              {room.description && <p className="mt-1 text-xs text-slate-500">{room.description}</p>}
+                              <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-400">
+                                {room.venue && <span>{room.venue}</span>}
+                                {room.sessionDate && <span>{room.sessionDate}</span>}
+                                {room.timeline && <span>{room.timeline}</span>}
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => openEditRoom(room)}
+                                className="flex items-center gap-1 rounded-xl bg-amber-500 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-amber-600 shadow-sm"
+                              >
+                                <Pencil size={12} />
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedQrRoom(room)}
+                                className="flex items-center gap-1 rounded-xl bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-100"
+                              >
+                                <QrCode size={12} />
+                                View QR
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRoom(room.id)}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
+                                title="Delete"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
+                <div className="space-y-6">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <h4 className="text-lg font-black">Rooms ({venues.length})</h4>
+                      <form onSubmit={editingVenue ? handleUpdateVenue : handleCreateVenue} className="flex flex-wrap items-center gap-2">
+                        <input
+                          value={newVenueName}
+                          onChange={(e) => setNewVenueName(e.target.value)}
+                          placeholder={editingVenue ? 'Room name' : 'New room'}
+                          className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 w-36"
+                        />
+                        <button type="submit" disabled={venueSaving || !newVenueName.trim()} className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50">
+                          <Plus size={14} />
+                          {venueSaving ? '...' : editingVenue ? 'Update' : 'Create Room'}
+                        </button>
+                        {editingVenue && (
+                          <button type="button" onClick={() => { setEditingVenue(null); setNewVenueName(''); }} className="rounded-xl border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50">
+                            Cancel
+                          </button>
+                        )}
+                      </form>
+                    </div>
+                    {venues.length === 0 && (
+                      <div className="space-y-3">
+                        <button type="button" onClick={seedDefaultVenues} disabled={venueSaving} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50">
+                          Load default rooms
+                        </button>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                          No rooms yet. Add above or load defaults. Rooms are venues where breakout sessions are held.
+                        </div>
+                      </div>
+                    )}
+                    <div className="space-y-3">
+                      {venues.map((v) => (
+                        <div key={v.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <p className="font-black">{v.name}</p>
+                              <p className="mt-1 text-xs text-slate-500">Venue for breakout sessions</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => openEditVenue(v)}
+                                className="flex items-center gap-1 rounded-xl bg-amber-500 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-amber-600 shadow-sm"
+                              >
+                                <Pencil size={12} />
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteVenue(v.id)}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
+                                title="Delete"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col min-h-0">
+                  <h4 className="mb-4 flex items-center gap-2 text-lg font-black shrink-0">
                     <QrCode size={18} className="text-blue-600" />
                     Main Entrance QR
                   </h4>
-                  <div className="mb-6 flex flex-col items-center gap-3 rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+                  <div className="mb-6 flex flex-col items-center gap-3 rounded-xl border border-blue-100 bg-blue-50/50 p-4 shrink-0">
                     <p className="text-sm font-semibold text-slate-700">Place this QR at the main entrance for self check-in</p>
                     <div className="rounded-xl border border-slate-200 bg-white p-3">
                       <img
@@ -1353,17 +1845,17 @@ export function AdminDashboard({
                     </a>
                   </div>
 
-                  <h4 className="mb-4 mt-6 flex items-center gap-2 text-lg font-black">
+                  <h4 className="mb-4 mt-6 flex items-center gap-2 text-lg font-black shrink-0">
                     <QrCode size={18} className="text-blue-600" />
                     Room QR Preview
                   </h4>
                   {selectedQrRoom ? (
-                    <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-col items-center justify-center gap-3 text-center">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
                         <img
-                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`https://www.iscene.app/scan?type=room&id=${selectedQrRoom.id}`)}`}
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`https://www.iscene.app/scan?type=room&id=${selectedQrRoom.id}`)}`}
                           alt={`QR for ${selectedQrRoom.name}`}
-                          className="h-52 w-52"
+                          className="h-28 w-28"
                         />
                       </div>
                       <div>
@@ -1393,65 +1885,186 @@ export function AdminDashboard({
                       </div>
                     </div>
                   ) : (
-                    <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-3 text-center text-slate-400">
-                      <QrCode size={56} className="text-slate-200" />
-                      <p className="max-w-sm text-sm">Select any room below to preview and download its attendance QR code.</p>
+                    <div className="flex flex-col items-center justify-center gap-2 py-6 text-center text-slate-400">
+                      <QrCode size={36} className="text-slate-200" />
+                      <p className="max-w-xs text-xs">Select a session below to preview its QR.</p>
                     </div>
                   )}
                 </div>
               </div>
+            </div>
 
-              <div className="mt-6">
-                <h4 className="mb-3 text-lg font-black">All Breakout Rooms ({rooms.length})</h4>
-                {roomsLoading && <p className="text-sm text-slate-400">Loading rooms...</p>}
-                {!roomsLoading && rooms.length === 0 && (
-                  <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400 shadow-sm">
-                    No breakout rooms yet. Use the form above to create one.
+              {/* Edit Room Modal */}
+              {editingRoom && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden my-8">
+                    <div className="p-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+                      <h3 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                        <Pencil size={20} className="text-amber-600" />
+                        Edit Breakout Session
+                      </h3>
+                      <button type="button" onClick={closeEditRoom} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200"><X size={18} /></button>
+                    </div>
+                    <form onSubmit={handleUpdateRoom} className="flex-1 overflow-y-auto p-5 space-y-4">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <Field label="Room Name *">
+                          <input value={newRoomName} onChange={(e) => setNewRoomName(e.target.value)} required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="AI & Smart Cities" />
+                        </Field>
+                        <Field label="Conduct Venue">
+                          <select value={newRoomVenue} onChange={(e) => setNewRoomVenue(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">Select room where session will be held</option>
+                            {displayedVenueOptions.map((v) => (
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <Field label="Max Capacity">
+                          <input value={newRoomCapacity} onChange={(e) => setNewRoomCapacity(e.target.value)} type="number" min="0" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="50" />
+                        </Field>
+                      </div>
+                      <Field label="Description">
+                        <textarea value={newRoomDesc} onChange={(e) => setNewRoomDesc(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Brief room description..." />
+                      </Field>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <Field label="Session Date">
+                          <input value={newRoomDate} onChange={(e) => setNewRoomDate(e.target.value)} type="date" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                        </Field>
+                        <Field label="Start Time">
+                          <select value={newRoomStartTime} onChange={(e) => setNewRoomStartTime(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">Choose start time</option>
+                            {TIME_OPTIONS.map((time) => <option key={`estart-${time}`} value={time}>{time}</option>)}
+                          </select>
+                        </Field>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <Field label="End Time">
+                          <select value={newRoomEndTime} onChange={(e) => setNewRoomEndTime(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">Choose end time</option>
+                            {TIME_OPTIONS.map((time) => <option key={`eend-${time}`} value={time}>{time}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="Timeline">
+                          <div className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
+                            {newRoomStartTime && newRoomEndTime ? `${newRoomStartTime} - ${newRoomEndTime}` : 'Choose start and end time'}
+                          </div>
+                        </Field>
+                      </div>
+                      <Field label="Presenter(s)">
+                        <div className="space-y-3">
+                          <div className="flex flex-col gap-2 sm:flex-row">
+                            <select value={newRoomPresenterChoice} onChange={(e) => setNewRoomPresenterChoice(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                              <option value="">Choose a speaker</option>
+                              {presenterOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                            </select>
+                            <button type="button" onClick={addSelectedPresenter} className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-bold text-blue-600 hover:bg-blue-100">Add</button>
+                          </div>
+                          {newRoomSelectedPresenters.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {newRoomSelectedPresenters.map((name) => (
+                                <button key={name} type="button" onClick={() => removeSelectedPresenter(name)} className="inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-bold text-purple-700">
+                                  {name}<X size={12} />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          <input value={newRoomPresenters} onChange={(e) => setNewRoomPresenters(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Additional names (comma-separated)" />
+                        </div>
+                      </Field>
+                      <Field label="Materials / Equipment">
+                        <input value={newRoomMaterials} onChange={(e) => setNewRoomMaterials(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Projector, Whiteboard" />
+                      </Field>
+                      <Field label="Background Image">
+                        <div className="space-y-2">
+                          {newRoomBackgroundImage && (
+                            <div className="relative rounded-xl overflow-hidden border border-slate-200 h-24">
+                              <img src={newRoomBackgroundImage} alt="" className="w-full h-full object-contain bg-slate-100" />
+                              <button type="button" onClick={() => { setNewRoomBackgroundImage(''); setRoomBackgroundFile(null); }} className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"><X size={12} /></button>
+                            </div>
+                          )}
+                          <input type="file" accept="image/*" id="edit-room-bg" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setRoomBackgroundFile(f); setNewRoomBackgroundImage(URL.createObjectURL(f)); } }} />
+                          <label htmlFor="edit-room-bg" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 cursor-pointer">
+                            <ImageIcon size={16} /> Upload Image
+                          </label>
+                        </div>
+                      </Field>
+                      <Field label="Project Detail">
+                        <textarea value={newRoomProjectDetail} onChange={(e) => setNewRoomProjectDetail(e.target.value)} rows={4} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Detailed description..." />
+                      </Field>
+                      <Field label="Certificate Process Steps">
+                        <textarea value={newRoomCertificateProcessSteps} onChange={(e) => setNewRoomCertificateProcessSteps(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Step 1: Attend..." />
+                      </Field>
+                      <div className="flex gap-2 pt-2">
+                        <button type="submit" disabled={roomSaving} className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                          {roomSaving ? <><Loader2 size={16} className="animate-spin" /> Updating...</> : 'Update Room'}
+                        </button>
+                        <button type="button" onClick={closeEditRoom} disabled={roomSaving} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
+                      </div>
+                    </form>
                   </div>
-                )}
-                <div className="space-y-3">
-                  {rooms.map((room) => (
-                    <div key={room.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-black">{room.name}</p>
-                            {room.capacity > 0 && (
-                              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">
-                                {room.capacity} seats
-                              </span>
-                            )}
-                          </div>
-                          {room.description && <p className="mt-1 text-xs text-slate-500">{room.description}</p>}
-                          <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-400">
-                            {room.sessionDate && <span>{room.sessionDate}</span>}
-                            {room.timeline && <span>{room.timeline}</span>}
-                            {room.presenterNames?.length > 0 && <span>{room.presenterNames.join(', ')}</span>}
-                            {room.materials && <span>{room.materials}</span>}
-                          </div>
+                </div>
+              )}
+
+              {/* Room Detail Modal with Chat */}
+              {roomDetailView && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                    <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-4 shrink-0">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="text-xl font-black text-slate-900">{roomDetailView.name}</h3>
+                        <p className="text-sm text-slate-500 mt-1">{roomDetailView.timeline}{roomDetailView.sessionDate ? ` · ${roomDetailView.sessionDate}` : ''}</p>
+                        {roomDetailView.presenterNames?.length > 0 && <p className="text-xs text-slate-400 mt-0.5">Speakers: {roomDetailView.presenterNames.join(', ')}</p>}
+                      </div>
+                      <button type="button" onClick={() => setRoomDetailView(null)} className="shrink-0 w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200"><X size={18} /></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                      {roomDetailView.backgroundImage && (
+                        <div className="rounded-xl overflow-hidden h-32 border border-slate-200">
+                          <img src={roomDetailView.backgroundImage} alt="" className="w-full h-full object-contain bg-slate-100" />
                         </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedQrRoom(room)}
-                            className="flex items-center gap-1.5 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-600 hover:bg-blue-100"
-                          >
-                            <QrCode size={13} />
-                            View QR
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteRoom(room.id)}
-                            className="rounded-xl p-2 text-slate-400 hover:bg-red-50 hover:text-red-500"
-                          >
-                            <Trash2 size={15} />
-                          </button>
+                      )}
+                      {roomDetailView.projectDetail && (
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-700 mb-2">Project Detail</h4>
+                          <p className="text-sm text-slate-600 whitespace-pre-wrap">{roomDetailView.projectDetail}</p>
                         </div>
+                      )}
+                      {roomDetailView.certificateProcessSteps && (
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-700 mb-2">Certificate Process</h4>
+                          <p className="text-sm text-slate-600 whitespace-pre-wrap">{roomDetailView.certificateProcessSteps}</p>
+                        </div>
+                      )}
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+                          <MessageCircle size={16} /> Discussion Q&A ({roomChatMessages.length})
+                        </h4>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/50 max-h-48 overflow-y-auto p-3 space-y-3">
+                          {roomChatMessages.length === 0 ? (
+                            <p className="text-sm text-slate-400 text-center py-4">No questions yet. Participants can post questions from the room detail view.</p>
+                          ) : (
+                            roomChatMessages.map((msg) => (
+                              <div key={msg.id} className="flex flex-col gap-0.5 p-3 rounded-lg bg-white border border-slate-100">
+                                <p className="text-xs font-semibold text-slate-700">{msg.participantName || 'Anonymous'}</p>
+                                <p className="text-sm text-slate-600">{msg.text}</p>
+                                <p className="text-[10px] text-slate-400">
+                                  {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleString() : '—'}
+                                </p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-2">Read-only for admin. Participants can add questions from their dashboard.</p>
                       </div>
                     </div>
-                  ))}
+                    <div className="p-5 border-t border-slate-100 flex gap-2 shrink-0">
+                      <button type="button" onClick={() => { openEditRoom(roomDetailView); setRoomDetailView(null); }} className="flex-1 rounded-xl bg-amber-500 py-2.5 text-sm font-bold text-white hover:bg-amber-600">Edit Room</button>
+                      <button type="button" onClick={() => setRoomDetailView(null)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </section>
           )}
 
@@ -1554,10 +2167,11 @@ export function AdminDashboard({
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
                     <h4 className="text-lg font-black">Exhibitor Booths</h4>
-                    <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-black text-blue-600">
+                    <span className="rounded-full bg-cyan-50 px-3 py-1 text-[11px] font-black text-cyan-600">
                       {boothRegs.filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes(r.sector)).length}
                     </span>
                   </div>
+                  <p className="px-5 pb-3 text-xs text-slate-500">Products, research & company booths — not food.</p>
                   <div className="divide-y divide-slate-100">
                     {boothRegs.filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes(r.sector)).length === 0 && (
                       <p className="p-6 text-sm text-slate-400">No exhibitor registrations yet.</p>
@@ -1565,21 +2179,59 @@ export function AdminDashboard({
                     {boothRegs
                       .filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes(r.sector))
                       .map((registration) => (
-                        <div key={registration.id} className="flex items-center justify-between gap-3 px-5 py-4">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-bold">{registration.fullName || '—'}</p>
-                            <p className="truncate text-xs text-slate-500">{registration.sectorOffice || registration.email || '—'}</p>
+                        <div key={registration.id}>
+                          <div
+                            className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-slate-50/50 transition-colors"
+                            onClick={() => setExpandedExhibitorId((id) => (id === registration.id ? null : registration.id))}
+                          >
+                            <div className="flex shrink-0 gap-2">
+                              {registration.boothImageUrl ? (
+                                <img src={registration.boothImageUrl} alt="Booth" className="h-12 w-12 rounded-lg object-contain bg-slate-100 border border-slate-200" />
+                              ) : (
+                                <div className="h-12 w-12 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
+                                  <Store size={20} />
+                                </div>
+                              )}
+                              {registration.boothBackgroundUrl ? (
+                                <img src={registration.boothBackgroundUrl} alt="Background" className="h-12 w-20 rounded-lg object-contain bg-slate-100 border border-slate-200" />
+                              ) : (
+                                <div className="h-12 w-20 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-300 text-[10px]">BG</div>
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-bold">{registration.fullName || '—'}</p>
+                              <p className="truncate text-xs text-slate-500">{registration.sectorOffice || registration.email || '—'}</p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                              <StatusBadge status={registration.status || 'pending'} />
+                              <button
+                                type="button"
+                                onClick={() => setEditingRegistration({ ...registration })}
+                                className="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-bold text-white hover:bg-cyan-600"
+                              >
+                                Edit
+                              </button>
+                            </div>
+                            <ChevronRight size={18} className={`shrink-0 text-slate-300 transition-transform ${expandedExhibitorId === registration.id ? 'rotate-90' : ''}`} />
                           </div>
-                          <div className="flex items-center gap-2">
-                            <StatusBadge status={registration.status || 'pending'} />
-                            <button
-                              type="button"
-                              onClick={() => setEditingRegistration({ ...registration })}
-                              className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
-                            >
-                              Manage
-                            </button>
-                          </div>
+                          {expandedExhibitorId === registration.id && (
+                            <div className="border-t border-slate-100 bg-slate-50/80 px-5 py-4 space-y-4">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+                                <div><p className="text-[11px] text-slate-400 mb-0.5">Description / Topic</p><p className="text-slate-700 whitespace-pre-wrap">{registration.boothDescription || '—'}</p></div>
+                                <div><p className="text-[11px] text-slate-400 mb-0.5">Products / Services</p><p className="text-slate-700">{registration.boothProducts || '—'}</p></div>
+                                <div><p className="text-[11px] text-slate-400 mb-0.5">Website</p>{registration.boothWebsite ? <a href={registration.boothWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{registration.boothWebsite}</a> : <span className="text-slate-500">—</span>}</div>
+                                <div><p className="text-[11px] text-slate-400 mb-0.5">Contact</p><p className="text-slate-700">{registration.contactNumber || registration.email || '—'}</p></div>
+                                <div><p className="text-[11px] text-slate-400 mb-0.5">Organization</p><p className="text-slate-700">{registration.sectorOffice || '—'}</p></div>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {registration.boothImageUrl && <img src={registration.boothImageUrl} alt="Booth" className="h-20 w-20 rounded-xl object-contain bg-white border border-slate-200" />}
+                                {registration.boothBackgroundUrl && <img src={registration.boothBackgroundUrl} alt="Background" className="h-16 w-24 rounded-xl object-contain bg-white border border-slate-200" />}
+                              </div>
+                              <button type="button" onClick={() => setEditingRegistration({ ...registration })} className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-600">
+                                Edit Booth Details
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))}
                   </div>
@@ -1592,6 +2244,7 @@ export function AdminDashboard({
                       {boothRegs.filter((r) => r.sector === 'Food (Booth)').length}
                     </span>
                   </div>
+                  <p className="px-5 pb-3 text-xs text-slate-500">Food service & concessions only.</p>
                   <div className="divide-y divide-slate-100">
                     {boothRegs.filter((r) => r.sector === 'Food (Booth)').length === 0 && (
                       <p className="p-6 text-sm text-slate-400">No food booth registrations yet.</p>
@@ -1599,12 +2252,26 @@ export function AdminDashboard({
                     {boothRegs
                       .filter((r) => r.sector === 'Food (Booth)')
                       .map((registration) => (
-                        <div key={registration.id} className="flex items-center justify-between gap-3 px-5 py-4">
-                          <div className="min-w-0">
+                        <div key={registration.id} className="flex items-center gap-3 px-5 py-4">
+                          <div className="flex shrink-0 gap-2">
+                            {registration.boothImageUrl ? (
+                              <img src={registration.boothImageUrl} alt="Booth" className="h-12 w-12 rounded-lg object-cover border border-slate-200" />
+                            ) : (
+                              <div className="h-12 w-12 rounded-lg bg-orange-50 border border-slate-200 flex items-center justify-center text-orange-300">
+                                <UtensilsCrossed size={20} />
+                              </div>
+                            )}
+                            {registration.boothBackgroundUrl ? (
+                              <img src={registration.boothBackgroundUrl} alt="Background" className="h-12 w-20 rounded-lg object-cover border border-slate-200" />
+                            ) : (
+                              <div className="h-12 w-20 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-300 text-[10px]">BG</div>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold">{registration.fullName || '—'}</p>
                             <p className="truncate text-xs text-slate-500">{registration.sectorOffice || registration.email || '—'}</p>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 shrink-0">
                             <StatusBadge status={registration.status || 'pending'} />
                             <button
                               type="button"
@@ -1800,6 +2467,99 @@ export function AdminDashboard({
                   />
                 </Field>
               </div>
+
+              {['Exhibitor', 'Exhibitor (Booth)'].includes(editingRegistration.sector) && (
+                <div className="rounded-2xl border border-cyan-200 bg-cyan-50/50 p-5 space-y-4">
+                  <h4 className="flex items-center gap-2 text-sm font-black text-slate-900">
+                    <Store size={16} className="text-cyan-600" />
+                    Booth / Topic Details
+                  </h4>
+                  <div className="grid grid-cols-1 gap-4">
+                    <Field label="Booth Description / Topic">
+                      <textarea
+                        value={editingRegistration.boothDescription || ''}
+                        onChange={(e) => setEditingRegistration((prev: any) => ({ ...prev, boothDescription: e.target.value }))}
+                        rows={3}
+                        className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Description of booth, topic, or focus area…"
+                      />
+                    </Field>
+                    <Field label="Products / Services">
+                      <input
+                        value={editingRegistration.boothProducts || ''}
+                        onChange={(e) => setEditingRegistration((prev: any) => ({ ...prev, boothProducts: e.target.value }))}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Smart City Solutions, IoT Devices…"
+                      />
+                    </Field>
+                    <Field label="Website URL">
+                      <input
+                        value={editingRegistration.boothWebsite || ''}
+                        onChange={(e) => setEditingRegistration((prev: any) => ({ ...prev, boothWebsite: e.target.value }))}
+                        type="url"
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="https://your-company.com"
+                      />
+                    </Field>
+                    <Field label="Booth Image">
+                      <div className="flex items-center gap-3">
+                        {editingRegistration.boothImageUrl && (
+                          <img src={editingRegistration.boothImageUrl} alt="Booth" className="h-16 w-16 rounded-xl object-contain bg-slate-100 border border-slate-200" />
+                        )}
+                        {editingRegistration.uid ? (
+                        <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothImage ? 'opacity-60' : ''}`}>
+                          <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (!f || !f.type.startsWith('image/')) return;
+                            setUploadingBoothImage(true);
+                            try {
+                              const path = `boothImages/${editingRegistration.uid}/${Date.now()}_${f.name.replace(/[^a-zA-Z0-9.\-_]/g, '_')}`;
+                              await uploadBytes(ref(storage, path), f, { contentType: f.type || 'image/jpeg' });
+                              const url = await getDownloadURL(ref(storage, path));
+                              setEditingRegistration((prev: any) => ({ ...prev, boothImageUrl: url }));
+                            } catch (err) { console.error(err); }
+                            finally { setUploadingBoothImage(false); e.target.value = ''; }
+                          }} />
+                          {uploadingBoothImage ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                          {uploadingBoothImage ? 'Uploading…' : 'Upload'}
+                        </label>
+                        ) : <span className="text-xs text-slate-500">Link account to upload images</span>}
+                        {(editingRegistration.boothImageUrl) && (
+                          <button type="button" onClick={() => setEditingRegistration((prev: any) => ({ ...prev, boothImageUrl: '' }))} className="text-xs font-bold text-red-600 hover:underline">Clear</button>
+                        )}
+                      </div>
+                    </Field>
+                    <Field label="Booth Background">
+                      <div className="flex items-center gap-3">
+                        {editingRegistration.boothBackgroundUrl && (
+                          <img src={editingRegistration.boothBackgroundUrl} alt="Background" className="h-12 w-20 rounded-xl object-contain bg-slate-100 border border-slate-200" />
+                        )}
+                        {editingRegistration.uid ? (
+                        <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothBackground ? 'opacity-60' : ''}`}>
+                          <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (!f || !f.type.startsWith('image/')) return;
+                            setUploadingBoothBackground(true);
+                            try {
+                              const path = `boothBackgrounds/${editingRegistration.uid}/${Date.now()}_${f.name.replace(/[^a-zA-Z0-9.\-_]/g, '_')}`;
+                              await uploadBytes(ref(storage, path), f, { contentType: f.type || 'image/jpeg' });
+                              const url = await getDownloadURL(ref(storage, path));
+                              setEditingRegistration((prev: any) => ({ ...prev, boothBackgroundUrl: url }));
+                            } catch (err) { console.error(err); }
+                            finally { setUploadingBoothBackground(false); e.target.value = ''; }
+                          }} />
+                          {uploadingBoothBackground ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                          {uploadingBoothBackground ? 'Uploading…' : 'Upload'}
+                        </label>
+                        ) : <span className="text-xs text-slate-500">Link account to upload</span>}
+                        {(editingRegistration.boothBackgroundUrl) && (
+                          <button type="button" onClick={() => setEditingRegistration((prev: any) => ({ ...prev, boothBackgroundUrl: '' }))} className="text-xs font-bold text-red-600 hover:underline">Clear</button>
+                        )}
+                      </div>
+                    </Field>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3">
                 <div className="flex items-start gap-3">

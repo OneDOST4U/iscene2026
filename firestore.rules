@@ -10,7 +10,10 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && request.auth.token.admin == true;
+      return signedIn() && (
+        request.auth.token.admin == true
+        || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
     }
 
     function isOwner(uid) {
@@ -21,6 +24,16 @@ service cloud.firestore {
       return signedIn()
         && request.auth.uid == uid
         && !(request.auth.token.admin == true);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ADMINS  /admins/{uid}
+    // UIDs listed here are treated as admins (alternative to custom claims).
+    // Create admins/{your-uid} in Firebase Console to grant admin access.
+    // Only existing admins can add/remove others.
+    // ─────────────────────────────────────────────────────────────
+    match /admins/{userId} {
+      allow read, write: if isAdmin();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -51,9 +64,25 @@ service cloud.firestore {
 
     // ─────────────────────────────────────────────────────────────
     // ROOMS  /rooms/{docId}
-    // Admin creates/deletes; any signed-in user reads (for schedule).
+    // Admin creates/deletes; any signed-in user reads.
+    // Presenters can update rooms where their uid is in presenterUids.
     // ─────────────────────────────────────────────────────────────
     match /rooms/{docId} {
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (signedIn()
+          && 'presenterUids' in resource.data
+          && request.auth.uid in resource.data.presenterUids);
+      allow read: if signedIn();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // VENUES (Rooms)  /venues/{docId}
+    // Admin creates/updates/deletes; any signed-in user reads.
+    // Rooms = venue names (Main Hall, Room A, etc.) used in admin UI
+    // and in the Conduct Venue dropdown when creating breakout sessions.
+    // ─────────────────────────────────────────────────────────────
+    match /venues/{docId} {
       allow create, update, delete: if isAdmin();
       allow read: if signedIn();
     }
@@ -152,22 +181,34 @@ service cloud.firestore {
 
     // ─────────────────────────────────────────────────────────────
     // PRESENTER MATERIALS  /presenterMaterials/{docId}
-    // Presenters create/read/delete their own; admin reads all.
+    // Presenters create/delete their own; admin reads/updates all.
+    // Participants can read materials for rooms they have reserved.
     // ─────────────────────────────────────────────────────────────
     match /presenterMaterials/{docId} {
       allow create: if signedIn()
         && request.resource.data.uid == request.auth.uid;
-      allow read:   if isAdmin()
-        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow read:   if signedIn();
       allow delete: if isAdmin()
         || (signedIn() && resource.data.uid == request.auth.uid);
-      allow update: if isAdmin();
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
     }
 
     // ─────────────────────────────────────────────────────────────
     // REVIEWS — also readable by presenters for their own rooms
     // (Override the earlier reviews rule to add presenter read access)
     // ─────────────────────────────────────────────────────────────
+
+    // ─────────────────────────────────────────────────────────────
+    // ROOM CHAT  /roomChat/{docId}
+    // Participants create messages (questions); Admin and speakers read only.
+    // ─────────────────────────────────────────────────────────────
+    match /roomChat/{docId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow read: if signedIn();
+      allow update, delete: if isAdmin();
+    }
 
     // ─────────────────────────────────────────────────────────────
     // MAIL QUEUE  /mail/{docId}

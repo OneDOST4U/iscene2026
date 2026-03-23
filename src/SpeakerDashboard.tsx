@@ -33,6 +33,7 @@ import {
   ImageUp,
   RefreshCw,
   Menu,
+  MessageCircle,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -47,6 +48,9 @@ import {
   Timestamp,
   getDoc,
   setDoc,
+  updateDoc,
+  onSnapshot,
+  deleteField,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, auth, storage } from './firebase';
@@ -66,18 +70,43 @@ type Room = {
   sessionDate: string;
   materials: string;
   presenterNames: string[];
+  presenterUids?: string[];
+  backgroundImage?: string;
+  projectDetail?: string;
   location?: string;
   sessionType?: string;
+};
+
+const SESSION_TIME_OPTIONS = Array.from({ length: 27 }, (_, i) => {
+  const totalMinutes = 7 * 60 + i * 30;
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+  return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+});
+
+type DOSTSpeakerRatings = {
+  achievementOfObjectives: number;
+  mastery: { exhibitKnowledge: number; answerQuestions: number; currentDevelopments: number; balanceTheoryPractice: number };
+  presentation: { preparedness: number; organizeMaterials: number; arouseInterest: number; instructionalMaterials: number };
+  personality: { rapport: number; considerateness: number };
+  acceptability: number;
 };
 
 type SessionReview = {
   id: string;
   roomId: string;
   roomName: string;
-  rating: number;
-  comment: string;
+  rating?: number;
+  comment?: string;
+  participantName?: string;
   uid: string;
   submittedAt: any;
+  part1?: { levelOfContent: string; appropriateness: string; applicability: string };
+  part2?: Array<{ speakerName: string; ratings: DOSTSpeakerRatings }>;
+  part3?: { venue: number; food: number; organizerResponse: number; description?: string };
+  part4?: string;
 };
 
 type PresenterMaterial = {
@@ -146,29 +175,45 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
 
   // ── Data ───────────────────────────────────────────────────────────────
   const [assignedRooms, setAssignedRooms] = React.useState<Room[]>([]);
+  const [allRooms, setAllRooms] = React.useState<Room[]>([]);
   const [sessionReviews, setSessionReviews] = React.useState<SessionReview[]>([]);
   const [materials, setMaterials] = React.useState<PresenterMaterial[]>([]);
   const [hasEntryAttendance, setHasEntryAttendance] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+
+  const [selectedRoomForChat, setSelectedRoomForChat] = React.useState<Room | null>(null);
+  const [roomChatMessages, setRoomChatMessages] = React.useState<{ id: string; roomId: string; participantName: string; text: string; createdAt: any }[]>([]);
 
   // ── Modals / UI ────────────────────────────────────────────────────────
   const [scanModal, setScanModal] = React.useState(false);
   const [idModal, setIdModal] = React.useState(false);
   const [scanToast, setScanToast] = React.useState<string | null>(null);
   const [pwResetSent, setPwResetSent] = React.useState(false);
+  const [editingSessionRoom, setEditingSessionRoom] = React.useState<Room | null>(null);
+  const [editSessionForm, setEditSessionForm] = React.useState({ name: '', description: '', sessionDate: '', startTime: '', endTime: '', projectDetail: '', backgroundImage: '' });
+  const [editSessionBgFile, setEditSessionBgFile] = React.useState<File | null>(null);
+  const [editSessionSaving, setEditSessionSaving] = React.useState(false);
 
-  // ── Upload ─────────────────────────────────────────────────────────────
+  // ── Upload ───────────────────────────────────────────────────────────────
   const [uploadingFile, setUploadingFile] = React.useState(false);
   const [uploadRoomId, setUploadRoomId] = React.useState<string>('');
   const uploadInputRef = React.useRef<HTMLInputElement>(null);
+  const materialsUploadInputRef = React.useRef<HTMLInputElement>(null);
 
-  // ── Stats ──────────────────────────────────────────────────────────────
+  const getReviewRating = (r: SessionReview): number => {
+    if (typeof r.rating === 'number') return r.rating;
+    if (r.part2?.length) return Math.round(r.part2.reduce((s, sp) => s + sp.ratings.acceptability, 0) / r.part2.length);
+    return 5;
+  };
   const avgRating = sessionReviews.length > 0
-    ? (sessionReviews.reduce((s, r) => s + r.rating, 0) / sessionReviews.length).toFixed(1)
+    ? (sessionReviews.reduce((s, r) => s + getReviewRating(r), 0) / sessionReviews.length).toFixed(1)
     : '—';
   const totalReach = assignedRooms.reduce((s, r) => s + (r.capacity || 0), 0);
   const materialStatus = materials.some((m) => m.status === 'approved') ? 'APPROVED'
     : materials.length > 0 ? 'PENDING' : 'NONE';
+
+  // Rooms for dropdown: assigned first, fallback to all rooms if none assigned
+  const roomsForDropdown = assignedRooms.length > 0 ? assignedRooms : allRooms;
 
   // ── Load data ──────────────────────────────────────────────────────────
   React.useEffect(() => {
@@ -183,11 +228,14 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         const rooms: Room[] = roomsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Room, 'id'>) }));
         if (!cancelled) setAssignedRooms(rooms);
 
+        // All rooms (fallback for dropdown when no assigned rooms match)
+        const allSnap = await getDocs(collection(db, 'rooms'));
+        if (!cancelled) setAllRooms(allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Room, 'id'>) })));
+
         // Reviews for assigned rooms
         let reviews: SessionReview[] = [];
         if (rooms.length > 0) {
           const roomIds = rooms.map((r) => r.id);
-          // Firestore `in` query supports up to 30 items
           const chunks = [];
           for (let i = 0; i < roomIds.length; i += 30) chunks.push(roomIds.slice(i, i + 30));
           for (const chunk of chunks) {
@@ -196,12 +244,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           }
         }
         if (!cancelled) setSessionReviews(reviews);
-
-        // Own uploaded materials
-        const matsSnap = await getDocs(
-          query(collection(db, 'presenterMaterials'), where('uid', '==', user.uid), orderBy('createdAt', 'desc'))
-        );
-        if (!cancelled) setMaterials(matsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PresenterMaterial, 'id'>) })));
 
         // Entry attendance
         const entryDoc = await getDoc(doc(db, 'attendance', `${user.uid}_entrance`));
@@ -212,6 +254,36 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     load();
     return () => { cancelled = true; };
   }, [fullName, user.uid]);
+
+  // Real-time materials subscription (displays uploads immediately)
+  React.useEffect(() => {
+    const q = query(
+      collection(db, 'presenterMaterials'),
+      where('uid', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => setMaterials(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PresenterMaterial, 'id'>) }))),
+      (err) => {
+        console.error('presenterMaterials subscription', err);
+        setMaterials([]);
+      }
+    );
+    return () => unsub();
+  }, [user.uid]);
+
+  React.useEffect(() => {
+    if (!selectedRoomForChat?.id) {
+      setRoomChatMessages([]);
+      return;
+    }
+    const q = query(collection(db, 'roomChat'), where('roomId', '==', selectedRoomForChat.id), orderBy('createdAt', 'asc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setRoomChatMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+    });
+    return () => unsub();
+  }, [selectedRoomForChat?.id]);
 
   // ── Parse QR content (robust: handles URL, query string, or plain text) ───
   const parseQrContent = (raw: string): string | null => {
@@ -266,7 +338,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       const storageRef = ref(storage, storagePath);
       const snap = await uploadBytes(storageRef, file);
       const downloadUrl = await getDownloadURL(snap.ref);
-      const room = roomId ? assignedRooms.find((r) => r.id === roomId) : undefined;
+      const room = roomId ? roomsForDropdown.find((r) => r.id === roomId) : undefined;
       const docRef = await addDoc(collection(db, 'presenterMaterials'), {
         uid: user.uid, presenterName: fullName,
         roomId: roomId || null, roomName: room?.name || null,
@@ -283,6 +355,97 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       setScanToast('✅ File uploaded successfully!');
     } catch (err) { console.error(err); setScanToast('❌ Upload failed. Try again.'); }
     finally { setUploadingFile(false); setTimeout(() => setScanToast(null), 4000); }
+  };
+
+  const openEditSession = (room: Room) => {
+    const [start, end] = (room.timeline || '').split(/\s*-\s*/);
+    setEditingSessionRoom(room);
+    setEditSessionForm({
+      name: room.name || '',
+      description: room.description || '',
+      sessionDate: room.sessionDate || '',
+      startTime: start?.trim() || '',
+      endTime: end?.trim() || '',
+      projectDetail: room.projectDetail || '',
+      backgroundImage: room.backgroundImage || '',
+    });
+    setEditSessionBgFile(null);
+  };
+
+  const closeEditSession = () => {
+    setEditingSessionRoom(null);
+    setEditSessionForm({ name: '', description: '', sessionDate: '', startTime: '', endTime: '', projectDetail: '', backgroundImage: '' });
+    setEditSessionBgFile(null);
+  };
+
+  const handleUpdateSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSessionRoom) return;
+    if (!editSessionForm.name.trim()) return;
+    if (!editSessionForm.startTime || !editSessionForm.endTime) {
+      setScanToast('Please choose both start and end time.');
+      setTimeout(() => setScanToast(null), 3000);
+      return;
+    }
+    const startIdx = SESSION_TIME_OPTIONS.indexOf(editSessionForm.startTime);
+    const endIdx = SESSION_TIME_OPTIONS.indexOf(editSessionForm.endTime);
+    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+      setScanToast('End time must be later than start time.');
+      setTimeout(() => setScanToast(null), 3000);
+      return;
+    }
+    setEditSessionSaving(true);
+    // #region agent log
+    try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'SpeakerDashboard.tsx:handleUpdateSession:start',message:'Speaker update session start',data:{roomId:editingSessionRoom.id,hasPresenterUids:!!editingSessionRoom.presenterUids,userInPresenters:editingSessionRoom.presenterUids?.includes(auth.currentUser?.uid || '')},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{}); } catch(_) {}
+    // #endregion
+    try {
+      let backgroundImageUrl: string | null = null;
+      if (editSessionBgFile) {
+        const path = `roomBackgrounds/${editingSessionRoom.id}/${Date.now()}_${editSessionBgFile.name}`;
+        await uploadBytes(ref(storage, path), editSessionBgFile, { contentType: editSessionBgFile.type || 'image/jpeg' });
+        backgroundImageUrl = await getDownloadURL(ref(storage, path));
+      } else if (editSessionForm.backgroundImage && editSessionForm.backgroundImage.startsWith('http')) {
+        backgroundImageUrl = editSessionForm.backgroundImage;
+      }
+      const timeline = `${editSessionForm.startTime} - ${editSessionForm.endTime}`;
+      const payload: Record<string, any> = {
+        name: editSessionForm.name.trim(),
+        description: editSessionForm.description.trim(),
+        sessionDate: editSessionForm.sessionDate || null,
+        timeline,
+        projectDetail: editSessionForm.projectDetail.trim() || null,
+      };
+      payload.backgroundImage = backgroundImageUrl ? backgroundImageUrl : deleteField();
+      Object.keys(payload).forEach((k) => { if (payload[k] === undefined) delete payload[k]; });
+      await updateDoc(doc(db, 'rooms', editingSessionRoom.id), payload);
+      const payloadForState = { ...payload };
+      if (payloadForState.backgroundImage && typeof payloadForState.backgroundImage !== 'string') payloadForState.backgroundImage = undefined;
+      setAssignedRooms((prev) =>
+        prev.map((r) =>
+          r.id === editingSessionRoom.id ? { ...r, ...payloadForState } : r
+        )
+      );
+      setAllRooms((prev) =>
+        prev.map((r) =>
+          r.id === editingSessionRoom.id ? { ...r, ...payloadForState } : r
+        )
+      );
+      closeEditSession();
+      setScanToast('✅ Session updated successfully.');
+      setTimeout(() => setScanToast(null), 3000);
+      // #region agent log
+      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'SpeakerDashboard.tsx:handleUpdateSession:success',message:'Speaker update success',data:{roomId:editingSessionRoom.id},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{}); } catch(_) {}
+      // #endregion
+    } catch (err: any) {
+      // #region agent log
+      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'SpeakerDashboard.tsx:handleUpdateSession:catch',message:'Speaker update error',data:{roomId:editingSessionRoom?.id,errCode:err?.code,errMessage:String(err?.message||err)},timestamp:Date.now(),hypothesisId:'A,B,C,D,E'})}).catch(()=>{}); } catch(_) {}
+      // #endregion
+      console.error('updateSession', err);
+      setScanToast('❌ Failed to update session. You may not have permission.');
+      setTimeout(() => setScanToast(null), 4000);
+    } finally {
+      setEditSessionSaving(false);
+    }
   };
 
   const handleDeleteMaterial = async (mat: PresenterMaterial) => {
@@ -368,6 +531,14 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     <span className="font-semibold text-slate-700">Location:</span> {room.location || 'TBA'}
                   </p>
                 </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => openEditSession(room)} className="flex items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 hover:bg-amber-100">
+                    <Edit2 size={14} /> Edit Session
+                  </button>
+                  <button type="button" onClick={() => setSelectedRoomForChat(room)} className="flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-600 hover:bg-blue-100">
+                    <MessageCircle size={14} /> View Q&amp;A
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -380,11 +551,12 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
               <th className="px-6 py-4 font-bold">Time &amp; Date</th>
               <th className="px-6 py-4 font-bold">Location</th>
               <th className="px-6 py-4 font-bold">Status</th>
+              <th className="px-6 py-4 font-bold">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 ? (
-              <tr><td colSpan={4} className="px-6 py-10 text-center text-slate-400 text-sm">No assigned sessions yet. The admin will assign you to a session.</td></tr>
+              <tr><td colSpan={5} className="px-6 py-10 text-center text-slate-400 text-sm">No assigned sessions yet. The admin will assign you to a session.</td></tr>
             ) : rows.map((room) => {
               const dateObj = room.sessionDate ? new Date(room.sessionDate) : null;
               const isConfirmed = !!dateObj;
@@ -405,6 +577,16 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                       {isConfirmed ? 'Confirmed' : 'Pending'}
                     </span>
                   </td>
+                  <td className="px-6 py-5">
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => openEditSession(room)} className="flex items-center gap-1.5 rounded-xl bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100">
+                        <Edit2 size={14} /> Edit
+                      </button>
+                      <button type="button" onClick={() => setSelectedRoomForChat(room)} className="flex items-center gap-1.5 rounded-xl bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-100">
+                        <MessageCircle size={14} /> Q&amp;A
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
@@ -423,21 +605,23 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       {/* Booth Content Upload */}
       <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
         <div className="mb-5">
-          <div className="flex items-center gap-2 text-emerald-600 mb-1">
-            <CheckCircle2 size={14} />
-            <span className="text-xs font-bold uppercase tracking-wider">Admin Approved</span>
-          </div>
-          <h3 className="text-lg font-bold">Booth Content Upload</h3>
-          <p className="text-sm text-slate-500 mt-0.5">Your booth design was approved. Upload final digital assets.</p>
+          <h3 className="text-lg font-bold">Session Training Materials</h3>
+          <p className="text-sm text-slate-500 mt-0.5">Upload files for your sessions. Select a session below so participants can find them.</p>
         </div>
 
         {/* Drop zone */}
-        <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors group ${uploadingFile ? 'border-blue-400 bg-blue-50' : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/50'}`}>
+        <div
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && !uploadingFile && uploadInputRef.current?.click()}
+          onClick={() => !uploadingFile && uploadInputRef.current?.click()}
+          className={`flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors group ${uploadingFile ? 'border-blue-400 bg-blue-50' : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/50'}`}
+        >
           <input
             ref={uploadInputRef}
             type="file"
             className="hidden"
-            accept="image/*,video/*,.pdf"
+            accept="image/*,video/*,.pdf,application/pdf"
             disabled={uploadingFile}
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -451,16 +635,21 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           </div>
           <p className="font-bold text-slate-700 group-hover:text-blue-600">{uploadingFile ? 'Uploading…' : 'Click to upload assets'}</p>
           <p className="text-xs text-slate-400 mt-0.5">JPG, PNG, MP4, PDF · Max 200 MB</p>
-        </label>
+        </div>
 
-        {/* Link to room */}
-        {assignedRooms.length > 0 && (
+        {/* Link to room - REQUIRED for participants to see materials */}
+        {roomsForDropdown.length > 0 && (
           <div className="mt-3">
-            <label className="text-xs text-slate-500 font-medium mb-1 block">Link to session (optional)</label>
-            <select value={uploadRoomId} onChange={(e) => setUploadRoomId(e.target.value)}
-              className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-              <option value="">No specific session</option>
-              {assignedRooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            <label className="text-xs font-bold text-slate-600 mb-1 block">Link to session <span className="text-amber-600">(required for participants)</span></label>
+            <p className="text-[11px] text-slate-500 mb-1.5">Participants can only see materials linked to a session they reserved.</p>
+            <select
+              value={uploadRoomId}
+              onChange={(e) => setUploadRoomId(e.target.value)}
+              className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white cursor-pointer appearance-none pr-10"
+              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364758b' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center' }}
+            >
+              <option value="">— Select a session —</option>
+              {roomsForDropdown.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
         )}
@@ -485,11 +674,11 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         )}
       </section>
 
-      {/* Material Management */}
+      {/* Recent uploads */}
       <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-        <h3 className="text-lg font-bold mb-4">Material Management</h3>
+        <h3 className="text-lg font-bold mb-4">Recent Uploads</h3>
         {materials.length === 0 ? (
-          <p className="text-sm text-slate-400 text-center py-4">No materials uploaded yet.</p>
+          <p className="text-sm text-slate-400 text-center py-4">No materials yet. Upload above and link to a session.</p>
         ) : (
           <div className="space-y-1">
             {materials.slice(0, 4).map((mat) => (
@@ -540,17 +729,17 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           </div>
           <div>
             <h1 className="text-base font-black leading-tight">iSCENE 2026</h1>
-            <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Staff Portal</p>
+            <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Speaker Portal</p>
           </div>
         </div>
 
         {/* Nav */}
         <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-5">
           <SideNavItem tab="dashboard" icon={<LayoutDashboard size={18} />} label="Dashboard" />
-          <SideNavItem tab="sessions" icon={<CalendarDays size={18} />} label="Assigned Sessions" />
-          <SideNavItem tab="materials" icon={<Package size={18} />} label="Materials Management" />
-          <SideNavItem tab="reviews" icon={<Star size={18} />} label="Attendee Reviews" />
-          <SideNavItem tab="uploads" icon={<Upload size={18} />} label="Booth Uploads" />
+          <SideNavItem tab="sessions" icon={<CalendarDays size={18} />} label="My Sessions" />
+          <SideNavItem tab="materials" icon={<Package size={18} />} label="Training Materials" />
+          <SideNavItem tab="reviews" icon={<Star size={18} />} label="Session Reviews" />
+          <SideNavItem tab="uploads" icon={<Upload size={18} />} label="Booth Assets" />
         </nav>
 
         {/* User profile */}
@@ -608,16 +797,16 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
             {/* Header */}
             <div className="flex flex-wrap items-end justify-between gap-6 mb-8">
               <div>
-                <h2 className="text-2xl font-black tracking-tight sm:text-3xl mb-1">Presenter &amp; Tech Booth Hub</h2>
-                <p className="text-sm text-slate-500 sm:text-base">Manage your event presence, upload technical specifications, and track session engagement.</p>
+                <h2 className="text-2xl font-black tracking-tight sm:text-3xl mb-1">Speaker Dashboard</h2>
+                <p className="text-sm text-slate-500 sm:text-base">Manage your sessions, upload training materials for participants, and view attendee reviews.</p>
               </div>
               <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
                 <button type="button" className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-colors">
                   <HelpCircle size={16} /> Support
                 </button>
-                <button type="button" onClick={() => setActiveTab('uploads')}
+                <button type="button" onClick={() => { setActiveTab('materials'); setSidebarOpen(false); }}
                   className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium shadow-lg shadow-blue-200 hover:bg-blue-700 transition-colors">
-                  <Plus size={16} /> New Upload
+                  <Upload size={16} /> Upload Materials
                 </button>
               </div>
             </div>
@@ -719,12 +908,12 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                         <div key={rev.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
                           <div className="flex items-start justify-between mb-2">
                             <div className="flex items-center gap-2">
-                              <Stars rating={rev.rating} />
+                              <Stars rating={getReviewRating(rev)} />
                               <span className="text-xs text-slate-400 font-medium">{relativeTime(rev.submittedAt)}</span>
                             </div>
                             <span className="text-[10px] px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold uppercase">{rev.roomName?.slice(0, 16) || 'Session'}</span>
                           </div>
-                          {rev.comment && <p className="text-sm italic text-slate-600 leading-relaxed">"{rev.comment}"</p>}
+                          {(rev.part4 || rev.comment) && <p className="text-sm italic text-slate-600 leading-relaxed">&quot;{rev.part4 || rev.comment}&quot;</p>}
                         </div>
                       ))}
                       {sessionReviews.length > 3 && (
@@ -761,16 +950,43 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         {/* ══════════════════════ MATERIALS TAB ══════════════════════ */}
         {activeTab === 'materials' && (
           <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="mb-6 flex flex-col gap-4">
               <div>
-                <h2 className="text-2xl font-black">Materials Management</h2>
-                <p className="text-slate-500 text-sm mt-1">All files you have uploaded for your sessions</p>
+                <h2 className="text-2xl font-black">Session Training Materials</h2>
+                <p className="text-slate-500 text-sm mt-1">Upload files for your sessions. Participants see materials only when linked to a session.</p>
               </div>
-              <label className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 sm:w-auto">
-                <input type="file" className="hidden" accept="image/*,video/*,.pdf"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleFileUpload(f); e.target.value = ''; } }} />
-                <Upload size={16} /> Upload File
-              </label>
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                {roomsForDropdown.length > 0 && (
+                  <div className="flex-1 sm:max-w-xs">
+                    <label className="text-xs font-bold text-slate-600 mb-1 block">Link new upload to session</label>
+                    <select
+                      value={uploadRoomId}
+                      onChange={(e) => setUploadRoomId(e.target.value)}
+                      className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white cursor-pointer"
+                    >
+                      <option value="">— Select session —</option>
+                      {roomsForDropdown.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                    </select>
+                  </div>
+                )}
+                <>
+                  <input
+                    ref={materialsUploadInputRef}
+                    type="file"
+                    className="hidden"
+                    accept="image/*,video/*,.pdf,application/pdf"
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleFileUpload(f, uploadRoomId || undefined); e.target.value = ''; } }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => materialsUploadInputRef.current?.click()}
+                    disabled={uploadingFile}
+                    className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Upload size={16} /> Upload File
+                  </button>
+                </>
+              </div>
             </div>
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               {materials.length === 0 ? (
@@ -876,24 +1092,32 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
               </div>
             ) : (
               <div className="space-y-4">
-                {sessionReviews.map((rev) => (
+                {sessionReviews.map((rev) => {
+                  const displayRating = typeof rev.rating === 'number' ? rev.rating : (rev.part2?.length ? Math.round(rev.part2.reduce((s, sp) => s + sp.ratings.acceptability, 0) / rev.part2.length) : 5);
+                  const commentText = rev.part4 || rev.comment;
+                  return (
                   <div key={rev.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5">
                     <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-xs font-black">A</div>
                         <div>
-                          <p className="text-sm font-bold text-slate-700">Attendee</p>
+                          <p className="text-sm font-bold text-slate-700">{rev.participantName || 'Attendee'}</p>
                           <p className="text-[11px] text-slate-400">{relativeTime(rev.submittedAt)}</p>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Stars rating={rev.rating} />
+                        <Stars rating={displayRating} />
                         <span className="text-[10px] px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold uppercase">{rev.roomName?.slice(0, 20) || 'Session'}</span>
                       </div>
                     </div>
-                    {rev.comment && <p className="text-sm italic text-slate-600 bg-slate-50 rounded-xl p-3">"{rev.comment}"</p>}
+                    {commentText && <p className="text-sm italic text-slate-600 bg-slate-50 rounded-xl p-3">&quot;{commentText}&quot;</p>}
+                    {rev.part1 && (
+                      <div className="mt-2 text-xs text-slate-500">
+                        <p><strong>Part I:</strong> Content {rev.part1.levelOfContent} · Appropriateness {rev.part1.appropriateness} · Applicability {rev.part1.applicability}</p>
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );})}
               </div>
             )}
           </div>
@@ -924,13 +1148,16 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     <p className="text-lg font-bold text-slate-700 group-hover:text-blue-600 mb-1">{uploadingFile ? 'Uploading…' : 'Click to upload assets'}</p>
                     <p className="text-sm text-slate-400">Drag and drop or click to browse files</p>
                   </label>
-                  {assignedRooms.length > 0 && (
+                  {roomsForDropdown.length > 0 && (
                     <div className="mt-4">
                       <label className="text-sm text-slate-500 font-medium mb-1 block">Link to session</label>
-                      <select value={uploadRoomId} onChange={(e) => setUploadRoomId(e.target.value)}
-                        className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                      <select
+                        value={uploadRoomId}
+                        onChange={(e) => setUploadRoomId(e.target.value)}
+                        className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
+                      >
                         <option value="">No specific session</option>
-                        {assignedRooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                        {roomsForDropdown.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                       </select>
                     </div>
                   )}
@@ -1055,6 +1282,107 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
               <a href={`https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(digitalIdQrData)}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:underline">
                 <Download size={11} /> Download QR
               </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Session Modal */}
+      {editingSessionRoom && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden my-8">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+              <h3 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                <Edit2 size={20} className="text-amber-600" />
+                Edit Session
+              </h3>
+              <button type="button" onClick={closeEditSession} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200"><X size={18} /></button>
+            </div>
+            <form onSubmit={handleUpdateSession} className="flex-1 overflow-y-auto p-5 space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1 block">Session Name *</label>
+                <input value={editSessionForm.name} onChange={(e) => setEditSessionForm((p) => ({ ...p, name: e.target.value }))} required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Session title" />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1 block">Description</label>
+                <textarea value={editSessionForm.description} onChange={(e) => setEditSessionForm((p) => ({ ...p, description: e.target.value }))} rows={2} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="Brief description" />
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-xs font-bold text-slate-600 mb-1 block">Date</label>
+                  <input value={editSessionForm.sessionDate} onChange={(e) => setEditSessionForm((p) => ({ ...p, sessionDate: e.target.value }))} type="date" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-600 mb-1 block">Start Time</label>
+                  <select value={editSessionForm.startTime} onChange={(e) => setEditSessionForm((p) => ({ ...p, startTime: e.target.value }))} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">Select start</option>
+                    {SESSION_TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1 block">End Time</label>
+                <select value={editSessionForm.endTime} onChange={(e) => setEditSessionForm((p) => ({ ...p, endTime: e.target.value }))} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="">Select end</option>
+                  {SESSION_TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1 block">Background Image</label>
+                {editSessionForm.backgroundImage && (
+                  <div className="relative rounded-xl overflow-hidden border border-slate-200 h-24 mb-2">
+                    <img src={editSessionForm.backgroundImage} alt="Session" className="w-full h-full object-contain bg-slate-100" />
+                    <button type="button" onClick={() => { setEditSessionForm((p) => ({ ...p, backgroundImage: '' })); setEditSessionBgFile(null); }} className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"><X size={12} /></button>
+                  </div>
+                )}
+                <input type="file" accept="image/*" id="edit-session-bg" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setEditSessionBgFile(f); setEditSessionForm((p) => ({ ...p, backgroundImage: URL.createObjectURL(f) })); } }} />
+                <label htmlFor="edit-session-bg" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 cursor-pointer">
+                  <ImageIcon size={16} /> Upload Image
+                </label>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1 block">Project Detail</label>
+                <textarea value={editSessionForm.projectDetail} onChange={(e) => setEditSessionForm((p) => ({ ...p, projectDetail: e.target.value }))} rows={3} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="Detailed description, objectives..." />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="submit" disabled={editSessionSaving} className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                  {editSessionSaving ? <><Loader2 size={16} className="animate-spin" /> Updating...</> : 'Save Changes'}
+                </button>
+                <button type="button" onClick={closeEditSession} disabled={editSessionSaving} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Room Q&A Modal (read-only for speakers) */}
+      {selectedRoomForChat && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+              <h3 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                <MessageCircle size={20} className="text-blue-600" />
+                {selectedRoomForChat.name} — Q&A
+              </h3>
+              <button type="button" onClick={() => setSelectedRoomForChat(null)} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200"><X size={18} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <p className="text-xs text-slate-500 mb-3">Read-only. Participant questions from the discussion.</p>
+              {roomChatMessages.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">No questions yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {roomChatMessages.map((msg) => (
+                    <div key={msg.id} className="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                      <p className="text-xs font-semibold text-slate-600 mb-1">{msg.participantName || 'Anonymous'}</p>
+                      <p className="text-sm text-slate-700">{msg.text}</p>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleString() : '—'}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

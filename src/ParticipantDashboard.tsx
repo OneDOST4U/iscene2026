@@ -10,6 +10,7 @@ import {
   Award,
   FileText,
   MessageSquare,
+  MessageCircle,
   Zap,
   Bookmark,
   Users,
@@ -32,6 +33,9 @@ import {
   ImageUp,
   Camera,
   RefreshCw,
+  Trophy,
+  Cpu,
+  MapPin,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -41,14 +45,17 @@ import {
   getDoc,
   setDoc,
   doc,
+  deleteDoc,
   query,
   where,
   Timestamp,
   updateDoc,
   orderBy,
+  onSnapshot,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { QrScanModal } from './QrScanModal';
+import { jsPDF } from 'jspdf';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -63,7 +70,12 @@ type Room = {
   timeline: string;
   sessionDate: string;
   materials: string;
+  venue?: string;
   presenterNames: string[];
+  presenterTitles?: string[];
+  backgroundImage?: string;
+  projectDetail?: string;
+  certificateProcessSteps?: string;
 };
 
 type MealWindow = {
@@ -95,11 +107,23 @@ type Reservation = {
   reservedAt: any;
 };
 
+type DOSTSpeakerRatings = {
+  achievementOfObjectives: number;
+  mastery: { exhibitKnowledge: number; answerQuestions: number; currentDevelopments: number; balanceTheoryPractice: number };
+  presentation: { preparedness: number; organizeMaterials: number; arouseInterest: number; instructionalMaterials: number };
+  personality: { rapport: number; considerateness: number };
+  acceptability: number;
+};
+
 type Review = {
   id: string;
   roomId: string;
-  rating: number;
-  comment: string;
+  rating?: number;
+  comment?: string;
+  part1?: { levelOfContent: string; appropriateness: string; applicability: string };
+  part2?: Array<{ speakerName: string; ratings: DOSTSpeakerRatings }>;
+  part3?: { venue: number; food: number; organizerResponse: number; description?: string };
+  part4?: string;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,9 +165,55 @@ const TRACK_BADGES = [
   { label: 'Research', cls: 'text-cyan-600 bg-cyan-100' },
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Star picker (shared)
-// ─────────────────────────────────────────────────────────────────────────────
+/** Format room date + timeline as "March 23 7-8 am" */
+function formatSessionDateTime(room: { sessionDate?: string; timeline?: string }): string {
+  const parts: string[] = [];
+  if (room.sessionDate) {
+    const d = new Date(room.sessionDate);
+    parts.push(d.toLocaleDateString('en-PH', { month: 'long', day: 'numeric' }));
+  }
+  if (room.timeline) {
+    const short = room.timeline
+      .replace(/0?(\d{1,2}):00\s*(AM|PM)/gi, '$1 $2')
+      .replace(/\s*[–-]\s*/g, ' - ')
+      .trim();
+    parts.push(short.toLowerCase());
+  }
+  return parts.join(' ') || '—';
+}
+
+function getDefaultDOSTSpeakerRatings(): DOSTSpeakerRatings {
+  return {
+    achievementOfObjectives: 5,
+    mastery: { exhibitKnowledge: 5, answerQuestions: 5, currentDevelopments: 5, balanceTheoryPractice: 5 },
+    presentation: { preparedness: 5, organizeMaterials: 5, arouseInterest: 5, instructionalMaterials: 5 },
+    personality: { rapport: 5, considerateness: 5 },
+    acceptability: 5,
+  };
+}
+
+function DOSTScale15({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const labels = ['1', '2', '3', '4', '5'];
+  return (
+    <div className="flex gap-1 flex-wrap">
+      {[5, 4, 3, 2, 1].map((n) => (
+        <button key={n} type="button" onClick={() => onChange(n)} className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${value === n ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>{n}</button>
+      ))}
+    </div>
+  );
+}
+
+function DOSTPart1Scale({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const opts = [{ v: 'low', l: 'Low' }, { v: 'satisfactory', l: 'Satisfactory' }, { v: 'very_good', l: 'Very Good' }];
+  return (
+    <div className="flex gap-2 flex-wrap">
+      {opts.map((o) => (
+        <button key={o.v} type="button" onClick={() => onChange(o.v)} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${value === o.v ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{o.l}</button>
+      ))}
+    </div>
+  );
+}
+
 function StarPicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex gap-1">
@@ -186,15 +256,22 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [reservations, setReservations] = React.useState<Record<string, Reservation>>({});
   const [reviews, setReviews] = React.useState<Record<string, Review>>({});
   const [boothRegs, setBoothRegs] = React.useState<any[]>([]);
+  const [presenterMaterials, setPresenterMaterials] = React.useState<{ id: string; roomId?: string; roomName?: string; fileName: string; downloadUrl: string; fileType: string; fileSizeBytes: number }[]>([]);
   const [hasEntryAttendance, setHasEntryAttendance] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
 
   // ── Modals ─────────────────────────────────────────────────────────────────
   const [scanModal, setScanModal] = React.useState(false);
+  const [scanModalRoom, setScanModalRoom] = React.useState<Room | null>(null);
   const [idModal, setIdModal] = React.useState(false);
-  const [reviewModal, setReviewModal] = React.useState<{ roomId: string; roomName: string } | null>(null);
+  const [reviewModal, setReviewModal] = React.useState<{ roomId: string; roomName: string; presenterNames: string[]; fromRoom?: Room } | null>(null);
   const [certModal, setCertModal] = React.useState(false);
-  const [detailRoom, setDetailRoom] = React.useState<Room | null>(null); // mobile detail sheet
+  const [detailRoom, setDetailRoom] = React.useState<Room | null>(null);
+  const [exhibitorDetailBooth, setExhibitorDetailBooth] = React.useState<any | null>(null);
+  const [exhibitorMaterials, setExhibitorMaterials] = React.useState<{ id: string; fileName: string; materialName?: string; downloadUrl: string; fileType: string; fileSizeBytes: number }[]>([]);
+  const [roomChatMessages, setRoomChatMessages] = React.useState<{ id: string; roomId: string; uid: string; participantName: string; text: string; createdAt: any }[]>([]);
+  const [roomChatInput, setRoomChatInput] = React.useState('');
+  const [roomChatSending, setRoomChatSending] = React.useState(false);
 
   // ── Mobile filter ──────────────────────────────────────────────────────────
   const [mobileFilter, setMobileFilter] = React.useState<string>('all');
@@ -202,10 +279,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   // ── Mobile sidebar drawer ──────────────────────────────────────────────────
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
 
-  // ── Review form ────────────────────────────────────────────────────────────
-  const [reviewRating, setReviewRating] = React.useState(5);
-  const [reviewComment, setReviewComment] = React.useState('');
+  // ── Review form (DOST) ─────────────────────────────────────────────────────
   const [reviewSaving, setReviewSaving] = React.useState(false);
+  const [dostPart1, setDostPart1] = React.useState({ levelOfContent: 'satisfactory', appropriateness: 'satisfactory', applicability: 'satisfactory' });
+  const [dostPart2, setDostPart2] = React.useState<Record<string, DOSTSpeakerRatings>>({});
+  const [dostPart3, setDostPart3] = React.useState({ venue: 5, food: 5, organizerResponse: 5, description: '' });
+  const [dostPart4, setDostPart4] = React.useState('');
+
 
   // ── Profile edit ───────────────────────────────────────────────────────────
   const [editingTravel, setEditingTravel] = React.useState(false);
@@ -227,6 +307,16 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const reviewedRoomIds = Object.keys(reviews);
   const certReady = attendedRoomIds.length > 0 && attendedRoomIds.some((rid) => reviewedRoomIds.includes(rid));
 
+  const getReviewDisplayRating = (rev: Review | undefined): number => {
+    if (!rev) return 0;
+    if (typeof rev.rating === 'number') return rev.rating;
+    if (rev.part2?.length) {
+      const avg = rev.part2.reduce((s, sp) => s + sp.ratings.acceptability, 0) / rev.part2.length;
+      return Math.round(avg);
+    }
+    return 5;
+  };
+
   const participantSector = (registration?.sector as string) || '';
   const registrationId = registration?.id as string | undefined;
   const eligibleMeals = React.useMemo(
@@ -238,6 +328,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     [meals, participantSector, registrationId],
   );
   const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
+  const unclaimedMealsCount = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
 
   const digitalIdQrData = `https://www.iscene.app/verify?uid=${user.uid}&name=${encodeURIComponent(fullName)}`;
   const digitalIdQrImg = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(digitalIdQrData)}`;
@@ -267,7 +358,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         load(() => getDocs(query(collection(db, 'reservations'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'reviews'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
         load(() => getDoc(doc(db, 'attendance', `${user.uid}_entrance`)), { exists: () => false } as any),
-        load(() => getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)']))), { docs: [] } as { docs: any[] }),
+        load(() => getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor']))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid))), { docs: [] } as { docs: any[] }),
       ]);
 
@@ -290,6 +381,65 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   }, [user.uid]);
 
   React.useEffect(() => { loadAll(); }, [loadAll]);
+
+  React.useEffect(() => {
+    const ids = Object.keys(reservations).slice(0, 30);
+    if (ids.length === 0) {
+      setPresenterMaterials([]);
+      return;
+    }
+    getDocs(query(collection(db, 'presenterMaterials'), where('roomId', 'in', ids)))
+      .then((snap) => setPresenterMaterials(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }))))
+      .catch(() => setPresenterMaterials([]));
+  }, [reservations]);
+
+  // Real-time updates for meals and food claims (notification when new data arrives)
+  React.useEffect(() => {
+    const unsubMeals = onSnapshot(query(collection(db, 'meals'), orderBy('createdAt', 'desc')), (snap) => {
+      setMeals(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) })));
+    });
+    const unsubClaims = onSnapshot(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid)), (snap) => {
+      setFoodClaims(snap.docs.map((d) => ({ id: d.id, mealId: (d.data() as any).mealId, claimedAt: (d.data() as any).claimedAt })));
+    });
+    const unsubBooths = onSnapshot(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor'])), (snap) => {
+      setBoothRegs(snap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsubMeals(); unsubClaims(); unsubBooths(); };
+  }, [user.uid]);
+
+  React.useEffect(() => {
+    if (reviewModal) {
+      const names = reviewModal.presenterNames?.length ? reviewModal.presenterNames : ['Speaker'];
+      const init: Record<string, DOSTSpeakerRatings> = {};
+      names.forEach((n) => { init[n] = getDefaultDOSTSpeakerRatings(); });
+      setDostPart2(init);
+      setDostPart1({ levelOfContent: 'satisfactory', appropriateness: 'satisfactory', applicability: 'satisfactory' });
+      setDostPart3({ venue: 5, food: 5, organizerResponse: 5, description: '' });
+      setDostPart4('');
+    }
+  }, [reviewModal?.roomId]);
+
+  React.useEffect(() => {
+    if (!detailRoom?.id) {
+      setRoomChatMessages([]);
+      return;
+    }
+    const q = query(collection(db, 'roomChat'), where('roomId', '==', detailRoom.id), orderBy('createdAt', 'asc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setRoomChatMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+    });
+    return () => unsub();
+  }, [detailRoom?.id]);
+
+  React.useEffect(() => {
+    if (!exhibitorDetailBooth?.uid) {
+      setExhibitorMaterials([]);
+      return;
+    }
+    getDocs(query(collection(db, 'presenterMaterials'), where('uid', '==', exhibitorDetailBooth.uid), orderBy('createdAt', 'desc')))
+      .then((snap) => setExhibitorMaterials(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }))))
+      .catch(() => setExhibitorMaterials([]));
+  }, [exhibitorDetailBooth?.uid]);
 
   // ── Parse QR content (robust: handles URL, query string, or plain text) ───
   const parseQrContent = (raw: string): { type: string | null; id: string | null } => {
@@ -338,6 +488,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         }, { merge: true });
         setHasEntryAttendance(true);
         setScanToast('✅ Entrance check-in successful!');
+        setScanModal(false);
       } else if (type === 'room' && id) {
         const resId = `${user.uid}_${id}`;
         const resDocRef = doc(db, 'reservations', resId);
@@ -350,7 +501,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           await setDoc(resDocRef, { uid: user.uid, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now(), attendedAt: Timestamp.now() }, { merge: true });
           setReservations((prev) => ({ ...prev, [id]: { id: resId, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now() } }));
         }
-        setScanToast('✅ Room check-in recorded!');
+        setScanToast('✅ Time in recorded!');
+        setScanModal(false);
       } else {
         setScanToast('❌ Unrecognized QR code. Use main entrance or room QR.');
       }
@@ -367,16 +519,98 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     setReservations((prev) => ({ ...prev, [room.id]: { id: resId, roomId: room.id, roomName: room.name, attended: false, reviewSubmitted: false, reservedAt: Timestamp.now() } }));
   };
 
+  const handleCancelReservation = async (room: Room) => {
+    const resId = `${user.uid}_${room.id}`;
+    await deleteDoc(doc(db, 'reservations', resId));
+    setReservations((prev) => {
+      const next = { ...prev };
+      delete next[room.id];
+      return next;
+    });
+  };
+
+  const handleDownloadCertificate = async () => {
+    try {
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const w = pdf.internal.pageSize.getWidth();
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.src = '/iscene.png';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load logo'));
+        if (img.complete) resolve();
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const dataUrl = canvas.toDataURL('image/png');
+      pdf.addImage(dataUrl, 'PNG', (w - 40) / 2, 18, 40, 40);
+      pdf.setFontSize(24);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('iSCENE 2026', w / 2, 72, { align: 'center' });
+      pdf.setFontSize(14);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('International Smart & Sustainable Cities Expo', w / 2, 80, { align: 'center' });
+      pdf.setFontSize(18);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('Certificate of Participation', w / 2, 100, { align: 'center' });
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('This certifies that', w / 2, 120, { align: 'center' });
+      pdf.setFontSize(16);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(fullName, w / 2, 132, { align: 'center' });
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('has participated in the iSCENE 2026 Global Summit.', w / 2, 142, { align: 'center' });
+      pdf.setFontSize(10);
+      pdf.text(new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }), w / 2, 155, { align: 'center' });
+      pdf.save(`iSCENE2026_Certificate_${fullName.replace(/\s+/g, '_')}.pdf`);
+    } catch (err) {
+      console.error('Certificate generation failed:', err);
+    }
+  };
+
   const handleSubmitReview = async () => {
     if (!reviewModal) return;
     setReviewSaving(true);
     try {
-      const docRef = await addDoc(collection(db, 'reviews'), { uid: user.uid, roomId: reviewModal.roomId, roomName: reviewModal.roomName, rating: reviewRating, comment: reviewComment, submittedAt: Timestamp.now() });
-      setReviews((prev) => ({ ...prev, [reviewModal.roomId]: { id: docRef.id, roomId: reviewModal.roomId, rating: reviewRating, comment: reviewComment } }));
+      const part2Arr = Object.entries(dostPart2).map(([speakerName, ratings]) => ({ speakerName, ratings }));
+      const payload = {
+        uid: user.uid,
+        participantName: fullName,
+        roomId: reviewModal.roomId,
+        roomName: reviewModal.roomName,
+        part1: dostPart1,
+        part2: part2Arr,
+        part3: dostPart3,
+        part4: dostPart4.trim() || undefined,
+        submittedAt: Timestamp.now(),
+      };
+      const docRef = await addDoc(collection(db, 'reviews'), payload);
+      setReviews((prev) => ({ ...prev, [reviewModal.roomId]: { id: docRef.id, roomId: reviewModal.roomId, part1: dostPart1, part2: part2Arr, part3: dostPart3, part4: dostPart4 } }));
       await updateDoc(doc(db, 'reservations', `${user.uid}_${reviewModal.roomId}`), { reviewSubmitted: true }).catch(() => {});
       setReservations((prev) => ({ ...prev, [reviewModal.roomId]: { ...prev[reviewModal.roomId], reviewSubmitted: true } }));
-      setReviewModal(null); setReviewRating(5); setReviewComment('');
+      setReviewModal(null);
     } finally { setReviewSaving(false); }
+  };
+
+  const handleSendRoomChat = async () => {
+    if (!detailRoom || !roomChatInput.trim()) return;
+    setRoomChatSending(true);
+    try {
+      await addDoc(collection(db, 'roomChat'), {
+        roomId: detailRoom.id,
+        uid: user.uid,
+        participantName: fullName,
+        text: roomChatInput.trim(),
+        createdAt: Timestamp.now(),
+      });
+      setRoomChatInput('');
+    } finally { setRoomChatSending(false); }
   };
 
   const handleSaveTravel = async () => {
@@ -486,39 +720,35 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const DesktopSessionCard = ({ room, idx }: { room: Room; idx: number }) => {
     const res = reservations[room.id];
     const rev = reviews[room.id];
-    const dateObj = room.sessionDate ? new Date(room.sessionDate) : null;
-    const colorClass = SECTOR_COLORS[idx % SECTOR_COLORS.length];
+    const grad = CARD_GRADIENTS[idx % CARD_GRADIENTS.length];
     return (
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm flex items-start gap-4 p-4 hover:shadow-md transition-shadow">
-        <div className="w-16 shrink-0 text-center bg-blue-50 rounded-xl p-2">
-          {dateObj && <p className="text-[10px] text-slate-400 font-medium uppercase">{dateObj.toLocaleDateString('en-PH', { month: 'short' })}</p>}
-          <p className="text-sm font-black text-blue-700">{dateObj ? dateObj.toLocaleDateString('en-PH', { day: 'numeric' }) : '—'}</p>
-          {room.timeline && <p className="text-[10px] text-blue-500 font-medium mt-0.5">{room.timeline.split('–')[0]?.trim().replace(' AM','').replace(' PM','')}</p>}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            {room.presenterNames?.length > 0 && (
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${colorClass}`}>{room.presenterNames[0].split(' ').slice(-1)[0].toUpperCase()}</span>
-            )}
-            {room.timeline && <span className="text-[10px] text-slate-400">· {room.timeline}</span>}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setDetailRoom(room)}
+        onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
+        className="bg-white rounded-2xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
+      >
+        <div
+          className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
+          style={room.backgroundImage ? { backgroundImage: `url(${room.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#f1f5f9' } : undefined}
+        />
+        <div className="flex-1 min-w-0 flex items-start justify-between gap-4 p-4">
+          <div className="min-w-0">
+            <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}</p>
+            <p className="text-sm font-bold leading-snug text-slate-800">{room.name}</p>
+            {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{room.description}</p>}
           </div>
-          <p className="text-sm font-bold leading-snug text-slate-800">{room.name}</p>
-          {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{room.description}</p>}
-          {room.presenterNames?.length > 0 && (
-            <div className="flex items-center gap-2 mt-2">
-              <div className="w-5 h-5 rounded-full bg-blue-200 flex items-center justify-center text-[10px] font-bold text-blue-700">{room.presenterNames[0][0]}</div>
-              <span className="text-[11px] text-slate-500">{room.presenterNames[0]}</span>
-            </div>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-2 shrink-0">
+          <div className="flex flex-col items-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
           <button type="button" className={`transition-colors ${res ? 'text-blue-500' : 'text-slate-300 hover:text-blue-500'}`} onClick={() => !res && handleReserve(room)} title={res ? 'Reserved' : 'Reserve slot'}>
             <Bookmark size={16} fill={res ? 'currentColor' : 'none'} />
           </button>
           {res?.attended && !rev && (
-            <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name })} className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full hover:bg-amber-100">Review</button>
+            <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full hover:bg-amber-100">Review</button>
           )}
-          {rev && <span className="text-amber-400 text-xs">{'★'.repeat(rev.rating)}</span>}
+          {rev && <span className="text-amber-400 text-xs">{'★'.repeat(getReviewDisplayRating(rev))}</span>}
+          <ChevronRight size={18} className="text-slate-300 mt-1" />
+          </div>
         </div>
       </div>
     );
@@ -600,7 +830,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </div>
             </div>
 
-            {/* Upcoming sessions preview */}
+            {/* Upcoming sessions preview - text only, tap for details */}
             {rooms.length > 0 && (
               <div className="px-4">
                 <div className="flex items-center justify-between mb-2">
@@ -608,21 +838,25 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   <button type="button" onClick={() => setActiveTab('schedule')} className="text-xs font-semibold text-blue-600">View all →</button>
                 </div>
                 {rooms.slice(0, 2).map((room, i) => (
-                  <div key={room.id} className={`mb-3 rounded-2xl overflow-hidden bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]} shadow-md`}>
-                    <div className="h-20 flex items-end p-3 bg-black/20">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 text-white`}>{TRACK_BADGES[i % TRACK_BADGES.length].label}</span>
-                        {room.timeline && <span className="text-[10px] text-white/80">{room.timeline}</span>}
-                      </div>
-                    </div>
-                    <div className="p-3 flex items-center justify-between gap-2">
+                  <div
+                    key={room.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setDetailRoom(room)}
+                    onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
+                    className="mb-3 rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm hover:shadow-md active:scale-[0.99] transition-all cursor-pointer flex"
+                  >
+                    <div
+                      className={`w-20 min-h-[80px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}` : ''}`}
+                      style={room.backgroundImage ? { backgroundImage: `url(${room.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#f1f5f9' } : undefined}
+                    />
+                    <div className="flex-1 min-w-0 flex items-start justify-between gap-2 p-4">
                       <div className="min-w-0">
-                        <p className="text-white font-bold text-sm truncate">{room.name}</p>
-                        {room.presenterNames?.[0] && <p className="text-white/70 text-[11px]">{room.presenterNames[0]}</p>}
+                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}</p>
+                        <p className="text-sm font-bold text-slate-800 truncate">{room.name}</p>
+                        {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{room.description}</p>}
                       </div>
-                      <button type="button" onClick={() => setDetailRoom(room)} className="shrink-0 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-bold rounded-full">
-                        Details
-                      </button>
+                      <ChevronRight size={16} className="text-slate-300 shrink-0 mt-1" />
                     </div>
                   </div>
                 ))}
@@ -635,7 +869,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {activeTab === 'schedule' && (
           <>
             <div className="px-4 pt-5 pb-2">
-              <h2 className="text-2xl font-black tracking-tight">Pitch Showcase</h2>
+              <h2 className="text-2xl font-black tracking-tight">Break out room</h2>
               <p className="text-sm text-slate-500 mt-1">Discover breakout sessions and reserve your slot.</p>
             </div>
 
@@ -657,62 +891,72 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 filteredRooms.map((room, i) => {
                   const res = reservations[room.id];
                   const rev = reviews[room.id];
-                  const track = TRACK_BADGES[i % TRACK_BADGES.length];
                   const grad = CARD_GRADIENTS[i % CARD_GRADIENTS.length];
-                  const dateObj = room.sessionDate ? new Date(room.sessionDate) : null;
                   return (
-                    <div key={room.id} className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm hover:shadow-md transition-all">
-                      {/* Card image area */}
-                      <div className={`h-48 w-full bg-gradient-to-br ${grad} flex items-end p-4`}>
-                        <div className="flex flex-col gap-1 w-full">
-                          <span className="text-[9px] font-black uppercase tracking-widest text-white/60">iSCENE 2026</span>
-                          <p className="text-white font-black text-lg leading-tight line-clamp-2">{room.name}</p>
+                    <div
+                      key={room.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setDetailRoom(room)}
+                      onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
+                      className="flex overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm hover:shadow-md active:scale-[0.99] transition-all cursor-pointer"
+                    >
+                      <div
+                        className={`w-20 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
+                        style={room.backgroundImage ? { backgroundImage: `url(${room.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#f1f5f9' } : undefined}
+                      />
+                      <div className="flex-1 min-w-0 flex items-start justify-between gap-4 p-4">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}</p>
+                        <p className="text-sm font-bold text-slate-800 leading-snug">{room.name}</p>
+                        {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{room.description}</p>}
+                        <div className="flex items-center gap-2 mt-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                          {res?.attended && !rev && (
+                            <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold">
+                              Review
+                            </button>
+                          )}
+                          {rev && <span className="text-amber-400 text-xs font-bold">{'★'.repeat(getReviewDisplayRating(rev))}</span>}
                         </div>
                       </div>
-                      {/* Card content */}
-                      <div className="p-4 flex flex-col gap-3">
-                        <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${track.cls}`}>{track.label}</span>
-                            {room.timeline && (
-                              <span className="text-xs text-slate-400 flex items-center gap-1"><Clock size={12} /> {room.timeline}</span>
-                            )}
-                          </div>
-                          {dateObj && (
-                            <p className="text-[11px] text-slate-400 mb-1">{dateObj.toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
-                          )}
-                        </div>
-                        {room.description && <p className="text-sm leading-relaxed text-slate-600 line-clamp-2">{room.description}</p>}
-                        <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-                          <div className="flex -space-x-2">
-                            {(room.presenterNames || []).slice(0, 3).map((name, pi) => (
-                              <div key={pi} className={`w-7 h-7 rounded-full border-2 border-white flex items-center justify-center text-[9px] font-black text-white ${['bg-blue-500','bg-emerald-500','bg-purple-500'][pi % 3]}`}>
-                                {name[0]}
-                              </div>
-                            ))}
-                            {(room.presenterNames || []).length === 0 && (
-                              <div className="w-7 h-7 rounded-full border-2 border-white bg-slate-300 flex items-center justify-center text-[9px] font-bold text-slate-600">?</div>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {res?.attended && !rev && (
-                              <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name })} className="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold">
-                                Review
-                              </button>
-                            )}
-                            {rev && <span className="text-amber-400 text-xs font-bold">{'★'.repeat(rev.rating)}</span>}
-                            <button type="button" onClick={() => setDetailRoom(room)}
-                              className="flex items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 active:scale-95 transition-all">
-                              View Details
-                            </button>
-                          </div>
-                        </div>
+                      <ChevronRight size={20} className="text-slate-300 shrink-0" />
                       </div>
                     </div>
                   );
                 })
               )}
             </div>
+          </>
+        )}
+
+        {/* ── MATERIALS tab ───────────────────────────────────── */}
+        {activeTab === 'materials' && (
+          <>
+            <div className="px-4 pt-5 pb-2">
+              <h2 className="text-2xl font-black tracking-tight">Session Materials</h2>
+              <p className="text-sm text-slate-500 mt-1">Access materials from your reserved sessions.</p>
+            </div>
+            {presenterMaterials.length === 0 ? (
+              <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
+                <BookOpen size={40} className="text-slate-200 mx-auto mb-3" />
+                <p>Reserve a session to access materials.</p>
+                <button type="button" onClick={() => setActiveTab('schedule')} className="mt-4 px-5 py-2 bg-blue-600 text-white rounded-full text-sm font-bold">Browse Sessions</button>
+              </div>
+            ) : (
+              <div className="px-4 flex flex-col gap-3 pb-4">
+                {presenterMaterials.map((mat) => {
+                  const room = mat.roomId ? rooms.find((r) => r.id === mat.roomId) : null;
+                  const size = mat.fileSizeBytes ? (mat.fileSizeBytes < 1024 ? `${mat.fileSizeBytes} B` : mat.fileSizeBytes < 1024 * 1024 ? `${(mat.fileSizeBytes / 1024).toFixed(1)} KB` : `${(mat.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`) : '';
+                  return (
+                    <div key={mat.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center shrink-0"><FileText size={20} className="text-blue-600" /></div>
+                      <div className="flex-1 min-w-0"><p className="font-bold text-sm truncate">{mat.fileName}</p><p className="text-xs text-slate-400">{mat.roomName || room?.name || 'Session'} · {size}</p></div>
+                      <a href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-2 text-blue-600 border border-blue-200 rounded-full text-xs font-bold shrink-0"><Download size={12} /></a>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </>
         )}
 
@@ -728,13 +972,23 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             ) : (
               <div className="px-4 flex flex-col gap-4 pb-4">
                 {boothRegs.map((booth, i) => (
-                  <div key={booth.id} className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                    <div className={`h-32 w-full bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]} flex items-center justify-center`}>
-                      <Store size={40} className="text-white/40" />
+                  <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="w-full text-left flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm hover:shadow-md transition-shadow">
+                    <div className={`h-32 w-full flex items-center justify-center overflow-hidden ${booth.boothImageUrl ? '' : `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}`}`}>
+                      {booth.boothImageUrl ? (
+                        <img src={booth.boothImageUrl} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Store size={40} className="text-white/40" />
+                      )}
                     </div>
                     <div className="p-4">
                       <div className="flex items-center gap-2 mb-1">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black ${SECTOR_COLORS[i % SECTOR_COLORS.length]}`}>{(booth.fullName as string)?.[0] || 'B'}</div>
+                        <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!(booth.profilePictureUrl || booth.boothImageUrl) ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
+                          {(booth.profilePictureUrl || booth.boothImageUrl) ? (
+                            <img src={booth.profilePictureUrl || booth.boothImageUrl} alt="" className="w-full h-full object-cover block" />
+                          ) : (
+                            (booth.fullName as string)?.[0] || 'B'
+                          )}
+                        </div>
                         <div>
                           <p className="font-bold text-sm">{booth.fullName || '—'}</p>
                           <p className="text-[10px] text-slate-400">{booth.sector}</p>
@@ -743,10 +997,9 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                       <p className="text-xs text-slate-500 line-clamp-2 mb-2">{booth.sectorOffice || 'Event booth participant'}</p>
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] text-slate-400">Booth #{booth.id.slice(0, 4).toUpperCase()}</span>
-                        <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Approved</span>
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -797,7 +1050,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   </div>
                 </div>
                 {certReady
-                  ? <button type="button" className="w-full py-2.5 bg-amber-500 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2"><Download size={14} /> Download Certificate</button>
+                  ? <button type="button" onClick={handleDownloadCertificate} className="w-full py-2.5 bg-amber-500 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2"><Download size={14} /> Download Certificate</button>
                   : <div className="space-y-1.5 text-xs text-slate-400">
                       {[{ l: 'Attend a session', d: attendedRoomIds.length > 0 }, { l: 'Submit a review', d: reviewedRoomIds.length > 0 }].map(({ l, d }) => (
                         <div key={l} className="flex items-center gap-2">{d ? <CheckCircle2 size={12} className="text-emerald-500" /> : <Clock size={12} />}<span className={d ? 'text-slate-600' : ''}>{l}</span></div>
@@ -821,7 +1074,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       <nav className="fixed bottom-0 z-30 flex w-full max-w-md items-center justify-between border-t border-slate-200 bg-white/95 backdrop-blur-md px-5 pb-5 pt-3">
         {([
           { id: 'home', label: 'HOME', icon: <Home size={22} /> },
-          { id: 'schedule', label: 'SHOWCASE', icon: <Rocket size={22} /> },
+          { id: 'schedule', label: 'BREAK OUT', icon: <Rocket size={22} /> },
         ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((item) => (
           <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
             className={`flex flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}>
@@ -839,7 +1092,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         </div>
 
         {([
-          { id: 'exhibitors', label: 'SPEAKERS', icon: <Users size={22} /> },
+          { id: 'exhibitors', label: 'EXHIBITORS', icon: <Users size={22} /> },
           { id: 'profile', label: 'PROFILE', icon: <User size={22} /> },
         ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((item) => (
           <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
@@ -885,10 +1138,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
               {([
                 { id: 'home' as Tab, label: 'Home', icon: <Home size={18} /> },
-                { id: 'schedule' as Tab, label: 'Showcase / Schedule', icon: <Rocket size={18} /> },
+                { id: 'schedule' as Tab, label: 'Break out room', icon: <Rocket size={18} /> },
                 { id: 'exhibitors' as Tab, label: 'Exhibitors', icon: <Store size={18} /> },
                 { id: 'materials' as Tab, label: 'Materials', icon: <BookOpen size={18} /> },
-                { id: 'meals' as Tab, label: 'My Meals', icon: <Utensils size={18} /> },
+                { id: 'meals' as Tab, label: 'My Meals', icon: <Utensils size={18} />, badge: unclaimedMealsCount },
                 { id: 'profile' as Tab, label: 'Profile', icon: <User size={18} /> },
               ]).map((item) => (
                 <button
@@ -899,6 +1152,11 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 >
                   {item.icon}
                   <span>{item.label}</span>
+                  {'badge' in item && item.badge > 0 && (
+                    <span className="ml-auto min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-amber-500 text-white text-[10px] font-black">
+                      {item.badge > 99 ? '99+' : item.badge}
+                    </span>
+                  )}
                 </button>
               ))}
             </nav>
@@ -999,7 +1257,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       {/* Main */}
       <main className="flex-1 ml-56 overflow-y-auto min-h-screen">
         {/* Top header */}
-        <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-sm border-b border-slate-100 px-8 py-4 flex items-center justify-between">
+        <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-sm border-b border-slate-100 px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-xl font-black">Welcome back, {firstName}!</h1>
             <p className="text-sm text-slate-500">{hasEntryAttendance ? "You're checked in · Enjoy the event!" : "Scan the entrance QR when you arrive."}</p>
@@ -1018,11 +1276,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* HOME */}
         {activeTab === 'home' && (
-          <div className="p-8 space-y-7">
+          <div className="p-4 sm:p-6 lg:p-8 space-y-7">
             {/* Hero */}
-            <div className="relative rounded-2xl overflow-hidden h-52 bg-gradient-to-br from-teal-700 via-cyan-800 to-slate-900 shadow-lg">
-              <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'repeating-linear-gradient(0deg,transparent,transparent 30px,rgba(255,255,255,.5) 30px,rgba(255,255,255,.5) 31px),repeating-linear-gradient(90deg,transparent,transparent 30px,rgba(255,255,255,.5) 30px,rgba(255,255,255,.5) 31px)' }} />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+            <div className="relative rounded-2xl overflow-hidden h-52 shadow-lg" style={{ backgroundImage: 'url(/icon.jpg)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+              <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />
               <div className="absolute bottom-0 left-0 p-6">
                 <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">iSCENE 2026</p>
                 <h2 className="text-white text-2xl font-black leading-tight">Innovating the Future<br />of Science</h2>
@@ -1080,18 +1337,26 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     ? <div className="bg-white rounded-2xl border border-slate-100 p-5 text-center text-slate-400 text-xs shadow-sm">No exhibitors yet.</div>
                     : <div className="space-y-3">
                         {boothRegs.slice(0, 3).map((booth, i) => (
-                          <div key={booth.id} className="bg-white rounded-2xl border border-slate-100 p-3 shadow-sm hover:shadow-md transition-shadow">
+                          <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="w-full text-left bg-white rounded-2xl border border-slate-100 p-3 shadow-sm hover:shadow-md transition-shadow">
                             <div className="flex items-center gap-2 mb-2">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black ${SECTOR_COLORS[i % SECTOR_COLORS.length]}`}>{(booth.fullName as string)?.[0] || 'B'}</div>
+                              <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!(booth.profilePictureUrl || booth.boothImageUrl) ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
+                                {(booth.profilePictureUrl || booth.boothImageUrl) ? (
+                                  <img src={booth.profilePictureUrl || booth.boothImageUrl} alt="" className="w-full h-full object-cover block" />
+                                ) : (
+                                  (booth.fullName as string)?.[0] || 'B'
+                                )}
+                              </div>
                               <div className="min-w-0"><p className="text-xs font-bold truncate">{booth.fullName || '—'}</p><p className="text-[10px] text-slate-400 truncate">{booth.sector}</p></div>
                             </div>
-                            <div className="h-20 rounded-xl bg-gradient-to-br from-slate-100 to-slate-200 mb-2 flex items-center justify-center"><Store size={28} className="text-slate-300" /></div>
+                            <div className={`h-20 rounded-xl mb-2 flex items-center justify-center overflow-hidden ${booth.boothImageUrl ? '' : 'bg-gradient-to-br from-slate-100 to-slate-200'}`}>
+                              {booth.boothImageUrl ? <img src={booth.boothImageUrl} alt="" className="w-full h-full object-cover" /> : <Store size={28} className="text-slate-300" />}
+                            </div>
                             <p className="text-[10px] text-slate-500 line-clamp-2">{booth.sectorOffice || 'Event booth participant'}</p>
                             <div className="flex items-center justify-between mt-2">
                               <span className="text-[10px] text-slate-400">Booth #{booth.id.slice(0, 4).toUpperCase()}</span>
-                              <button type="button" onClick={() => setActiveTab('exhibitors')} className="text-[11px] font-bold text-blue-600 hover:underline flex items-center gap-0.5">Visit Booth <ExternalLink size={10} /></button>
+                              <span className="text-[11px] font-bold text-blue-600 flex items-center gap-0.5">View <ExternalLink size={10} /></span>
                             </div>
-                          </div>
+                          </button>
                         ))}
                       </div>}
                 </div>
@@ -1122,7 +1387,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* SCHEDULE */}
         {activeTab === 'schedule' && (
-          <div className="p-8">
+          <div className="p-4 sm:p-6 lg:p-8">
             <div className="flex items-end justify-between mb-6">
               <div><h2 className="text-2xl font-black">Breakout Sessions</h2><p className="text-slate-500 text-sm mt-1">Reserve · Check in · Review</p></div>
             </div>
@@ -1130,29 +1395,35 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No sessions scheduled yet.</div>
               : <div className="space-y-3">{rooms.map((room, i) => {
                   const res = reservations[room.id]; const rev = reviews[room.id];
-                  const dateObj = room.sessionDate ? new Date(room.sessionDate) : null;
+                  const grad = CARD_GRADIENTS[i % CARD_GRADIENTS.length];
                   return (
-                    <div key={room.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 hover:shadow-md transition-shadow">
-                      <div className="flex items-start gap-5">
-                        <div className="w-16 shrink-0 text-center bg-blue-50 rounded-xl p-3">
-                          {dateObj ? (<><p className="text-[10px] text-slate-400 uppercase font-medium">{dateObj.toLocaleDateString('en-PH',{month:'short'})}</p><p className="text-lg font-black text-blue-700">{dateObj.toLocaleDateString('en-PH',{day:'numeric'})}</p></>) : <p className="text-xs text-slate-400">TBD</p>}
-                          {room.timeline && <p className="text-[10px] text-blue-500 font-medium mt-0.5 leading-tight">{room.timeline.split('–')[0]?.trim()}</p>}
-                        </div>
+                    <div
+                      key={room.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setDetailRoom(room)}
+                      onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
+                      className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow cursor-pointer flex"
+                    >
+                      <div
+                        className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
+                        style={room.backgroundImage ? { backgroundImage: `url(${room.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#f1f5f9' } : undefined}
+                      />
+                      <div className="flex-1 min-w-0 flex items-start justify-between gap-4 p-5">
                         <div className="flex-1 min-w-0">
-                          {room.presenterNames?.length > 0 && <div className="flex items-center gap-2 flex-wrap mb-1.5"><span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${SECTOR_COLORS[i % SECTOR_COLORS.length]}`}>{room.presenterNames[0]}</span>{room.timeline && <span className="text-[11px] text-slate-400">· {room.timeline}</span>}</div>}
+                          <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}{room.venue && ` · ${room.venue}`}</p>
                           <h3 className="font-bold text-sm text-slate-800 leading-snug">{room.name}</h3>
-                          {room.description && <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{room.description}</p>}
-                          <div className="flex flex-wrap items-center gap-3 mt-2 text-[11px] text-slate-400">
-                            {room.capacity > 0 && <span className="flex items-center gap-1"><Users size={11} /> {room.capacity} seats</span>}
-                            {room.materials && <span className="flex items-center gap-1"><BookOpen size={11} /> {room.materials}</span>}
+                          {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{room.description}</p>}
+                          <div className="flex flex-wrap items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                            {!res ? <button type="button" onClick={() => handleReserve(room)} className="px-3 py-1.5 bg-blue-600 text-white rounded-full text-xs font-bold hover:bg-blue-700">Reserve</button>
+                              : <span className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>}
+                            {res?.attended && !rev && (
+                              <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-full text-xs font-bold hover:bg-amber-200"><Star size={11} /> Review</button>
+                            )}
+                            {rev && <span className="text-xs font-bold text-amber-500">{'★'.repeat(getReviewDisplayRating(rev))}</span>}
                           </div>
                         </div>
-                        <div className="shrink-0 flex flex-col items-end gap-2">
-                          {!res ? <button type="button" onClick={() => handleReserve(room)} className="px-4 py-2 bg-blue-600 text-white rounded-full text-xs font-bold hover:bg-blue-700 transition-colors">Reserve</button>
-                            : <span className="px-4 py-2 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>}
-                          {res?.attended && !rev && <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name })} className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-full text-xs font-bold hover:bg-amber-200 flex items-center gap-1"><Star size={11} /> Review</button>}
-                          {rev && <span className="text-xs font-bold text-amber-500">{'★'.repeat(rev.rating)}{'☆'.repeat(5-rev.rating)}</span>}
-                        </div>
+                        <ChevronRight size={20} className="text-slate-300 shrink-0" />
                       </div>
                     </div>
                   );
@@ -1162,20 +1433,35 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* EXHIBITORS */}
         {activeTab === 'exhibitors' && (
-          <div className="p-8">
+          <div className="p-4 sm:p-6 lg:p-8">
             <div className="mb-6"><h2 className="text-2xl font-black">Exhibitors</h2><p className="text-slate-500 text-sm mt-1">Approved booth participants at iSCENE 2026.</p></div>
             {boothRegs.length === 0
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No exhibitors yet.</div>
               : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {boothRegs.map((booth, i) => (
-                    <div key={booth.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
-                      <div className={`h-28 bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]} flex items-center justify-center`}><Store size={40} className="text-white/30" /></div>
-                      <div className="p-4">
-                        <div className="flex items-center gap-2 mb-2"><div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black ${SECTOR_COLORS[i % SECTOR_COLORS.length]}`}>{(booth.fullName as string)?.[0] || 'B'}</div><div><p className="text-sm font-bold">{booth.fullName || '—'}</p><p className="text-[10px] text-slate-400">{booth.sector}</p></div></div>
-                        <p className="text-xs text-slate-500 line-clamp-2 mb-3">{booth.sectorOffice || 'Event booth participant'}</p>
-                        <div className="flex items-center justify-between"><span className="text-[11px] text-slate-400">Booth #{booth.id.slice(0,4).toUpperCase()}</span><span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Approved</span></div>
+                    <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="text-left bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
+                      <div className={`h-28 flex items-center justify-center overflow-hidden ${booth.boothImageUrl ? '' : `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}`}`}>
+                        {booth.boothImageUrl ? (
+                          <img src={booth.boothImageUrl} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <Store size={40} className="text-white/30" />
+                        )}
                       </div>
-                    </div>
+                      <div className="p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!(booth.profilePictureUrl || booth.boothImageUrl) ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
+                            {(booth.profilePictureUrl || booth.boothImageUrl) ? (
+                              <img src={booth.profilePictureUrl || booth.boothImageUrl} alt="" className="w-full h-full object-cover block" />
+                            ) : (
+                              (booth.fullName as string)?.[0] || 'B'
+                            )}
+                          </div>
+                          <div><p className="text-sm font-bold">{booth.fullName || '—'}</p><p className="text-[10px] text-slate-400">{booth.sector}</p></div>
+                        </div>
+                        <p className="text-xs text-slate-500 line-clamp-2 mb-3">{booth.sectorOffice || 'Event booth participant'}</p>
+                        <div className="flex items-center justify-between"><span className="text-[11px] text-slate-400">Booth #{booth.id.slice(0,4).toUpperCase()}</span></div>
+                      </div>
+                    </button>
                   ))}
                 </div>}
           </div>
@@ -1183,25 +1469,29 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* MATERIALS */}
         {activeTab === 'materials' && (
-          <div className="p-8">
+          <div className="p-4 sm:p-6 lg:p-8">
             <div className="mb-6"><h2 className="text-2xl font-black">Session Materials</h2><p className="text-slate-500 text-sm mt-1">Access materials from your reserved sessions.</p></div>
-            {rooms.filter((r) => r.materials && reservations[r.id]).length === 0
-              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center shadow-sm"><BookOpen size={40} className="text-slate-200 mx-auto mb-3" /><p className="text-slate-400 text-sm">Reserve a session to access materials.</p><button type="button" onClick={() => setActiveTab('schedule')} className="mt-4 px-5 py-2 bg-blue-600 text-white rounded-full text-sm font-bold hover:bg-blue-700">Browse Sessions</button></div>
+            {presenterMaterials.length === 0
+              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center shadow-sm"><BookOpen size={40} className="text-slate-200 mx-auto mb-3" /><p className="text-slate-400 text-sm">Reserve a breakout session first. Training materials appear here when presenters upload files and link them to their sessions.</p><button type="button" onClick={() => setActiveTab('schedule')} className="mt-4 px-5 py-2 bg-blue-600 text-white rounded-full text-sm font-bold hover:bg-blue-700">Browse Sessions</button></div>
               : <div className="space-y-3">
-                  {rooms.filter((r) => r.materials && reservations[r.id]).map((room) => (
-                    <div key={room.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex items-center gap-4 hover:shadow-md transition-shadow">
-                      <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center shrink-0"><FileText size={20} className="text-blue-600" /></div>
-                      <div className="flex-1 min-w-0"><p className="font-bold text-sm">{room.name}</p><p className="text-xs text-slate-400 mt-0.5">{room.materials}</p></div>
-                      <button type="button" className="px-4 py-2 text-blue-600 border border-blue-200 rounded-full text-xs font-bold hover:bg-blue-50 flex items-center gap-1"><Download size={12} /> Access</button>
-                    </div>
-                  ))}
+                  {presenterMaterials.map((mat) => {
+                    const room = mat.roomId ? rooms.find((r) => r.id === mat.roomId) : null;
+                    const size = mat.fileSizeBytes ? (mat.fileSizeBytes < 1024 ? `${mat.fileSizeBytes} B` : mat.fileSizeBytes < 1024 * 1024 ? `${(mat.fileSizeBytes / 1024).toFixed(1)} KB` : `${(mat.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`) : '';
+                    return (
+                      <div key={mat.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex items-center gap-4 hover:shadow-md transition-shadow">
+                        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center shrink-0"><FileText size={20} className="text-blue-600" /></div>
+                        <div className="flex-1 min-w-0"><p className="font-bold text-sm">{mat.fileName}</p><p className="text-xs text-slate-400 mt-0.5">{mat.roomName || room?.name || 'Session'} · {size}</p></div>
+                        <a href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="px-4 py-2 text-blue-600 border border-blue-200 rounded-full text-xs font-bold hover:bg-blue-50 flex items-center gap-1 shrink-0"><Download size={12} /> Download</a>
+                      </div>
+                    );
+                  })}
                 </div>}
           </div>
         )}
 
         {/* MEALS */}
         {activeTab === 'meals' && (
-          <div className="p-8">
+          <div className="p-4 sm:p-6 lg:p-8">
             <div className="mb-6"><h2 className="text-2xl font-black">My Entitlements</h2><p className="text-slate-500 text-sm mt-1">Food, kits, and giveaways — claim at the assigned stall within the time window.</p></div>
             {eligibleMeals.length === 0
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No entitlements available for you yet.</div>
@@ -1238,14 +1528,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   <div key={label} className="flex items-center gap-2 text-sm">{done?<CheckCircle2 size={16} className="text-emerald-500 shrink-0"/>:<Clock size={16} className="text-slate-300 shrink-0"/>}<span className={done?'text-slate-700':'text-slate-400'}>{label}</span></div>
                 ))}
               </div>
-              {certReady && <button type="button" className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition-colors"><Download size={16} /> Download Certificate</button>}
+              {certReady && <button type="button" onClick={handleDownloadCertificate} className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition-colors"><Download size={16} /> Download Certificate</button>}
             </div>
           </div>
         )}
 
         {/* PROFILE */}
         {activeTab === 'profile' && (
-          <div className="p-8 max-w-2xl">
+          <div className="p-4 sm:p-6 lg:p-8 max-w-2xl">
             <h2 className="text-2xl font-black mb-6">My Profile</h2>
             <ProfileContent />
           </div>
@@ -1266,8 +1556,37 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       {scanModal && (
         <QrScanModal
           subtitle="Scanning will start automatically for session check-in"
-          onClose={() => setScanModal(false)}
+          onClose={() => { setScanModal(false); setScanModalRoom(null); }}
           onResult={handleScanResult}
+          footerActions={scanModalRoom ? (
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  const room = scanModalRoom;
+                  setScanModal(false);
+                  setScanModalRoom(null);
+                  if (!reservations[room.id]) await handleReserve(room);
+                  document.getElementById('detail-actions-bar')?.scrollIntoView?.({ behavior: 'smooth' });
+                }}
+                className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center gap-2"
+              >
+                Reserve
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const room = scanModalRoom;
+                  setScanModal(false);
+                  setScanModalRoom(null);
+                  if (reservations[room.id]) await handleCancelReservation(room);
+                }}
+                className="px-5 py-2.5 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300 flex items-center gap-2"
+              >
+                Cancel
+              </button>
+            </>
+          ) : undefined}
         />
       )}
 
@@ -1346,54 +1665,416 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 </div>
               ))}
             </div>
-            {certReady?<button type="button" className="w-full py-3 bg-amber-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-amber-600"><Download size={16}/> Download Certificate</button>:<p className="text-xs text-slate-400 text-center">Complete all requirements to unlock your certificate.</p>}
+            {certReady?<button type="button" onClick={handleDownloadCertificate} className="w-full py-3 bg-amber-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-amber-600"><Download size={16}/> Download Certificate</button>:<p className="text-xs text-slate-400 text-center">Complete all requirements to unlock your certificate.</p>}
           </div>
         </div>
       )}
 
-      {/* Mobile session detail bottom sheet */}
-      {detailRoom && (
-        <div className="fixed inset-0 z-[70] bg-black/60 flex items-end justify-center md:items-center md:p-4">
-          <div className="w-full max-w-md bg-white rounded-t-3xl md:rounded-3xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
-            <div className={`h-32 bg-gradient-to-br ${CARD_GRADIENTS[rooms.indexOf(detailRoom) % CARD_GRADIENTS.length]} shrink-0 flex items-end p-4`}>
-              <div className="flex items-center justify-between w-full">
-                <p className="text-white font-black text-lg leading-tight">{detailRoom.name}</p>
-                <button type="button" onClick={() => setDetailRoom(null)} className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white shrink-0"><X size={16} /></button>
-              </div>
+      {/* Exhibitor Booth Detail modal */}
+      {exhibitorDetailBooth && (
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg max-h-[90vh] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between p-4 border-b border-slate-200">
+              <h3 className="font-black text-lg">Booth Profile</h3>
+              <button type="button" onClick={() => setExhibitorDetailBooth(null)} className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200"><X size={18} /></button>
             </div>
-            <div className="overflow-y-auto p-5 space-y-4 flex-1">
-              {detailRoom.description && <p className="text-sm text-slate-600 leading-relaxed">{detailRoom.description}</p>}
-              <div className="space-y-2 text-sm">
-                {detailRoom.sessionDate && <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl"><CalendarDays size={16} className="text-blue-600 shrink-0" /><span>{new Date(detailRoom.sessionDate).toLocaleDateString('en-PH',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</span></div>}
-                {detailRoom.timeline && <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl"><Clock size={16} className="text-blue-600 shrink-0" /><span>{detailRoom.timeline}</span></div>}
-                {detailRoom.capacity > 0 && <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl"><Users size={16} className="text-blue-600 shrink-0" /><span>{detailRoom.capacity} seats max</span></div>}
-                {detailRoom.presenterNames?.length > 0 && <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl"><Star size={16} className="text-blue-600 shrink-0 mt-0.5" /><span>{detailRoom.presenterNames.join(', ')}</span></div>}
-                {detailRoom.materials && <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl"><BookOpen size={16} className="text-blue-600 shrink-0" /><span>{detailRoom.materials}</span></div>}
+            <div className="flex-1 overflow-y-auto">
+              {/* Background / header image */}
+              <div className={`h-36 flex items-center justify-center overflow-hidden ${exhibitorDetailBooth.boothBackgroundUrl || exhibitorDetailBooth.boothImageUrl ? '' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'}`}>
+                {exhibitorDetailBooth.boothBackgroundUrl ? (
+                  <img src={exhibitorDetailBooth.boothBackgroundUrl} alt="" className="w-full h-full object-cover" />
+                ) : exhibitorDetailBooth.boothImageUrl ? (
+                  <img src={exhibitorDetailBooth.boothImageUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <Store size={48} className="text-blue-300" />
+                )}
               </div>
-            </div>
-            <div className="p-5 border-t border-slate-100 space-y-2 shrink-0">
-              {!reservations[detailRoom.id]
-                ? <button type="button" onClick={async () => { await handleReserve(detailRoom); setDetailRoom(null); }} className="w-full py-3 bg-blue-600 text-white font-bold rounded-2xl text-sm hover:bg-blue-700 active:scale-95 transition-all">Reserve Slot</button>
-                : <div className="w-full py-3 bg-emerald-100 text-emerald-700 font-bold rounded-2xl text-sm text-center flex items-center justify-center gap-2"><CheckCircle2 size={16} /> Reserved</div>}
-              {reservations[detailRoom.id]?.attended && !reviews[detailRoom.id] && (
-                <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name }); setDetailRoom(null); }} className="w-full py-3 bg-amber-100 text-amber-700 font-bold rounded-2xl text-sm hover:bg-amber-200 flex items-center justify-center gap-2"><Star size={16} /> Submit Review</button>
-              )}
+              <div className="p-5 space-y-4">
+                {/* Profile */}
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-base font-black text-blue-600 shrink-0 overflow-hidden">
+                    {(exhibitorDetailBooth.boothImageUrl || exhibitorDetailBooth.profilePictureUrl) ? (
+                      <img src={exhibitorDetailBooth.boothImageUrl || exhibitorDetailBooth.profilePictureUrl} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      (exhibitorDetailBooth.fullName as string)?.[0] || 'B'
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-black text-lg">{exhibitorDetailBooth.fullName || '—'}</p>
+                    <p className="text-sm text-slate-500">{exhibitorDetailBooth.sectorOffice || exhibitorDetailBooth.sector || 'Exhibitor'}</p>
+                    <p className="text-[11px] text-slate-400">Booth #{exhibitorDetailBooth.id?.slice(0, 6).toUpperCase() || '—'}</p>
+                  </div>
+                </div>
+                {/* Title & details */}
+                {exhibitorDetailBooth.boothDescription && (
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Description</p>
+                    <p className="text-sm text-slate-700">{exhibitorDetailBooth.boothDescription}</p>
+                  </div>
+                )}
+                {exhibitorDetailBooth.boothProducts && (
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Products / Services</p>
+                    <p className="text-sm text-slate-700">{exhibitorDetailBooth.boothProducts}</p>
+                  </div>
+                )}
+                {exhibitorDetailBooth.boothWebsite && (
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Website</p>
+                    <a href={exhibitorDetailBooth.boothWebsite} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 font-bold hover:underline flex items-center gap-1">{exhibitorDetailBooth.boothWebsite} <ExternalLink size={12} /></a>
+                  </div>
+                )}
+                {/* Materials */}
+                <div>
+                  <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Materials</p>
+                  {exhibitorMaterials.length === 0 ? (
+                    <p className="text-sm text-slate-400">No materials uploaded yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {exhibitorMaterials.map((mat) => {
+                        const name = mat.materialName ?? mat.fileName;
+                        const size = mat.fileSizeBytes ? (mat.fileSizeBytes < 1024 ? `${mat.fileSizeBytes} B` : mat.fileSizeBytes < 1024 * 1024 ? `${(mat.fileSizeBytes / 1024).toFixed(1)} KB` : `${(mat.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`) : '';
+                        return (
+                          <a key={mat.id} href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-blue-50 hover:border-blue-200 transition-colors">
+                            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><FileText size={18} className="text-blue-600" /></div>
+                            <div className="flex-1 min-w-0"><p className="font-bold text-sm truncate">{name}</p><p className="text-[11px] text-slate-400">{size}</p></div>
+                            <Download size={16} className="text-blue-600 shrink-0" />
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Review modal */}
+      {/* Breakout Room Detail - Full view with Back */}
+      {detailRoom && (() => {
+        const res = reservations[detailRoom.id];
+        const rev = reviews[detailRoom.id];
+        const roomMats = presenterMaterials.filter((m) => m.roomId === detailRoom.id);
+        const currentStep = !res ? 1 : !res.attended ? 2 : !rev ? 3 : 4;
+        const steps = [
+          { id: 'reserve', label: 'RESERVE', done: !!res, current: currentStep === 1 },
+          { id: 'timein', label: 'TIME IN', done: res?.attended, current: currentStep === 2 },
+          { id: 'review', label: 'REVIEW', done: !!rev, current: currentStep === 3 },
+          { id: 'cert', label: 'CERTIFICATE', done: !!rev && !!res?.attended, current: currentStep === 4 },
+        ];
+        return (
+        <div className="fixed inset-0 z-[70] bg-slate-100 overflow-y-auto">
+          {/* Header with Back */}
+          <div className="sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setDetailRoom(null)}
+              className="flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-slate-700 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 font-medium transition-colors active:scale-[0.98] min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0"
+              aria-label="Back"
+            >
+              <ArrowLeft size={20} className="shrink-0" />
+              <span className="hidden sm:inline">Back</span>
+            </button>
+            <div className="h-5 w-px bg-slate-200" aria-hidden="true" />
+            <span className="text-sm font-semibold text-slate-800 truncate flex-1">{detailRoom.name}</span>
+          </div>
+
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8 space-y-6">
+            {/* Stepper card */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6">
+              <div className="flex items-center justify-between gap-2 sm:gap-4">
+                {steps.map((s, i) => {
+                  const onClick = s.id === 'reserve'
+                    ? () => document.getElementById('detail-actions-bar')?.scrollIntoView?.({ behavior: 'smooth' })
+                    : s.id === 'timein' && res
+                    ? () => { setScanModalRoom(detailRoom); setScanModal(true); }
+                    : s.id === 'review' && res?.attended
+                    ? () => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }
+                    : s.id === 'cert'
+                    ? () => setCertModal(true)
+                    : undefined;
+                  return (
+                  <React.Fragment key={s.id}>
+                    <button
+                      type="button"
+                      onClick={onClick}
+                      className={`flex flex-col items-center gap-1.5 transition-opacity focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 rounded-xl p-1 -m-1 ${onClick ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${s.current ? 'text-blue-600' : s.done ? 'text-blue-600' : 'text-slate-300'}`}
+                    >
+                      {s.id === 'reserve' && (
+                        <span className="text-[9px] sm:text-[10px] font-semibold text-slate-500 uppercase tracking-wider text-center leading-tight">
+                          {res ? 'Reserved' : 'Reserve a slot'}
+                        </span>
+                      )}
+                      <div className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
+                        s.done ? 'bg-blue-600 text-white' : s.current ? 'border-2 border-blue-600 text-blue-600 bg-white' : 'bg-slate-100'
+                      }`}>
+                        {s.done ? (s.id === 'cert' ? <Trophy size={16} /> : <CheckCircle2 size={16} />) : s.current && s.id === 'cert' ? <Award size={16} /> : i + 1}
+                      </div>
+                      <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">{s.label}</span>
+                      {s.id === 'reserve' && (
+                        <QrCode size={14} className={`shrink-0 ${s.done || s.current ? 'text-blue-600' : 'text-slate-300'}`} />
+                      )}
+                    </button>
+                    {i < steps.length - 1 && <div className={`flex-1 h-0.5 rounded min-w-[8px] ${s.done ? 'bg-blue-600' : 'bg-slate-200'}`} />}
+                  </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Hero */}
+            <div className={`relative rounded-2xl sm:rounded-3xl overflow-hidden min-h-[200px] sm:min-h-[260px] flex flex-col justify-between p-6 sm:p-8 ${!detailRoom.backgroundImage ? `bg-gradient-to-br ${CARD_GRADIENTS[rooms.indexOf(detailRoom) % CARD_GRADIENTS.length]}` : ''}`} style={detailRoom.backgroundImage ? { backgroundImage: `url(${detailRoom.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#1e293b' } : undefined}>
+              {detailRoom.backgroundImage && <div className="absolute inset-0 bg-black/50" />}
+              <div className="relative z-10 flex flex-col gap-4">
+                <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white leading-tight drop-shadow-lg">{detailRoom.name}</h1>
+                <div className="flex flex-wrap gap-2">
+                  {(() => {
+                    const hostNames = (detailRoom.presenterNames || []).filter((n) => n && String(n).trim());
+                    const hostName = hostNames[0]?.trim();
+                    const presenterTitles = detailRoom.presenterTitles;
+                    const hostPosition = presenterTitles?.[0]?.trim();
+                    if (!hostName) return null;
+                    return (
+                      <>
+                        <span className="text-xs font-bold px-3 py-1 rounded-full bg-blue-600/90 text-white">{hostName}</span>
+                        <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-500/60 text-white">{hostPosition || 'Session Host'}</span>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+              <div className="relative z-10 flex flex-wrap items-center gap-3 text-white/95 text-sm">
+                {detailRoom.venue && <span className="flex items-center gap-1.5"><MapPin size={16} className="shrink-0" />{detailRoom.venue}</span>}
+                {detailRoom.sessionDate && <span className="flex items-center gap-1.5"><CalendarDays size={16} className="shrink-0" />{new Date(detailRoom.sessionDate).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', year: 'numeric' })}</span>}
+                {detailRoom.timeline && <span className="flex items-center gap-1.5"><Clock size={16} className="shrink-0" />{detailRoom.timeline}</span>}
+                {detailRoom.capacity > 0 && <span className="flex items-center gap-1.5"><Users size={16} className="shrink-0" />{detailRoom.capacity} seats max</span>}
+              </div>
+            </div>
+
+            {/* Not reserved: brief prompt */}
+            {!res && (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
+                <p className="text-slate-700 font-medium">Reserve a slot to get started. After reserving, scan the QR code at the breakout room entrance to check in and unlock full session details.</p>
+              </div>
+            )}
+
+            {/* Reserved but NOT timed in: Show Scan QR prompt */}
+            {res && !res.attended && (
+              <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-6 sm:p-8 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center mx-auto mb-4">
+                  <QrCode size={32} className="text-white" />
+                </div>
+                <h3 className="text-xl font-bold text-slate-800 mb-2">Scan QR at Breakout Room Entrance</h3>
+                <p className="text-slate-600 text-sm mb-4 max-w-md mx-auto">Go to the entrance of this breakout room and scan the QR code to check in. Once you&apos;ve timed in, the full session details will appear here.</p>
+                <button type="button" onClick={() => { setScanModalRoom(detailRoom); setScanModal(true); }} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center justify-center gap-2 mx-auto">
+                  <QrCode size={20} /> Open QR Scanner
+                </button>
+              </div>
+            )}
+
+            {/* Full details: Only show AFTER timed in */}
+            {res?.attended && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Left: Technology Overview + Features */}
+              <div className="lg:col-span-2 space-y-6">
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center"><Cpu size={18} className="text-blue-600" /></div>
+                    <div>
+                      <h2 className="font-bold text-slate-800">Technology Overview</h2>
+                      <p className="text-xs text-slate-500 uppercase tracking-wider">Core Framework</p>
+                    </div>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed mt-4">Description continues of {detailRoom.projectDetail || detailRoom.description || 'explore innovative frameworks and collaborative tools in this breakout session.'}</p>
+                </div>
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                  <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><BookOpen size={18} className="text-blue-600" /> Training Materials</h3>
+                  {roomMats.length > 0 ? (
+                    <div className="space-y-2">
+                      {roomMats.map((mat) => (
+                        <a key={mat.id} href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
+                          <FileText size={18} className="text-blue-600 shrink-0" />
+                          <span className="flex-1 text-sm font-medium truncate">{mat.fileName}</span>
+                          <Download size={14} className="text-slate-400 shrink-0" />
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500 py-4 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">No materials yet. Presenters will add session materials here. Check back later or visit the Materials tab.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Right: Session Host (when has host) + Live Q&A */}
+              <div className="space-y-6">
+                {(() => {
+                  const names = (detailRoom.presenterNames || []).filter((n) => n && n.trim() && n.toLowerCase() !== 'presenter');
+                  if (names.length > 0) {
+                    return (
+                      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Session Host</p>
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className="relative">
+                            <div className="w-14 h-14 rounded-xl bg-blue-500 text-white flex items-center justify-center text-lg font-bold">
+                              {names[0][0].toUpperCase()}
+                            </div>
+                            <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white" />
+                          </div>
+                          <div>
+                            <p className="font-bold text-slate-800">{names[0]}</p>
+                            <p className="text-xs text-slate-500">Session host @ iSCENE 2026</p>
+                          </div>
+                        </div>
+                        <button type="button" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-2">
+                          Join Session <ChevronRight size={18} />
+                        </button>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><MessageCircle size={18} className="text-blue-600" /> Live Q&A</h3>
+                    <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> LIVE
+                    </span>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/50 max-h-40 overflow-y-auto p-3 space-y-2 mb-3">
+                    {roomChatMessages.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">No questions yet. Ask something!</p> : roomChatMessages.map((msg) => (
+                      <div key={msg.id} className="p-2 rounded-lg bg-white border border-slate-100">
+                        <p className="text-[11px] font-semibold text-slate-600">{msg.participantName || 'Anonymous'}</p>
+                        <p className="text-sm text-slate-700">{msg.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <input value={roomChatInput} onChange={(e) => setRoomChatInput(e.target.value)} placeholder="Ask a question..." className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendRoomChat()} />
+                    <button type="button" onClick={handleSendRoomChat} disabled={roomChatSending || !roomChatInput.trim()} className="rounded-xl bg-blue-600 px-4 py-2 text-white text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"><MessageCircle size={16} /> Send</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            )}
+
+            {/* Actions bar */}
+            <div id="detail-actions-bar" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+              <div className="flex flex-wrap gap-3">
+                {!res
+                  ? <button type="button" onClick={async () => { await handleReserve(detailRoom); }} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Reserve Slot</button>
+                  : !res.attended
+                    ? <button type="button" onClick={() => { setScanModalRoom(detailRoom); setScanModal(true); }} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center gap-2"><QrCode size={18} /> Scan QR at Breakout Room Entrance</button>
+                    : <span className="px-6 py-3 bg-emerald-100 text-emerald-700 font-bold rounded-xl flex items-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}
+                {res?.attended && !rev && (
+                  <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }} className="px-6 py-3 bg-amber-100 text-amber-700 font-bold rounded-xl hover:bg-amber-200 flex items-center gap-2"><Star size={18} /> Submit Review</button>
+                )}
+              </div>
+              <button type="button" onClick={() => setDetailRoom(null)} className="text-slate-500 hover:text-slate-700 font-medium text-sm">Close</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* DOST Review modal */}
       {reviewModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-end justify-center md:items-center md:p-4">
-          <div className="w-full max-w-sm bg-white rounded-t-3xl md:rounded-3xl p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-1"><h3 className="font-black text-base">Submit Review</h3><button type="button" onClick={() => setReviewModal(null)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center"><X size={15} /></button></div>
-            <p className="text-sm text-slate-400 mb-4 line-clamp-1">{reviewModal.roomName}</p>
-            <div className="mb-4"><p className="text-xs text-slate-500 font-medium mb-2">Your rating</p><StarPicker value={reviewRating} onChange={setReviewRating} /></div>
-            <div className="mb-4"><p className="text-xs text-slate-500 font-medium mb-1">Comment (optional)</p><textarea value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} rows={3} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Share your experience…" /></div>
-            <button type="button" onClick={handleSubmitReview} disabled={reviewSaving} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2">
-              {reviewSaving ? <><Loader2 size={16} className="animate-spin" /> Submitting…</> : <><Star size={16} /> Submit Review</>}
-            </button>
+          <div className="w-full max-w-2xl max-h-[90vh] bg-white rounded-t-3xl md:rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between p-4 border-b border-slate-200">
+              <div><h3 className="font-black text-lg">Session Evaluation Form</h3><p className="text-sm text-slate-500 mt-0.5">{reviewModal.roomName}</p></div>
+              <button type="button" onClick={() => { if (reviewModal?.fromRoom) setDetailRoom(reviewModal.fromRoom); setReviewModal(null); }} className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200"><X size={18} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Part I */}
+              <section className="space-y-4">
+                <h4 className="font-bold text-slate-800 border-b border-slate-200 pb-2">PART I. SUBJECT MATTER</h4>
+                <p className="text-xs text-slate-500">Scale: Low / Satisfactory / Very Good</p>
+                <div className="space-y-3">
+                  <div><p className="text-sm font-medium text-slate-700 mb-1">Level of Content</p><DOSTPart1Scale value={dostPart1.levelOfContent} onChange={(v) => setDostPart1((p) => ({ ...p, levelOfContent: v }))} /></div>
+                  <div><p className="text-sm font-medium text-slate-700 mb-1">Appropriateness</p><DOSTPart1Scale value={dostPart1.appropriateness} onChange={(v) => setDostPart1((p) => ({ ...p, appropriateness: v }))} /></div>
+                  <div><p className="text-sm font-medium text-slate-700 mb-1">Applicability</p><DOSTPart1Scale value={dostPart1.applicability} onChange={(v) => setDostPart1((p) => ({ ...p, applicability: v }))} /></div>
+                </div>
+              </section>
+
+              {/* Part II - Per speaker */}
+              {(reviewModal.presenterNames?.length ? reviewModal.presenterNames : ['Speaker']).map((speakerName, idx) => {
+                const r = dostPart2[speakerName] || getDefaultDOSTSpeakerRatings();
+                const setR = (up: Partial<DOSTSpeakerRatings>) => setDostPart2((p) => ({ ...p, [speakerName]: { ...(p[speakerName] || getDefaultDOSTSpeakerRatings()), ...up } }));
+                return (
+                  <section key={speakerName} className="space-y-4 p-4 bg-slate-50 rounded-xl">
+                    <h4 className="font-bold text-slate-800">PART II. SPEAKER ({speakerName})</h4>
+                    <p className="text-xs text-slate-500">Scale: 1 Poor · 2 Average · 3 Good · 4 Very Good · 5 Excellent</p>
+                    <div className="space-y-4">
+                      <div><p className="text-sm font-medium mb-1">Achievement of Session Objectives</p><DOSTScale15 value={r.achievementOfObjectives} onChange={(v) => setR({ achievementOfObjectives: v })} /></div>
+                      <div>
+                        <p className="text-sm font-medium mb-2">Mastery of Subject Matter</p>
+                        <div className="space-y-2 pl-2">
+                          {[
+                            { k: 'exhibitKnowledge', l: 'Ability to exhibit knowledge of subject matter' },
+                            { k: 'answerQuestions', l: 'Ability to answer participant\'s questions' },
+                            { k: 'currentDevelopments', l: 'Ability to inject current developments' },
+                            { k: 'balanceTheoryPractice', l: 'Ability to balance principles/theories with practical applications' },
+                          ].map(({ k, l }) => (
+                            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3"><span className="text-xs text-slate-600 sm:w-48">{l}</span><DOSTScale15 value={(r.mastery as any)[k]} onChange={(v) => setR({ mastery: { ...r.mastery, [k]: v } })} /></div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium mb-2">Presentation of Subject Matter</p>
+                        <div className="space-y-2 pl-2">
+                          {[
+                            { k: 'preparedness', l: 'Preparedness of speaker' },
+                            { k: 'organizeMaterials', l: 'Ability to organize materials for clarity and precision' },
+                            { k: 'arouseInterest', l: 'Ability to arouse interest' },
+                            { k: 'instructionalMaterials', l: 'Ability to use appropriate instructional materials' },
+                          ].map(({ k, l }) => (
+                            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3"><span className="text-xs text-slate-600 sm:w-48">{l}</span><DOSTScale15 value={(r.presentation as any)[k]} onChange={(v) => setR({ presentation: { ...r.presentation, [k]: v } })} /></div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium mb-2">Teacher-Related Personality Traits</p>
+                        <div className="space-y-2 pl-2">
+                          {[
+                            { k: 'rapport', l: 'Ability to establish rapport' },
+                            { k: 'considerateness', l: 'Considerateness' },
+                          ].map(({ k, l }) => (
+                            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3"><span className="text-xs text-slate-600 sm:w-48">{l}</span><DOSTScale15 value={(r.personality as any)[k]} onChange={(v) => setR({ personality: { ...r.personality, [k]: v } })} /></div>
+                          ))}
+                        </div>
+                      </div>
+                      <div><p className="text-sm font-medium mb-1">Acceptability of Speaker as Resource Person</p><DOSTScale15 value={r.acceptability} onChange={(v) => setR({ acceptability: v })} /></div>
+                    </div>
+                  </section>
+                );
+              })}
+
+              {/* Part III */}
+              <section className="space-y-4 p-4 bg-slate-50 rounded-xl">
+                <h4 className="font-bold text-slate-800">PART III. TRAINING ENVIRONMENT</h4>
+                <p className="text-xs text-slate-500">Scale: 1 Poor · 2 Average · 3 Good · 4 Very Good · 5 Excellent</p>
+                <div className="space-y-3">
+                  <div><p className="text-sm font-medium mb-1">Venue (room size, lighting, etc.)</p><DOSTScale15 value={dostPart3.venue} onChange={(v) => setDostPart3((p) => ({ ...p, venue: v }))} /></div>
+                  <div><p className="text-sm font-medium mb-1">Food</p><DOSTScale15 value={dostPart3.food} onChange={(v) => setDostPart3((p) => ({ ...p, food: v }))} /></div>
+                  <div><p className="text-sm font-medium mb-1">Ability of organizer to respond to participant&apos;s needs</p><DOSTScale15 value={dostPart3.organizerResponse} onChange={(v) => setDostPart3((p) => ({ ...p, organizerResponse: v }))} /></div>
+                  <div><p className="text-xs text-slate-500 mb-1">Description (optional)</p><textarea value={dostPart3.description} onChange={(e) => setDostPart3((p) => ({ ...p, description: e.target.value }))} rows={2} className="w-full bg-white border border-slate-200 rounded-xl p-2 text-sm" placeholder="Additional remarks..." /></div>
+                </div>
+              </section>
+
+              {/* Part IV */}
+              <section className="space-y-2">
+                <h4 className="font-bold text-slate-800">PART IV. COMMENTS/SUGGESTIONS/RECOMMENDATIONS</h4>
+                <p className="text-xs text-slate-500">To improve future provision of DOST training assistance.</p>
+                <textarea value={dostPart4} onChange={(e) => setDostPart4(e.target.value)} rows={4} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Your comments, suggestions, and recommendations..." />
+              </section>
+            </div>
+            <div className="shrink-0 p-4 border-t border-slate-200">
+              <button type="button" onClick={handleSubmitReview} disabled={reviewSaving} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                {reviewSaving ? <><Loader2 size={18} className="animate-spin" /> Submitting…</> : <><Star size={18} /> Submit Review</>}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -50,6 +50,7 @@ type BoothMaterial = {
   id: string;
   uid: string;
   fileName: string;
+  materialName?: string;
   storagePath: string;
   downloadUrl: string;
   fileType: string;
@@ -100,12 +101,18 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const [materials, setMaterials] = React.useState<BoothMaterial[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [uploading, setUploading] = React.useState(false);
+  const [editingMaterialId, setEditingMaterialId] = React.useState<string | null>(null);
+  const [editingMaterialName, setEditingMaterialName] = React.useState('');
 
   // ── Booth edit ────────────────────────────────────────────────────────
   const [editing, setEditing] = React.useState(false);
   const [boothDesc, setBoothDesc] = React.useState((registration?.boothDescription as string) || '');
   const [boothWebsite, setBoothWebsite] = React.useState((registration?.boothWebsite as string) || '');
   const [boothProducts, setBoothProducts] = React.useState((registration?.boothProducts as string) || '');
+  const [boothImageUrl, setBoothImageUrl] = React.useState((registration?.boothImageUrl as string) || '');
+  const [boothBackgroundUrl, setBoothBackgroundUrl] = React.useState((registration?.boothBackgroundUrl as string) || '');
+  const [uploadingBoothImage, setUploadingBoothImage] = React.useState(false);
+  const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
   const [savingBooth, setSavingBooth] = React.useState(false);
 
   // ── ID modal ──────────────────────────────────────────────────────────
@@ -144,24 +151,41 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   }, [user.uid]);
 
   // ── Upload ────────────────────────────────────────────────────────────
-  const handleUpload = async (file: File) => {
-    if (file.size > 200 * 1024 * 1024) { showToast('❌ File too large (max 200 MB).'); return; }
+  const handleUpload = async (files: File[]) => {
+    const valid = files.filter((f) => f.size <= 200 * 1024 * 1024);
+    if (valid.length === 0) { showToast('❌ No valid files (max 200 MB each).'); return; }
+    if (valid.length < files.length) showToast(`⚠️ Skipped ${files.length - valid.length} file(s) over 200 MB.`);
     setUploading(true);
+    let successCount = 0;
     try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      const storagePath = `presenterMaterials/${user.uid}/${Date.now()}_${safeName}`;
-      const snap = await uploadBytes(ref(storage, storagePath), file);
-      const downloadUrl = await getDownloadURL(snap.ref);
-      const docRef = await addDoc(collection(db, 'presenterMaterials'), {
-        uid: user.uid, presenterName: fullName,
-        fileName: file.name, storagePath, downloadUrl,
-        fileType: file.type, fileSizeBytes: file.size,
-        status: 'uploaded', createdAt: Timestamp.now(),
-      });
-      setMaterials((prev) => [{ id: docRef.id, uid: user.uid, fileName: file.name, storagePath, downloadUrl, fileType: file.type, fileSizeBytes: file.size, createdAt: Timestamp.now() }, ...prev]);
-      showToast('✅ File uploaded successfully!');
+      for (const file of valid) {
+        const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+        const storagePath = `presenterMaterials/${user.uid}/${Date.now()}_${safeName}`;
+        const snap = await uploadBytes(ref(storage, storagePath), file);
+        const downloadUrl = await getDownloadURL(snap.ref);
+        const materialName = file.name;
+        const docRef = await addDoc(collection(db, 'presenterMaterials'), {
+          uid: user.uid, presenterName: fullName,
+          fileName: file.name, materialName, storagePath, downloadUrl,
+          fileType: file.type, fileSizeBytes: file.size,
+          status: 'uploaded', createdAt: Timestamp.now(),
+        });
+        setMaterials((prev) => [{ id: docRef.id, uid: user.uid, fileName: file.name, materialName, storagePath, downloadUrl, fileType: file.type, fileSizeBytes: file.size, createdAt: Timestamp.now() }, ...prev]);
+        successCount++;
+      }
+      showToast(successCount > 1 ? `✅ ${successCount} files uploaded!` : '✅ File uploaded successfully!');
     } catch { showToast('❌ Upload failed. Please try again.'); }
     finally { setUploading(false); }
+  };
+
+  const handleMaterialNameUpdate = async (mat: BoothMaterial, newName: string) => {
+    const name = (newName || mat.fileName).trim();
+    if (name === (mat.materialName ?? mat.fileName)) return;
+    try {
+      await updateDoc(doc(db, 'presenterMaterials', mat.id), { materialName: name });
+      setMaterials((prev) => prev.map((m) => m.id === mat.id ? { ...m, materialName: name } : m));
+      showToast('✅ Material name updated.');
+    } catch { showToast('❌ Failed to update name.'); }
   };
 
   const handleDelete = async (mat: BoothMaterial) => {
@@ -177,11 +201,44 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
     if (!registration?.id) return;
     setSavingBooth(true);
     try {
-      await updateDoc(doc(db, 'registrations', registration.id), { boothDescription: boothDesc, boothWebsite, boothProducts });
+      await updateDoc(doc(db, 'registrations', registration.id), {
+        boothDescription: boothDesc, boothWebsite, boothProducts,
+        boothImageUrl: boothImageUrl.trim() || '', boothBackgroundUrl: boothBackgroundUrl.trim() || '',
+      });
       setEditing(false);
       showToast('✅ Booth profile updated.');
     } catch { showToast('❌ Failed to save. Try again.'); }
     finally { setSavingBooth(false); }
+  };
+
+  const handleBoothImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) { showToast('Please select an image file.'); return; }
+    setUploadingBoothImage(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `boothImages/${user.uid}/${Date.now()}_${safeName}`;
+      const snap = await uploadBytes(ref(storage, path), file, { contentType: file.type || 'image/jpeg' });
+      const url = await getDownloadURL(snap.ref);
+      setBoothImageUrl(url);
+      showToast('✅ Booth image uploaded. Click Save to keep.');
+    } catch { showToast('❌ Upload failed. Try a smaller image (<5MB).'); }
+    finally { setUploadingBoothImage(false); e.target.value = ''; }
+  };
+
+  const handleBoothBackgroundUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) { showToast('Please select an image file.'); return; }
+    setUploadingBoothBackground(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `boothBackgrounds/${user.uid}/${Date.now()}_${safeName}`;
+      const snap = await uploadBytes(ref(storage, path), file, { contentType: file.type || 'image/jpeg' });
+      const url = await getDownloadURL(snap.ref);
+      setBoothBackgroundUrl(url);
+      showToast('✅ Background uploaded. Click Save to keep.');
+    } catch { showToast('❌ Upload failed. Try a smaller image (<5MB).'); }
+    finally { setUploadingBoothBackground(false); e.target.value = ''; }
   };
 
   // ── Sidebar nav item ──────────────────────────────────────────────────
@@ -288,154 +345,81 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
         {/* ══════════════ MY BOOTH ══════════════ */}
         {activeTab === 'my-booth' && (
           <div className="max-w-5xl p-4 sm:p-6 md:p-8 lg:p-12">
-            {/* Header */}
-            <header className="mb-10 flex flex-col justify-between gap-6 md:flex-row md:items-end">
-              <div className="space-y-2">
-                <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${approvalStatus === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                  <span className={`w-2 h-2 rounded-full ${approvalStatus === 'approved' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`} />
-                  Status: {approvalStatus.charAt(0).toUpperCase() + approvalStatus.slice(1)}
-                </div>
-                <h2 className="text-3xl font-black tracking-tight sm:text-4xl">My Booth: {orgName}</h2>
-                <p className="text-base text-slate-500 sm:text-lg">
-                  {approvalStatus === 'approved'
-                    ? 'Your booth profile is live and visible to attendees.'
-                    : 'Your booth is pending admin approval.'}
-                </p>
-              </div>
-              <div className="flex w-full shrink-0 flex-col gap-3 sm:w-auto sm:flex-row">
-                <button type="button" className="rounded-full border-2 border-slate-200 px-6 py-3 text-sm font-bold transition-colors hover:bg-slate-50">
-                  Preview Booth
-                </button>
-                <button type="button" onClick={() => setEditing(true)}
-                  className="flex items-center justify-center gap-2 rounded-full bg-blue-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700">
-                  <Edit2 size={15} /> Edit Profile
-                </button>
-              </div>
-            </header>
-
-            {/* Stats row */}
-            <div className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-3">
-              {[
-                { label: 'Booth Number', value: boothNumber, valueClass: 'text-blue-600' },
-                { label: 'Uploaded Assets', value: String(materials.length), valueClass: '' },
-                { label: 'Approval Status', value: approvalStatus === 'approved' ? 'APPROVED' : 'PENDING', valueClass: approvalStatus === 'approved' ? 'text-emerald-600' : 'text-amber-600' },
-              ].map(({ label, value, valueClass }) => (
-                <div key={label} className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-                  <span className="text-slate-500 font-medium text-sm">{label}</span>
-                  <span className={`text-3xl font-black sm:text-4xl ${valueClass}`}>{value}</span>
-                </div>
-              ))}
-            </div>
-
-            {/* Upload Materials Card */}
-            <section className="mb-10">
-              <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl lg:flex-row">
-                {/* Left - visual */}
-                <div className="lg:w-2/5 bg-blue-50 flex items-center justify-center p-10 relative">
-                  <div className="absolute inset-0 bg-blue-500/10 blur-3xl" />
-                  <Upload size={80} className="text-blue-500 relative z-10" strokeWidth={1.5} />
-                </div>
-                {/* Right - content */}
-                <div className="flex flex-col justify-center p-6 sm:p-8 md:p-10 lg:w-3/5">
-                  <div className="flex flex-wrap gap-2 mb-4">
-                    {['PDFs', 'Videos', 'Images'].map((tag) => (
-                      <span key={tag} className="px-3 py-1 rounded-full bg-slate-100 text-xs font-semibold text-slate-600">{tag}</span>
-                    ))}
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+              {/* LEFT: What participants see */}
+              <section>
+                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">What Participants See</h3>
+                <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className={`h-32 w-full flex items-center justify-center overflow-hidden ${boothImageUrl ? '' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'}`}>
+                    {boothImageUrl ? (
+                      <img src={boothImageUrl} alt="Booth" className="w-full h-full object-cover" />
+                    ) : (
+                      <Store size={48} className="text-blue-300" />
+                    )}
                   </div>
-                  <h3 className="text-2xl font-black mb-3">Upload Marketing Materials</h3>
-                  <p className="text-slate-500 mb-7 leading-relaxed text-sm">
-                    Enhance your digital presence by uploading your latest brochures, product demos, and brand assets. These will be available for all attendees to download or view.
-                  </p>
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={`px-7 py-3.5 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center gap-2 cursor-pointer hover:bg-blue-700 transition-colors ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
-                      <input type="file" className="hidden" accept="image/*,video/*,.pdf"
-                        onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleUpload(f); e.target.value = ''; } }} />
-                      {uploading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                      {uploading ? 'Uploading…' : 'Upload Now'}
-                    </label>
-                    <button type="button" onClick={() => setActiveTab('materials')}
-                      className="px-7 py-3.5 rounded-full bg-slate-100 font-bold hover:bg-slate-200 transition-colors text-sm">
-                      View Assets ({materials.length})
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Venue + Milestones */}
-            <section className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-              {/* Venue */}
-              <div className="space-y-4">
-                <h4 className="text-xl font-black">Venue Location</h4>
-                {/* Map placeholder */}
-                <div className="aspect-video w-full rounded-2xl overflow-hidden relative bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100 border border-slate-200 shadow-sm group">
-                  {/* Grid lines */}
-                  <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'repeating-linear-gradient(0deg,transparent,transparent 28px,#93c5fd 28px,#93c5fd 29px),repeating-linear-gradient(90deg,transparent,transparent 28px,#93c5fd 28px,#93c5fd 29px)' }} />
-                  {/* Roads */}
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="absolute w-full h-0.5 bg-white/60" style={{ top: '40%' }} />
-                    <div className="absolute w-full h-0.5 bg-white/60" style={{ top: '65%' }} />
-                    <div className="absolute h-full w-0.5 bg-white/60" style={{ left: '35%' }} />
-                    <div className="absolute h-full w-0.5 bg-white/60" style={{ left: '60%' }} />
-                    {/* Blocks */}
-                    <div className="absolute rounded-lg bg-blue-200/60 w-20 h-12" style={{ top: '20%', left: '38%' }} />
-                    <div className="absolute rounded-lg bg-blue-200/60 w-14 h-10" style={{ top: '20%', left: '62%' }} />
-                    <div className="absolute rounded-lg bg-blue-200/60 w-16 h-14" style={{ top: '68%', left: '38%' }} />
-                    <div className="absolute rounded-lg bg-green-200/60 w-10 h-10 rounded-full" style={{ top: '42%', left: '18%' }} />
-                  </div>
-                  {/* Pin */}
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-                    <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center text-white shadow-lg ring-4 ring-blue-200">
-                      <MapPin size={22} fill="currentColor" />
-                    </div>
-                  </div>
-                  <div className="absolute bottom-3 right-3 bg-white/80 backdrop-blur-sm px-2 py-1 rounded-lg text-[10px] font-bold text-slate-500 shadow-sm">
-                    Cauayan City, Isabela
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-50 border border-blue-100">
-                  <Info size={18} className="text-blue-600 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-bold text-sm">Isabela Convention Center (ICON)</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Cauayan City, Isabela · Your booth is located in the main exhibition hall. Specific location TBD by organizers.</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Milestones */}
-              <div className="space-y-4">
-                <h4 className="text-xl font-black">Upcoming Milestones</h4>
-                <div className="space-y-3">
-                  {milestones.map(({ label, date, icon, iconBg, locked }) => (
-                    <div key={label} className={`flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 ${locked ? 'opacity-50' : ''}`}>
-                      <div className={`w-11 h-11 rounded-full ${iconBg} flex items-center justify-center shrink-0`}>{icon}</div>
-                      <div className="flex-1">
-                        <p className="font-bold text-sm">{label}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">{date}</p>
+                  <div className="p-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-black text-blue-600 shrink-0">{initials}</div>
+                      <div>
+                        <p className="font-bold text-sm">{fullName}</p>
+                        <p className="text-[10px] text-slate-400">{registration?.sector || 'Exhibitor (Booth)'}</p>
                       </div>
-                      {locked
-                        ? <div className="w-5 h-5 rounded-full bg-slate-200 flex items-center justify-center"><span className="text-[10px]">🔒</span></div>
-                        : <ChevronRight size={18} className="text-slate-300" />}
                     </div>
-                  ))}
-                </div>
-              </div>
-            </section>
-
-            {/* Booth details card */}
-            {(boothDesc || boothWebsite || boothProducts) && (
-              <section className="mt-10 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h4 className="font-black text-base">Booth Details</h4>
-                  <button type="button" onClick={() => setEditing(true)} className="text-blue-600 text-xs font-bold flex items-center gap-1 hover:underline"><Edit2 size={12} /> Edit</button>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-                  {boothDesc && <div><p className="text-[11px] text-slate-400 mb-0.5">Description</p><p className="text-slate-700">{boothDesc}</p></div>}
-                  {boothProducts && <div><p className="text-[11px] text-slate-400 mb-0.5">Products / Services</p><p className="text-slate-700">{boothProducts}</p></div>}
-                  {boothWebsite && <div><p className="text-[11px] text-slate-400 mb-0.5">Website</p><a href={boothWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-600 flex items-center gap-1 hover:underline">{boothWebsite} <ExternalLink size={11} /></a></div>}
+                    <p className="text-xs text-slate-500 line-clamp-2 mb-2">{orgName || 'Event booth participant'}</p>
+                    {boothDesc && <p className="text-xs text-slate-600 line-clamp-2 mb-2">{boothDesc}</p>}
+                    <div className="flex items-center justify-between flex-wrap gap-1">
+                      <span className="text-[11px] text-slate-400">Booth {boothNumber}</span>
+                      <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Approved</span>
+                    </div>
+                    {materials.length > 0 && (
+                      <p className="text-[11px] text-slate-400 mt-2">{materials.length} material{materials.length !== 1 ? 's' : ''} available</p>
+                    )}
+                  </div>
                 </div>
               </section>
-            )}
+
+              {/* RIGHT: Edit your booth */}
+              <section>
+                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Edit Your Booth</h3>
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="font-black text-base">Booth Profile</span>
+                    <button type="button" onClick={() => setEditing(true)}
+                      className="flex items-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-700 transition-colors">
+                      <Edit2 size={14} /> Edit Profile
+                    </button>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div><span className="text-[11px] text-slate-400 block">Organization</span><p className="font-semibold">{orgName || '—'}</p></div>
+                    <div><span className="text-[11px] text-slate-400 block">Booth Number</span><p className="font-bold text-blue-600">{boothNumber}</p></div>
+                    <div><span className="text-[11px] text-slate-400 block">Status</span><p className={`font-bold ${approvalStatus === 'approved' ? 'text-emerald-600' : 'text-amber-600'}`}>{approvalStatus === 'approved' ? 'Approved' : 'Pending'}</p></div>
+                    {(boothDesc || boothProducts || boothWebsite) && (
+                      <>
+                        {boothDesc && <div><span className="text-[11px] text-slate-400 block">Description</span><p className="text-slate-700 line-clamp-2">{boothDesc}</p></div>}
+                        {boothProducts && <div><span className="text-[11px] text-slate-400 block">Products / Services</span><p className="text-slate-700">{boothProducts}</p></div>}
+                        {boothWebsite && <div><span className="text-[11px] text-slate-400 block">Website</span><a href={boothWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-600 flex items-center gap-1 hover:underline">{boothWebsite} <ExternalLink size={11} /></a></div>}
+                      </>
+                    )}
+                  </div>
+                  <div className="mt-5 pt-5 border-t border-slate-100">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-sm text-slate-600">Materials ({materials.length})</span>
+                      <div className="flex items-center gap-2">
+                        <label className={`flex cursor-pointer items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 transition-colors ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
+                          <input type="file" className="hidden" accept="image/*,video/*,.pdf" multiple
+                            onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { handleUpload(files); e.target.value = ''; } }} />
+                          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                          {uploading ? 'Uploading…' : 'Upload'}
+                        </label>
+                        <button type="button" onClick={() => setActiveTab('materials')} className="text-blue-600 text-sm font-bold hover:underline">
+                          View all
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
         )}
 
@@ -447,10 +431,11 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 <h2 className="text-2xl font-black">My Materials</h2>
                 <p className="text-slate-500 text-sm mt-1">Manage your uploaded booth assets</p>
               </div>
-              <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 sm:w-auto">
-                <input type="file" className="hidden" accept="image/*,video/*,.pdf"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleUpload(f); e.target.value = ''; } }} />
-                <Upload size={15} /> Upload File
+              <label className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 sm:w-auto ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
+                <input type="file" className="hidden" accept="image/*,video/*,.pdf" multiple
+                  onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { handleUpload(files); e.target.value = ''; } }} />
+                {uploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+                {uploading ? 'Uploading…' : 'Upload'}
               </label>
             </div>
 
@@ -460,8 +445,8 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 <p className="font-bold text-slate-500 mb-1">No files yet</p>
                 <p className="text-sm text-slate-400 mb-6">Upload your brochures, product demos, or brand assets.</p>
                 <label className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-full text-sm font-bold cursor-pointer hover:bg-blue-700">
-                  <input type="file" className="hidden" accept="image/*,video/*,.pdf"
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleUpload(f); e.target.value = ''; } }} />
+                  <input type="file" className="hidden" accept="image/*,video/*,.pdf" multiple
+                    onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { handleUpload(files); e.target.value = ''; } }} />
                   <Plus size={16} /> Upload Your First File
                 </label>
               </div>
@@ -473,7 +458,20 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                       <div className="flex items-start gap-3">
                         <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-bold text-slate-800">{mat.fileName}</p>
+                          {editingMaterialId === mat.id ? (
+                            <div className="flex items-center gap-2">
+                              <input value={editingMaterialName} onChange={(e) => setEditingMaterialName(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { handleMaterialNameUpdate(mat, editingMaterialName); setEditingMaterialId(null); } }}
+                                className="flex-1 min-w-0 text-sm font-bold border border-blue-300 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500" autoFocus />
+                              <button type="button" onClick={() => { handleMaterialNameUpdate(mat, editingMaterialName); setEditingMaterialId(null); }} className="text-blue-600 text-xs font-bold">Save</button>
+                              <button type="button" onClick={() => { setEditingMaterialId(null); }} className="text-slate-400 text-xs">Cancel</button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-bold text-slate-800 flex-1">{mat.materialName ?? mat.fileName}</p>
+                              <button type="button" onClick={() => { setEditingMaterialId(mat.id); setEditingMaterialName(mat.materialName ?? mat.fileName); }} className="text-slate-400 hover:text-blue-600 shrink-0" title="Rename"><Edit2 size={14} /></button>
+                            </div>
+                          )}
                           <div className="mt-3 space-y-2 text-sm text-slate-500">
                             <p><span className="font-semibold text-slate-700">Size:</span> {formatBytes(mat.fileSizeBytes)}</p>
                             <p><span className="font-semibold text-slate-700">Type:</span> {mat.fileType.split('/')[0] || 'file'}</p>
@@ -491,7 +489,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 <table className="w-full min-w-[680px] text-left">
                   <thead>
                     <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
-                      <th className="px-6 py-4 font-bold">File</th>
+                      <th className="px-6 py-4 font-bold">Material Name</th>
                       <th className="px-6 py-4 font-bold">Size</th>
                       <th className="px-6 py-4 font-bold">Type</th>
                       <th className="px-6 py-4 font-bold">Actions</th>
@@ -502,8 +500,21 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                       <tr key={mat.id} className="hover:bg-slate-50 transition-colors">
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
-                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
-                            <p className="text-sm font-bold truncate max-w-[200px]">{mat.fileName}</p>
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
+                            {editingMaterialId === mat.id ? (
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <input value={editingMaterialName} onChange={(e) => setEditingMaterialName(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') { handleMaterialNameUpdate(mat, editingMaterialName); setEditingMaterialId(null); } }}
+                                  className="flex-1 min-w-0 max-w-[200px] text-sm font-bold border border-blue-300 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500" autoFocus />
+                                <button type="button" onClick={() => { handleMaterialNameUpdate(mat, editingMaterialName); setEditingMaterialId(null); }} className="text-blue-600 text-xs font-bold shrink-0">Save</button>
+                                <button type="button" onClick={() => setEditingMaterialId(null)} className="text-slate-400 text-xs shrink-0">Cancel</button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 min-w-0">
+                                <p className="text-sm font-bold truncate max-w-[200px]">{mat.materialName ?? mat.fileName}</p>
+                                <button type="button" onClick={() => { setEditingMaterialId(mat.id); setEditingMaterialName(mat.materialName ?? mat.fileName); }} className="text-slate-400 hover:text-blue-600 shrink-0" title="Rename"><Edit2 size={14} /></button>
+                              </div>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4 text-sm text-slate-500">{formatBytes(mat.fileSizeBytes)}</td>
@@ -616,6 +627,28 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 <input value={boothWebsite} onChange={(e) => setBoothWebsite(e.target.value)}
                   type="url" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="https://your-company.com" />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth Image (optional)</label>
+                <div className="flex items-center gap-3">
+                  {boothImageUrl && <img src={boothImageUrl} alt="Booth" className="h-14 w-14 rounded-lg object-cover border border-slate-200" />}
+                  <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothImage ? 'opacity-60' : ''}`}>
+                    <input type="file" accept="image/*" className="hidden" onChange={handleBoothImageUpload} />
+                    {uploadingBoothImage ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                    {uploadingBoothImage ? 'Uploading…' : 'Upload'}
+                  </label>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth Background (optional)</label>
+                <div className="flex items-center gap-3">
+                  {boothBackgroundUrl && <img src={boothBackgroundUrl} alt="Background" className="h-10 w-16 rounded-lg object-cover border border-slate-200" />}
+                  <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothBackground ? 'opacity-60' : ''}`}>
+                    <input type="file" accept="image/*" className="hidden" onChange={handleBoothBackgroundUpload} />
+                    {uploadingBoothBackground ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                    {uploadingBoothBackground ? 'Uploading…' : 'Upload'}
+                  </label>
+                </div>
               </div>
             </div>
             <div className="flex gap-3 mt-5">
