@@ -119,14 +119,14 @@ service cloud.firestore {
 
     // ─────────────────────────────────────────────────────────────
     // FOOD CLAIMS  /foodClaims/{docId}
-    // Food booth operators create and read their own claims; admin reads all.
+    // Food booth operators create claims (claimedBy = their uid).
+    // Any signed-in user can read: booths need to check duplicates;
+    // participants read their own claims for "My Meals".
     // ─────────────────────────────────────────────────────────────
     match /foodClaims/{docId} {
       allow create: if signedIn()
         && request.resource.data.claimedBy == request.auth.uid;
-      allow read:   if isAdmin()
-        || (signedIn() && resource.data.claimedBy == request.auth.uid)
-        || (signedIn() && resource.data.participantUid == request.auth.uid);
+      allow read:   if signedIn();
       allow update, delete: if isAdmin();
     }
 

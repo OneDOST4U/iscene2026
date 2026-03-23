@@ -4,6 +4,14 @@
       "collectionGroup": "foodClaims",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "claimedBy", "order": "ASCENDING" },
+        { "fieldPath": "claimedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "foodClaims",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "participantUid", "order": "ASCENDING" },
         { "fieldPath": "mealId", "order": "ASCENDING" }
       ]

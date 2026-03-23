@@ -272,10 +272,9 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
         if (activeMeal.eligibleParticipantIds && activeMeal.eligibleParticipantIds.length > 0) {
           const ids = activeMeal.eligibleParticipantIds;
           const results: FoundParticipant[] = [];
-          for (let i = 0; i < ids.length; i += 30) {
-            const chunk = ids.slice(i, i + 30);
-            const refs = chunk.map((id) => doc(db, 'registrations', id));
-            const q = query(regRef, where(documentId(), 'in', refs));
+          for (let i = 0; i < ids.length; i += 10) {
+            const chunk = ids.slice(i, i + 10);
+            const q = query(regRef, where(documentId(), 'in', chunk));
             const chunkSnap = await getDocs(q);
             chunkSnap.docs.forEach((d) => {
               const data = d.data() as any;
@@ -362,6 +361,9 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
       setSearchResults([participant]);
       setSearchQuery(data.fullName);
       setActiveTab('dashboard');
+      if (activeMeal) {
+        await handleClaim(participant);
+      }
     } catch { showToast('❌ Invalid QR code.', false); }
   };
 
