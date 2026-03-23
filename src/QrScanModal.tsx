@@ -105,25 +105,28 @@ export function QrScanModal({
         return;
       }
 
-      const handleDecoded = (decoded: string) => {
+      const handleDecoded = async (decoded: string) => {
         if (handledRef.current || closingRef.current) return;
-        const sc = scannerRef.current;
-        if (sc) {
-          void sc.stop().catch(() => {});
-          try { sc.clear(); } catch {}
-          scannerRef.current = null;
-        }
-        setScanResult(decoded);
-        playSuccessSound();
         handledRef.current = true;
+        const sc = scannerRef.current;
+        scannerRef.current = null;
+        if (sc) {
+          try {
+            await sc.stop();
+          } catch {}
+          try { sc.clear(); } catch {}
+        }
+        const trimmed = (decoded || '').trim();
+        setScanResult(trimmed);
+        playSuccessSound();
         successTimerRef.current = window.setTimeout(async () => {
           successTimerRef.current = null;
           try {
-            await onResult(decoded);
+            await onResult(trimmed);
           } catch (err) {
             console.error('onResult error:', err);
           }
-          void closeScanner();
+          await closeScanner();
         }, 1500);
       };
 
