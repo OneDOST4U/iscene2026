@@ -936,7 +936,7 @@ iSCENE 2026 Organizing Team</p>`,
 
   if (isRestoringSession) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-4">
+      <div className="min-h-dvh bg-slate-50 flex flex-col items-center justify-center gap-4 px-4">
         <img src="/iscene.png" alt="iSCENE 2026" className="w-16 h-16 rounded-full shadow-md" />
         <div className="flex flex-col items-center gap-1">
           <p className="text-blue-600 font-bold text-base">iSCENE 2026</p>
@@ -951,7 +951,7 @@ iSCENE 2026 Organizing Team</p>`,
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900">
+    <div className="min-h-dvh w-full max-w-[100vw] overflow-x-hidden bg-slate-50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900">
       {showRoleDashboard && adminUser && participantRegistration && (
         participantSector === 'Speakers' ? (
           <SpeakerDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
@@ -1506,8 +1506,9 @@ iSCENE 2026 Organizing Team</p>`,
 
       {/* Participant Auth Choice Modal */}
       {isAuthChoiceOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="relative w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain bg-black/40">
+          <div className="flex min-h-dvh w-full flex-col items-center justify-center px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:py-10">
+          <div className="relative w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl sm:p-6">
             <button
               type="button"
               onClick={closeParticipantAuthModals}
@@ -1547,13 +1548,15 @@ iSCENE 2026 Organizing Team</p>`,
               </button>
             </div>
           </div>
+          </div>
         </div>
       )}
 
       {/* Participant Login Modal */}
       {isParticipantLoginOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative">
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain bg-black/40">
+          <div className="flex min-h-dvh w-full flex-col items-center justify-center px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:py-10">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-5 relative sm:p-6">
             <button
               type="button"
               onClick={closeParticipantAuthModals}
@@ -1607,12 +1610,14 @@ iSCENE 2026 Organizing Team</p>`,
               </button>
             </form>
           </div>
+          </div>
         </div>
       )}
 
       {/* Register Modal */}
       {isRegisterOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-white max-h-screen overflow-hidden sm:max-w-lg sm:mx-auto sm:my-4 sm:rounded-2xl sm:shadow-2xl sm:max-h-[95vh]">
+        <div className="fixed inset-0 z-50 flex min-h-dvh h-dvh w-full max-w-[100vw] flex-col overflow-hidden bg-white pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:items-center sm:justify-center sm:bg-black/50 sm:p-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))] sm:pt-[max(1rem,env(safe-area-inset-top))]">
+          <div className="flex min-h-0 h-full w-full flex-col overflow-hidden bg-white sm:h-auto sm:max-h-[95dvh] sm:max-w-lg sm:flex-none sm:rounded-2xl sm:shadow-2xl">
           {/* Header bar */}
           <div className="flex items-center justify-between h-14 px-4 border-b border-slate-100 shrink-0">
             <button
@@ -1978,14 +1983,16 @@ iSCENE 2026 Organizing Team</p>`,
               <p className="text-xs text-slate-400">© 2026 ISCENE ORGANIZING COMMITTEE</p>
             </footer>
           </div>
+          </div>
         </div>
       )}
         </>
       )}
       {/* Admin portal – login modal */}
       {isAdminPanelOpen && (!adminUser || !isAdminVerified) && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center px-4">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 relative">
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain bg-slate-900/60 backdrop-blur-sm">
+          <div className="flex min-h-dvh w-full flex-col items-center justify-center px-4 py-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] sm:py-8">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 relative sm:p-8">
             <button
               type="button"
               onClick={() => setIsAdminPanelOpen(false)}
@@ -2031,6 +2038,7 @@ iSCENE 2026 Organizing Team</p>`,
                 {adminLoading ? 'Signing in…' : 'Sign in'}
               </button>
             </form>
+          </div>
           </div>
         </div>
       )}
@@ -2395,8 +2403,9 @@ iSCENE 2026 Organizing Team</p>`,
             </div>
           )}
       {showSuccessPopup && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 relative text-center">
+        <div className="fixed inset-0 z-40 overflow-y-auto overscroll-y-contain bg-black/40">
+          <div className="flex min-h-dvh w-full flex-col items-center justify-center px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:py-10">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-5 relative text-center sm:p-6">
             <button
               type="button"
               onClick={() => setShowSuccessPopup(false)}
@@ -2427,6 +2436,7 @@ iSCENE 2026 Organizing Team</p>`,
             >
               Close
             </button>
+          </div>
           </div>
         </div>
       )}
