@@ -494,15 +494,21 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         const resDocRef = doc(db, 'reservations', resId);
         const existing = await getDoc(resDocRef);
         const room = rooms.find((r) => r.id === id);
-        if (existing.exists()) {
+        const alreadyAttended = existing.exists() && (existing.data() as { attended?: boolean })?.attended;
+        if (alreadyAttended) {
+          setScanToast('✅ Already timed in.');
+          setScanModal(false);
+        } else if (existing.exists()) {
           await updateDoc(resDocRef, { attended: true, attendedAt: Timestamp.now() });
-          setReservations((prev) => ({ ...prev, [id]: { ...prev[id], attended: true } }));
+          setReservations((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), attended: true } }));
+          setScanToast('✅ Time in recorded!');
+          setScanModal(false);
         } else {
           await setDoc(resDocRef, { uid: user.uid, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now(), attendedAt: Timestamp.now() }, { merge: true });
           setReservations((prev) => ({ ...prev, [id]: { id: resId, roomId: id, roomName: room?.name || id, attended: true, reviewSubmitted: false, reservedAt: Timestamp.now() } }));
+          setScanToast('✅ Time in recorded!');
+          setScanModal(false);
         }
-        setScanToast('✅ Time in recorded!');
-        setScanModal(false);
       } else {
         setScanToast('❌ Unrecognized QR code. Use main entrance or room QR.');
       }
@@ -830,14 +836,15 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </div>
             </div>
 
-            {/* Upcoming sessions preview - text only, tap for details */}
+            {/* Upcoming sessions preview - capped height, scrollable */}
             {rooms.length > 0 && (
               <div className="px-4">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-bold text-slate-800">Upcoming Sessions</p>
                   <button type="button" onClick={() => setActiveTab('schedule')} className="text-xs font-semibold text-blue-600">View all →</button>
                 </div>
-                {rooms.slice(0, 2).map((room, i) => (
+                <div className="max-h-[280px] overflow-y-auto">
+                {rooms.map((room, i) => (
                   <div
                     key={room.id}
                     role="button"
@@ -860,6 +867,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     </div>
                   </div>
                 ))}
+                </div>
               </div>
             )}
           </>
@@ -1787,8 +1795,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 {steps.map((s, i) => {
                   const onClick = s.id === 'reserve'
                     ? () => document.getElementById('detail-actions-bar')?.scrollIntoView?.({ behavior: 'smooth' })
-                    : s.id === 'timein' && res
-                    ? () => { setScanModalRoom(detailRoom); setScanModal(true); }
+                    : s.id === 'timein'
+                    ? undefined
                     : s.id === 'review' && res?.attended
                     ? () => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }
                     : s.id === 'cert'
