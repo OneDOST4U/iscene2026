@@ -2,7 +2,6 @@ import React from 'react';
 import {
   LayoutDashboard,
   CalendarDays,
-  Package,
   Star,
   Upload,
   QrCode,
@@ -59,7 +58,7 @@ import { QrScanModal } from './QrScanModal';
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
-type PresenterTab = 'dashboard' | 'sessions' | 'materials' | 'reviews' | 'uploads' | 'profile';
+type PresenterTab = 'dashboard' | 'sessions' | 'reviews' | 'uploads' | 'profile';
 
 type Room = {
   id: string;
@@ -74,6 +73,7 @@ type Room = {
   backgroundImage?: string;
   projectDetail?: string;
   location?: string;
+  venue?: string;
   sessionType?: string;
 };
 
@@ -197,8 +197,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   // ── Upload ───────────────────────────────────────────────────────────────
   const [uploadingFile, setUploadingFile] = React.useState(false);
   const [uploadRoomId, setUploadRoomId] = React.useState<string>('');
-  const uploadInputRef = React.useRef<HTMLInputElement>(null);
-  const materialsUploadInputRef = React.useRef<HTMLInputElement>(null);
 
   const getReviewRating = (r: SessionReview): number => {
     if (typeof r.rating === 'number') return r.rating;
@@ -209,8 +207,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     ? (sessionReviews.reduce((s, r) => s + getReviewRating(r), 0) / sessionReviews.length).toFixed(1)
     : '—';
   const totalReach = assignedRooms.reduce((s, r) => s + (r.capacity || 0), 0);
-  const materialStatus = materials.some((m) => m.status === 'approved') ? 'APPROVED'
-    : materials.length > 0 ? 'PENDING' : 'NONE';
 
   // Rooms for dropdown: assigned first, fallback to all rooms if none assigned
   const roomsForDropdown = assignedRooms.length > 0 ? assignedRooms : allRooms;
@@ -598,112 +594,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   };
 
   // ─────────────────────────────────────────────────────────────────────
-  // Right panel: Upload + Materials
-  // ─────────────────────────────────────────────────────────────────────
-  const RightPanel = () => (
-    <div className="space-y-6">
-      {/* Booth Content Upload */}
-      <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-        <div className="mb-5">
-          <h3 className="text-lg font-bold">Session Training Materials</h3>
-          <p className="text-sm text-slate-500 mt-0.5">Upload files for your sessions. Select a session below so participants can find them.</p>
-        </div>
-
-        {/* Drop zone */}
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && !uploadingFile && uploadInputRef.current?.click()}
-          onClick={() => !uploadingFile && uploadInputRef.current?.click()}
-          className={`flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors group ${uploadingFile ? 'border-blue-400 bg-blue-50' : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/50'}`}
-        >
-          <input
-            ref={uploadInputRef}
-            type="file"
-            className="hidden"
-            accept="image/*,video/*,.pdf,application/pdf"
-            disabled={uploadingFile}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) { handleFileUpload(file, uploadRoomId || undefined); e.target.value = ''; }
-            }}
-          />
-          <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-3 transition-colors ${uploadingFile ? 'bg-blue-100' : 'bg-slate-100 group-hover:bg-blue-100'}`}>
-            {uploadingFile
-              ? <Loader2 size={28} className="animate-spin text-blue-500" />
-              : <Upload size={28} className="text-slate-400 group-hover:text-blue-500" />}
-          </div>
-          <p className="font-bold text-slate-700 group-hover:text-blue-600">{uploadingFile ? 'Uploading…' : 'Click to upload assets'}</p>
-          <p className="text-xs text-slate-400 mt-0.5">JPG, PNG, MP4, PDF · Max 200 MB</p>
-        </div>
-
-        {/* Link to room - REQUIRED for participants to see materials */}
-        {roomsForDropdown.length > 0 && (
-          <div className="mt-3">
-            <label className="text-xs font-bold text-slate-600 mb-1 block">Link to session <span className="text-amber-600">(required for participants)</span></label>
-            <p className="text-[11px] text-slate-500 mb-1.5">Participants can only see materials linked to a session they reserved.</p>
-            <select
-              value={uploadRoomId}
-              onChange={(e) => setUploadRoomId(e.target.value)}
-              className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white cursor-pointer appearance-none pr-10"
-              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364758b' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center' }}
-            >
-              <option value="">— Select a session —</option>
-              {roomsForDropdown.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-          </div>
-        )}
-
-        {/* Pending uploads list */}
-        {materials.length > 0 && (
-          <div className="mt-5 space-y-2">
-            <p className="text-[10px] font-bold uppercase text-slate-400 tracking-widest mb-2">Recent Uploads</p>
-            {materials.slice(0, 3).map((mat) => (
-              <div key={mat.id} className={`flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 ${mat.status === 'processing' ? 'opacity-60' : ''}`}>
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-bold truncate">{mat.fileName}</p>
-                  <p className="text-[10px] text-slate-400">{mat.status === 'processing' ? 'Awaiting processing…' : `${formatBytes(mat.fileSizeBytes)}`}</p>
-                </div>
-                {mat.status === 'processing'
-                  ? <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden"><div className="bg-blue-500 h-full w-2/3" /></div>
-                  : <button type="button" onClick={() => handleDeleteMaterial(mat)} className="text-slate-300 hover:text-red-500 transition-colors"><X size={16} /></button>}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* Recent uploads */}
-      <section className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-        <h3 className="text-lg font-bold mb-4">Recent Uploads</h3>
-        {materials.length === 0 ? (
-          <p className="text-sm text-slate-400 text-center py-4">No materials yet. Upload above and link to a session.</p>
-        ) : (
-          <div className="space-y-1">
-            {materials.slice(0, 4).map((mat) => (
-              <div key={mat.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors cursor-pointer group">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
-                  <div>
-                    <p className="text-sm font-bold truncate max-w-[160px]">{mat.fileName}</p>
-                    <p className="text-xs text-slate-400">{formatBytes(mat.fileSizeBytes)}</p>
-                  </div>
-                </div>
-                <a href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-slate-300 group-hover:text-blue-500 transition-colors"><ChevronRight size={18} /></a>
-              </div>
-            ))}
-          </div>
-        )}
-        <button type="button" onClick={() => setActiveTab('materials')}
-          className="w-full mt-4 py-3 border border-slate-200 rounded-xl text-sm font-bold hover:bg-slate-50 transition-colors">
-          Manage All Materials
-        </button>
-      </section>
-    </div>
-  );
-
-  // ─────────────────────────────────────────────────────────────────────
   // Main render
   // ─────────────────────────────────────────────────────────────────────
   return (
@@ -737,7 +627,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-5">
           <SideNavItem tab="dashboard" icon={<LayoutDashboard size={18} />} label="Dashboard" />
           <SideNavItem tab="sessions" icon={<CalendarDays size={18} />} label="My Sessions" />
-          <SideNavItem tab="materials" icon={<Package size={18} />} label="Training Materials" />
           <SideNavItem tab="reviews" icon={<Star size={18} />} label="Session Reviews" />
           <SideNavItem tab="uploads" icon={<Upload size={18} />} label="Booth Assets" />
         </nav>
@@ -780,13 +669,14 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600"
             >
               <Menu size={18} />
             </button>
+            <img src="/iscene.png" alt="iSCENE" className="h-9 w-auto object-contain shrink-0" />
             <div className="min-w-0">
-              <p className="truncate text-sm font-black text-slate-900">iSCENE 2026</p>
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Speaker Portal</p>
+              <p className="truncate text-sm font-black text-slate-900">Speaker Dashboard</p>
+              <p className="text-[10px] text-slate-500">Manage your sessions and view attendee reviews.</p>
             </div>
           </div>
         </header>
@@ -794,25 +684,28 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         {/* ══════════════════════ DASHBOARD ══════════════════════ */}
         {activeTab === 'dashboard' && (
           <div className="p-4 sm:p-6 lg:p-8">
-            {/* Header */}
+            {/* Header - logo+title hidden on mobile (shown in sticky header instead) */}
             <div className="flex flex-wrap items-end justify-between gap-6 mb-8">
-              <div>
-                <h2 className="text-2xl font-black tracking-tight sm:text-3xl mb-1">Speaker Dashboard</h2>
-                <p className="text-sm text-slate-500 sm:text-base">Manage your sessions, upload training materials for participants, and view attendee reviews.</p>
+              <div className="flex items-center gap-4 hidden lg:flex">
+                <img src="/iscene.png" alt="iSCENE 2026" className="h-12 w-auto object-contain shrink-0" />
+                <div>
+                  <h2 className="text-2xl font-black tracking-tight sm:text-3xl mb-1">Speaker Dashboard</h2>
+                  <p className="text-sm text-slate-500 sm:text-base">Manage your sessions and view attendee reviews.</p>
+                </div>
               </div>
               <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
                 <button type="button" className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-colors">
                   <HelpCircle size={16} /> Support
                 </button>
-                <button type="button" onClick={() => { setActiveTab('materials'); setSidebarOpen(false); }}
+                <button type="button" onClick={() => { setActiveTab('uploads'); setSidebarOpen(false); }}
                   className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium shadow-lg shadow-blue-200 hover:bg-blue-700 transition-colors">
-                  <Upload size={16} /> Upload Materials
+                  <Upload size={16} /> Booth Assets
                 </button>
               </div>
             </div>
 
             {/* Stats */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-8">
               {[
                 {
                   icon: <CalendarDays size={20} className="text-blue-600" />,
@@ -829,15 +722,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   badgeColor: sessionReviews.length > 0 ? 'text-emerald-600' : 'text-slate-400',
                   label: 'Avg. Rating',
                   value: avgRating,
-                },
-                {
-                  icon: <CheckCircle2 size={20} className="text-orange-500" />,
-                  iconBg: 'bg-orange-100',
-                  badge: 'Status',
-                  badgeColor: 'text-slate-400',
-                  label: 'Material Status',
-                  value: materialStatus,
-                  valueClass: materialStatus === 'APPROVED' ? 'text-emerald-500 text-lg' : 'text-slate-400 text-lg',
                 },
                 {
                   icon: <Users size={20} className="text-blue-600" />,
@@ -874,10 +758,8 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
               </div>
             </div>
 
-            {/* Two-column grid */}
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-3 xl:gap-8">
-              {/* Left: sessions + reviews */}
-              <div className="xl:col-span-2 space-y-8">
+            {/* Sessions + reviews */}
+            <div className="max-w-3xl space-y-8">
                 {/* Sessions table */}
                 <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
                   <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -924,10 +806,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     </div>
                   )}
                 </section>
-              </div>
-
-              {/* Right: upload + materials */}
-              <div><RightPanel /></div>
             </div>
           </div>
         )}
@@ -944,127 +822,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
             <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
               <SessionsTable />
             </section>
-          </div>
-        )}
-
-        {/* ══════════════════════ MATERIALS TAB ══════════════════════ */}
-        {activeTab === 'materials' && (
-          <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6 flex flex-col gap-4">
-              <div>
-                <h2 className="text-2xl font-black">Session Training Materials</h2>
-                <p className="text-slate-500 text-sm mt-1">Upload files for your sessions. Participants see materials only when linked to a session.</p>
-              </div>
-              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
-                {roomsForDropdown.length > 0 && (
-                  <div className="flex-1 sm:max-w-xs">
-                    <label className="text-xs font-bold text-slate-600 mb-1 block">Link new upload to session</label>
-                    <select
-                      value={uploadRoomId}
-                      onChange={(e) => setUploadRoomId(e.target.value)}
-                      className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white cursor-pointer"
-                    >
-                      <option value="">— Select session —</option>
-                      {roomsForDropdown.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                    </select>
-                  </div>
-                )}
-                <>
-                  <input
-                    ref={materialsUploadInputRef}
-                    type="file"
-                    className="hidden"
-                    accept="image/*,video/*,.pdf,application/pdf"
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleFileUpload(f, uploadRoomId || undefined); e.target.value = ''; } }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => materialsUploadInputRef.current?.click()}
-                    disabled={uploadingFile}
-                    className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Upload size={16} /> Upload File
-                  </button>
-                </>
-              </div>
-            </div>
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              {materials.length === 0 ? (
-                <div className="py-16 text-center text-slate-400">
-                  <Package size={40} className="mx-auto mb-3 text-slate-200" />
-                  <p className="font-medium mb-1">No materials uploaded</p>
-                  <p className="text-sm">Upload your presentation files, images, or videos.</p>
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-3 p-4 md:hidden">
-                    {materials.map((mat) => (
-                      <div key={mat.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-start gap-3">
-                          <div className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-bold text-slate-800">{mat.fileName}</p>
-                            <p className="mt-0.5 text-[11px] text-slate-400">{relativeTime(mat.createdAt)}</p>
-                            <div className="mt-3 space-y-2 text-sm text-slate-500">
-                              <p><span className="font-semibold text-slate-700">Session:</span> {mat.roomName || '—'}</p>
-                              <p><span className="font-semibold text-slate-700">Size:</span> {formatBytes(mat.fileSizeBytes)}</p>
-                            </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-3">
-                              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${mat.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : mat.status === 'processing' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-700'}`}>
-                                {mat.status.charAt(0).toUpperCase() + mat.status.slice(1)}
-                              </span>
-                              <div className="flex items-center gap-3">
-                                <a href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700" title="Download"><Download size={16} /></a>
-                                <button type="button" onClick={() => handleDeleteMaterial(mat)} className="text-slate-300 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                <table className="hidden w-full min-w-[760px] text-left md:table">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
-                      <th className="px-6 py-4 font-bold">File</th>
-                      <th className="px-6 py-4 font-bold">Session</th>
-                      <th className="px-6 py-4 font-bold">Size</th>
-                      <th className="px-6 py-4 font-bold">Status</th>
-                      <th className="px-6 py-4 font-bold">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {materials.map((mat) => (
-                      <tr key={mat.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${fileIconBg(mat.fileType)}`}>{fileIcon(mat.fileType)}</div>
-                            <div>
-                              <p className="text-sm font-bold truncate max-w-[180px]">{mat.fileName}</p>
-                              <p className="text-[11px] text-slate-400">{relativeTime(mat.createdAt)}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-slate-500">{mat.roomName || <span className="text-slate-300">—</span>}</td>
-                        <td className="px-6 py-4 text-sm text-slate-500">{formatBytes(mat.fileSizeBytes)}</td>
-                        <td className="px-6 py-4">
-                          <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${mat.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : mat.status === 'processing' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-700'}`}>
-                            {mat.status.charAt(0).toUpperCase() + mat.status.slice(1)}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <a href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700" title="Download"><Download size={16} /></a>
-                            <button type="button" onClick={() => handleDeleteMaterial(mat)} className="text-slate-300 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </>
-              )}
-            </div>
           </div>
         )}
 
@@ -1130,8 +887,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
               <h2 className="text-2xl font-black">Booth Uploads</h2>
               <p className="text-slate-500 text-sm mt-1">Upload and manage your booth digital assets</p>
             </div>
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-3 xl:gap-8">
-              <div className="xl:col-span-2">
+            <div className="max-w-3xl">
                 {/* Large upload zone */}
                 <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                   <div className="mb-4">
@@ -1140,8 +896,13 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     <p className="text-sm text-slate-500">Supported: JPG, PNG, MP4, PDF · Max 200 MB per file</p>
                   </div>
                   <label className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 text-center transition-colors group sm:p-12 ${uploadingFile ? 'border-blue-400 bg-blue-50' : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/30'}`}>
-                    <input type="file" className="hidden" accept="image/*,video/*,.pdf" disabled={uploadingFile}
-                      onChange={(e) => { const f = e.target.files?.[0]; if (f) { handleFileUpload(f, uploadRoomId || undefined); e.target.value = ''; } }} />
+                    <input type="file" multiple className="hidden" accept="image/*,video/*,.pdf,application/pdf" disabled={uploadingFile}
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || []);
+                        const roomId = uploadRoomId || undefined;
+                        files.forEach((f) => handleFileUpload(f, roomId));
+                        e.target.value = '';
+                      }} />
                     <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-4 transition-colors ${uploadingFile ? 'bg-blue-100' : 'bg-slate-100 group-hover:bg-blue-100'}`}>
                       {uploadingFile ? <Loader2 size={36} className="animate-spin text-blue-500" /> : <Upload size={36} className="text-slate-400 group-hover:text-blue-500" />}
                     </div>
@@ -1157,7 +918,11 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                         className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
                       >
                         <option value="">No specific session</option>
-                        {roomsForDropdown.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                        {roomsForDropdown.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}{r.venue ? ` · ${r.venue}` : ''}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   )}
@@ -1183,8 +948,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     </div>
                   </section>
                 )}
-              </div>
-              <div><RightPanel /></div>
             </div>
           </div>
         )}

@@ -22,6 +22,8 @@ import {
   Search,
   Save,
   Image as ImageIcon,
+  Film,
+  Package,
   MessageCircle,
   Mail,
   Phone,
@@ -29,6 +31,7 @@ import {
   UserCog,
   ShieldCheck,
   Loader2,
+  Upload,
   ChevronRight,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
@@ -47,9 +50,9 @@ import {
   deleteField,
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
-import { ref, getDownloadURL, uploadBytes } from 'firebase/storage';
+import { ref, getDownloadURL, uploadBytes, deleteObject } from 'firebase/storage';
 
-type Tab = 'dashboard' | 'registrations' | 'rooms' | 'meals' | 'booths' | 'analytics';
+type Tab = 'dashboard' | 'registrations' | 'rooms' | 'meals' | 'booths' | 'materials' | 'analytics';
 
 export type AdminDashboardProps = {
   user: User;
@@ -149,14 +152,134 @@ const DEFAULT_VENUE_OPTIONS = [
   'TBD',
 ];
 
-const TIME_OPTIONS = Array.from({ length: 27 }, (_, index) => {
-  const totalMinutes = 7 * 60 + index * 30;
-  const hours24 = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  const period = hours24 >= 12 ? 'PM' : 'AM';
-  const hours12 = hours24 % 12 || 12;
-  return `${String(hours12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
-});
+const HOURS = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
+const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+const AMPM = ['AM', 'PM'];
+
+function timeToMinutes(str: string): number {
+  const m = str.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return -1;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const pm = m[3].toUpperCase() === 'PM';
+  if (h === 12) h = 0;
+  return (h + (pm ? 12 : 0)) * 60 + min;
+}
+
+function TimePickerScrollColumn({ options, selected, onSelect, isOpen }: { options: string[]; selected: string; onSelect: (v: string) => void; isOpen: boolean }) {
+  const selectedRef = React.useRef<HTMLButtonElement>(null);
+  const hasScrolledRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!isOpen) {
+      hasScrolledRef.current = false;
+      return;
+    }
+    if (hasScrolledRef.current) return;
+    const t = requestAnimationFrame(() => {
+      selectedRef.current?.scrollIntoView({ block: 'center', behavior: 'auto' });
+      hasScrolledRef.current = true;
+    });
+    return () => cancelAnimationFrame(t);
+  }, [isOpen]);
+  return (
+    <div className="flex-1 min-w-0 overflow-y-auto h-36 rounded-lg border border-slate-200 bg-slate-50" style={{ scrollbarWidth: 'thin' }}>
+      <div className="py-10">
+        {options.map((opt) => (
+          <button
+            key={opt}
+            ref={selected === opt ? selectedRef : undefined}
+            type="button"
+            onClick={() => onSelect(opt)}
+            className={`w-full py-1.5 text-sm font-medium transition-colors ${selected === opt ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'}`}
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TimePicker({
+  value,
+  onChange,
+  placeholder,
+  id,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  id?: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const match = value ? value.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i) : null;
+  const [hour, setHour] = React.useState(match ? match[1].padStart(2, '0') : '08');
+  const [minute, setMinute] = React.useState(match ? match[2] : '00');
+  const [ampm, setAmPm] = React.useState(match ? match[3].toUpperCase() : 'AM');
+
+  React.useEffect(() => {
+    if (value) {
+      const m = value.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (m) {
+        const h = parseInt(m[1], 10);
+        setHour(h >= 1 && h <= 12 ? String(h).padStart(2, '0') : '08');
+        setMinute(m[2]);
+        setAmPm(m[3].toUpperCase());
+      }
+    }
+  }, [value]);
+
+  const apply = () => {
+    const h = parseInt(hour, 10) || 1;
+    const m = parseInt(minute, 10) || 0;
+    onChange(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ${ampm}`);
+    setOpen(false);
+  };
+
+  React.useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    if (open) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative" id={id}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-left outline-none focus:ring-2 focus:ring-blue-500 flex items-center justify-between"
+      >
+        <span className={value ? 'text-slate-800' : 'text-slate-400'}>{value || placeholder || 'Choose time'}</span>
+        <ChevronRight size={16} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 left-0 right-0 rounded-xl border border-slate-200 bg-white shadow-xl p-3">
+          <div className="flex gap-2 mb-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-bold text-slate-500 uppercase mb-1 text-center">Hour</p>
+              <TimePickerScrollColumn options={HOURS} selected={hour.padStart(2, '0')} onSelect={(v) => setHour(String(parseInt(v, 10)).padStart(2, '0'))} isOpen={open} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-bold text-slate-500 uppercase mb-1 text-center">Min</p>
+              <TimePickerScrollColumn options={MINUTES} selected={minute} onSelect={setMinute} isOpen={open} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-bold text-slate-500 uppercase mb-1 text-center">AM/PM</p>
+              <TimePickerScrollColumn options={AMPM} selected={ampm} onSelect={setAmPm} isOpen={open} />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={apply} className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700">Apply</button>
+            <button type="button" onClick={() => setOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium hover:bg-slate-50">Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function formatDate(value: any) {
   const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
@@ -462,6 +585,7 @@ export function AdminDashboard({
   const [selectedQrRoom, setSelectedQrRoom] = React.useState<Room | null>(null);
   const [editingRoom, setEditingRoom] = React.useState<Room | null>(null);
   const [roomDetailView, setRoomDetailView] = React.useState<Room | null>(null);
+  const [chatModalRoom, setChatModalRoom] = React.useState<Room | null>(null);
   const [roomChatMessages, setRoomChatMessages] = React.useState<RoomChatMessage[]>([]);
   const [editingRegistration, setEditingRegistration] = React.useState<any | null>(null);
   const [registrationSaving, setRegistrationSaving] = React.useState(false);
@@ -499,6 +623,25 @@ export function AdminDashboard({
 
   const [meals, setMeals] = React.useState<Meal[]>([]);
   const [mealsLoading, setMealsLoading] = React.useState(false);
+
+  type PresenterMaterial = {
+    id: string;
+    uid: string;
+    presenterName?: string;
+    roomId?: string;
+    roomName?: string;
+    fileName: string;
+    storagePath: string;
+    downloadUrl: string;
+    fileType: string;
+    fileSizeBytes: number;
+    status: string;
+    createdAt: any;
+  };
+  const [adminMaterials, setAdminMaterials] = React.useState<PresenterMaterial[]>([]);
+  const [adminUploadRoomId, setAdminUploadRoomId] = React.useState('');
+  const [adminUploadingFile, setAdminUploadingFile] = React.useState(false);
+  const adminMaterialsInputRef = React.useRef<HTMLInputElement>(null);
 
   const adminInitials = (user.email || 'AD').slice(0, 2).toUpperCase();
 
@@ -608,21 +751,34 @@ export function AdminDashboard({
     setSidebarOpen(false);
   }, [activeTab]);
 
+  const roomIdForChat = chatModalRoom?.id ?? roomDetailView?.id;
   React.useEffect(() => {
-    if (!roomDetailView?.id) {
+    if (!roomIdForChat) {
       setRoomChatMessages([]);
       return;
     }
     const q = query(
       collection(db, 'roomChat'),
-      where('roomId', '==', roomDetailView.id),
+      where('roomId', '==', roomIdForChat),
       orderBy('createdAt', 'asc')
     );
     const unsub = onSnapshot(q, (snap) => {
       setRoomChatMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<RoomChatMessage, 'id'>) })));
     });
     return () => unsub();
-  }, [roomDetailView?.id]);
+  }, [roomIdForChat]);
+
+  React.useEffect(() => {
+    if (activeTab !== 'materials') return;
+    const q = query(collection(db, 'presenterMaterials'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setAdminMaterials(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PresenterMaterial, 'id'>) })));
+    }, (err) => {
+      console.error('presenterMaterials', err);
+      setAdminMaterials([]);
+    });
+    return () => unsub();
+  }, [activeTab]);
 
   const addSelectedPresenter = React.useCallback(() => {
     const presenterName = newRoomPresenterChoice.trim();
@@ -715,6 +871,61 @@ export function AdminDashboard({
     }
   };
 
+  const handleAdminMaterialUpload = async (file: File, roomId?: string) => {
+    if (!user?.uid || !file || file.size > 200 * 1024 * 1024) {
+      setActionMessage('File too large (max 200 MB).');
+      setTimeout(() => setActionMessage(null), 4000);
+      return;
+    }
+    setAdminUploadingFile(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const storagePath = `presenterMaterials/${user.uid}/${Date.now()}_${safeName}`;
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, file);
+      const downloadUrl = await getDownloadURL(storageRef);
+      const room = roomId ? rooms.find((r) => r.id === roomId) : undefined;
+      await addDoc(collection(db, 'presenterMaterials'), {
+        uid: user.uid,
+        presenterName: user.email || 'Admin',
+        roomId: roomId || null,
+        roomName: room?.name || null,
+        fileName: file.name,
+        storagePath,
+        downloadUrl,
+        fileType: file.type,
+        fileSizeBytes: file.size,
+        status: 'uploaded',
+        createdAt: Timestamp.now(),
+      });
+      clearMessageSoon(`Uploaded: ${file.name}`);
+    } catch (err: any) {
+      console.error('Admin material upload', err);
+      setActionMessage(err?.code === 'permission-denied' ? 'Permission denied. Check storage rules.' : `Upload failed: ${err?.message || err}`);
+      setTimeout(() => setActionMessage(null), 5000);
+    } finally {
+      setAdminUploadingFile(false);
+    }
+  };
+
+  const handleAdminDeleteMaterial = async (mat: PresenterMaterial) => {
+    if (!window.confirm(`Delete "${mat.fileName}"?`)) return;
+    try {
+      try {
+        const storageRef = ref(storage, mat.storagePath);
+        await deleteObject(storageRef);
+      } catch (storageErr) {
+        console.warn('Storage delete', storageErr);
+      }
+      await deleteDoc(doc(db, 'presenterMaterials', mat.id));
+      clearMessageSoon('Material deleted.');
+    } catch (err: any) {
+      console.error('Delete material', err);
+      setActionMessage(`Delete failed: ${err?.message || err}`);
+      setTimeout(() => setActionMessage(null), 4000);
+    }
+  };
+
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRoomName.trim()) return;
@@ -722,9 +933,9 @@ export function AdminDashboard({
       setActionMessage('Please choose both a start time and an end time.');
       return;
     }
-    const startIndex = TIME_OPTIONS.indexOf(newRoomStartTime);
-    const endIndex = TIME_OPTIONS.indexOf(newRoomEndTime);
-    if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+    const startMins = timeToMinutes(newRoomStartTime);
+    const endMins = timeToMinutes(newRoomEndTime);
+    if (startMins < 0 || endMins < 0 || endMins <= startMins) {
       setActionMessage('End time must be later than the start time.');
       return;
     }
@@ -764,13 +975,14 @@ export function AdminDashboard({
         sessionDate: newRoomDate,
         materials: newRoomMaterials.trim(),
         presenterNames,
-        presenterUids: presenterUids.length > 0 ? presenterUids : undefined,
-        presenterTitles: presenterTitles.some(Boolean) ? presenterTitles : undefined,
+        ...(presenterUids.length > 0 && { presenterUids }),
+        ...(presenterTitles.some(Boolean) && { presenterTitles: presenterTitles.map((t) => t ?? null) }),
         projectDetail: newRoomProjectDetail.trim() || null,
         certificateProcessSteps: newRoomCertificateProcessSteps.trim() || null,
         createdAt: Timestamp.now(),
       };
       if (backgroundImageUrl) payload.backgroundImage = backgroundImageUrl;
+      Object.keys(payload).forEach((k) => { if (payload[k] === undefined) delete payload[k]; });
       const docRef = await addDoc(collection(db, 'rooms'), payload);
       const createdRoom = { id: docRef.id, ...payload };
       setRooms((prev) => [createdRoom, ...prev]);
@@ -806,6 +1018,7 @@ export function AdminDashboard({
       if (selectedQrRoom?.id === id) setSelectedQrRoom(null);
       if (editingRoom?.id === id) setEditingRoom(null);
       if (roomDetailView?.id === id) setRoomDetailView(null);
+      if (chatModalRoom?.id === id) setChatModalRoom(null);
       clearMessageSoon('Breakout room deleted.');
     } catch (err) {
       console.error('deleteRoom', err);
@@ -821,8 +1034,12 @@ export function AdminDashboard({
     setNewRoomDesc(room.description || '');
     setNewRoomDate(room.sessionDate || '');
     setNewRoomMaterials(room.materials || '');
-    setNewRoomSelectedPresenters(room.presenterNames || []);
-    setNewRoomPresenters('');
+    const names = room.presenterNames || [];
+    const registeredSet = new Set(presenterOptions.map((n) => n.trim().toLowerCase()));
+    const fromDropdown = names.filter((n) => registeredSet.has(String(n).trim().toLowerCase()));
+    const manual = names.filter((n) => !registeredSet.has(String(n).trim().toLowerCase()));
+    setNewRoomSelectedPresenters(fromDropdown);
+    setNewRoomPresenters(manual.join(', '));
     setNewRoomProjectDetail(room.projectDetail || '');
     setNewRoomCertificateProcessSteps(room.certificateProcessSteps || '');
     setNewRoomBackgroundImage(room.backgroundImage || '');
@@ -859,9 +1076,9 @@ export function AdminDashboard({
       setActionMessage('Please choose both a start time and an end time.');
       return;
     }
-    const startIndex = TIME_OPTIONS.indexOf(newRoomStartTime);
-    const endIndex = TIME_OPTIONS.indexOf(newRoomEndTime);
-    if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+    const startMins = timeToMinutes(newRoomStartTime);
+    const endMins = timeToMinutes(newRoomEndTime);
+    if (startMins < 0 || endMins < 0 || endMins <= startMins) {
       setActionMessage('End time must be later than the start time.');
       return;
     }
@@ -899,12 +1116,13 @@ export function AdminDashboard({
         sessionDate: newRoomDate,
         materials: newRoomMaterials.trim(),
         presenterNames,
-        presenterUids: presenterUids.length > 0 ? presenterUids : undefined,
-        presenterTitles: presenterTitles.some(Boolean) ? presenterTitles : undefined,
+        ...(presenterUids.length > 0 && { presenterUids }),
+        ...(presenterTitles.some(Boolean) && { presenterTitles: presenterTitles.map((t) => t ?? null) }),
         projectDetail: newRoomProjectDetail.trim() || null,
         certificateProcessSteps: newRoomCertificateProcessSteps.trim() || null,
       };
       payload.backgroundImage = backgroundImageUrl ? backgroundImageUrl : deleteField();
+      if (presenterUids.length === 0) payload.presenterUids = deleteField();
       Object.keys(payload).forEach((k) => { if (payload[k] === undefined) delete payload[k]; });
       // #region agent log
       try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:preUpdate',message:'Admin payload before update',data:{roomId:editingRoom.id,keys:Object.keys(payload),hasUndefined:Object.values(payload).some(v=>v===undefined)},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{}); } catch(_) {}
@@ -912,10 +1130,12 @@ export function AdminDashboard({
       await updateDoc(doc(db, 'rooms', editingRoom.id), payload);
       const payloadForState = { ...payload };
       if (payloadForState.backgroundImage && typeof payloadForState.backgroundImage !== 'string') payloadForState.backgroundImage = undefined;
+      if (presenterUids.length === 0) delete payloadForState.presenterUids;
       const updated = { ...editingRoom, ...payloadForState };
       setRooms((prev) => prev.map((r) => (r.id === editingRoom.id ? updated : r)));
       if (selectedQrRoom?.id === editingRoom.id) setSelectedQrRoom(updated);
       if (roomDetailView?.id === editingRoom.id) setRoomDetailView(updated);
+      if (chatModalRoom?.id === editingRoom.id) setChatModalRoom(updated);
       closeEditRoom();
       clearMessageSoon('Breakout room updated.');
     } catch (err: any) {
@@ -1060,6 +1280,7 @@ export function AdminDashboard({
     { id: 'rooms', label: 'Breakout Rooms', icon: <DoorOpen size={18} /> },
     { id: 'meals', label: 'Meals & Food', icon: <UtensilsCrossed size={18} /> },
     { id: 'booths', label: 'Booths', icon: <Store size={18} /> },
+    { id: 'materials', label: 'Training Materials', icon: <Package size={18} /> },
     { id: 'analytics', label: 'Analytics', icon: <BarChart3 size={18} /> },
   ];
 
@@ -1163,6 +1384,8 @@ export function AdminDashboard({
                       ? 'Meals & Food'
                       : activeTab === 'booths'
                       ? 'Booth Management'
+                      : activeTab === 'materials'
+                      ? 'Training Materials'
                       : activeTab === 'analytics'
                       ? 'Analytics'
                       : 'Event Overview'}
@@ -1584,26 +1807,12 @@ export function AdminDashboard({
                         <input value={newRoomDate} onChange={(e) => setNewRoomDate(e.target.value)} type="date" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                       </Field>
                       <Field label="Start Time">
-                        <select value={newRoomStartTime} onChange={(e) => setNewRoomStartTime(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-                          <option value="">Choose start time</option>
-                          {TIME_OPTIONS.map((time) => (
-                            <option key={`start-${time}`} value={time}>
-                              {time}
-                            </option>
-                          ))}
-                        </select>
+                        <TimePicker value={newRoomStartTime} onChange={setNewRoomStartTime} placeholder="Choose start time" />
                       </Field>
                     </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <Field label="End Time">
-                        <select value={newRoomEndTime} onChange={(e) => setNewRoomEndTime(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-                          <option value="">Choose end time</option>
-                          {TIME_OPTIONS.map((time) => (
-                            <option key={`end-${time}`} value={time}>
-                              {time}
-                            </option>
-                          ))}
-                        </select>
+                        <TimePicker value={newRoomEndTime} onChange={setNewRoomEndTime} placeholder="Choose end time" />
                       </Field>
                       <Field label="Timeline Preview">
                         <div className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
@@ -1739,6 +1948,15 @@ export function AdminDashboard({
                               >
                                 <QrCode size={12} />
                                 View QR
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setChatModalRoom(room)}
+                                className="flex items-center gap-1 rounded-xl bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100"
+                                title="View live chat"
+                              >
+                                <MessageCircle size={12} />
+                                Chat
                               </button>
                               <button
                                 type="button"
@@ -1932,18 +2150,12 @@ export function AdminDashboard({
                           <input value={newRoomDate} onChange={(e) => setNewRoomDate(e.target.value)} type="date" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                         </Field>
                         <Field label="Start Time">
-                          <select value={newRoomStartTime} onChange={(e) => setNewRoomStartTime(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="">Choose start time</option>
-                            {TIME_OPTIONS.map((time) => <option key={`estart-${time}`} value={time}>{time}</option>)}
-                          </select>
+                          <TimePicker value={newRoomStartTime} onChange={setNewRoomStartTime} placeholder="Choose start time" />
                         </Field>
                       </div>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <Field label="End Time">
-                          <select value={newRoomEndTime} onChange={(e) => setNewRoomEndTime(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="">Choose end time</option>
-                            {TIME_OPTIONS.map((time) => <option key={`eend-${time}`} value={time}>{time}</option>)}
-                          </select>
+                          <TimePicker value={newRoomEndTime} onChange={setNewRoomEndTime} placeholder="Choose end time" />
                         </Field>
                         <Field label="Timeline">
                           <div className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
@@ -2061,6 +2273,39 @@ export function AdminDashboard({
                     <div className="p-5 border-t border-slate-100 flex gap-2 shrink-0">
                       <button type="button" onClick={() => { openEditRoom(roomDetailView); setRoomDetailView(null); }} className="flex-1 rounded-xl bg-amber-500 py-2.5 text-sm font-bold text-white hover:bg-amber-600">Edit Room</button>
                       <button type="button" onClick={() => setRoomDetailView(null)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Chat / Live Q&A Modal */}
+              {chatModalRoom && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden my-8">
+                    <div className="p-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+                      <h3 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                        <MessageCircle size={20} className="text-blue-600" />
+                        Live Chat — {chatModalRoom.name}
+                      </h3>
+                      <button type="button" onClick={() => setChatModalRoom(null)} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200"><X size={18} /></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-5">
+                      <p className="text-xs text-slate-500 mb-3">Questions from participants in this breakout session.</p>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/50 max-h-80 overflow-y-auto p-3 space-y-3">
+                        {roomChatMessages.length === 0 ? (
+                          <p className="text-sm text-slate-400 text-center py-8">No questions yet. Participants can post from the room view.</p>
+                        ) : (
+                          roomChatMessages.map((msg) => (
+                            <div key={msg.id} className="flex flex-col gap-0.5 p-3 rounded-lg bg-white border border-slate-100">
+                              <p className="text-xs font-semibold text-slate-700">{msg.participantName || 'Anonymous'}</p>
+                              <p className="text-sm text-slate-600">{msg.text}</p>
+                              <p className="text-[10px] text-slate-400">
+                                {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleString() : '—'}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2285,6 +2530,122 @@ export function AdminDashboard({
                       ))}
                   </div>
                 </div>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'materials' && (
+            <section className="space-y-6">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h4 className="mb-4 text-lg font-black">Session Training Materials</h4>
+                <p className="text-sm text-slate-500 mb-4">Upload files for breakout sessions. Participants see materials linked to sessions they reserved.</p>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:flex-wrap">
+                  {rooms.length > 0 && (
+                    <div className="sm:min-w-[200px]">
+                      <label className="text-xs font-bold text-slate-600 mb-1 block">Link to breakout session</label>
+                      <select
+                        value={adminUploadRoomId}
+                        onChange={(e) => setAdminUploadRoomId(e.target.value)}
+                        className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        <option value="">— Select session —</option>
+                        {rooms.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}{r.venue ? ` · ${r.venue}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <input
+                    ref={adminMaterialsInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    accept="image/*,video/*,.pdf,application/pdf"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      const roomId = adminUploadRoomId || undefined;
+                      files.forEach((f) => handleAdminMaterialUpload(f, roomId));
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => adminMaterialsInputRef.current?.click()}
+                    disabled={adminUploadingFile}
+                    className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 shrink-0"
+                  >
+                    {adminUploadingFile ? <Loader2 size={18} className="animate-spin" /> : <Upload size={18} />}
+                    {adminUploadingFile ? 'Uploading…' : 'Upload File(s)'}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 mt-2">JPG, PNG, MP4, PDF · Max 200 MB per file</p>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                <h4 className="px-5 py-4 text-lg font-black border-b border-slate-100">All Materials ({adminMaterials.length})</h4>
+                {adminMaterials.length === 0 ? (
+                  <div className="py-16 text-center text-slate-400">
+                    <Package size={40} className="mx-auto mb-3 text-slate-200" />
+                    <p className="font-medium">No materials uploaded yet</p>
+                    <p className="text-sm mt-1">Speakers and admin can upload training materials above.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[600px] text-left">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                          <th className="px-6 py-4 font-bold">File</th>
+                          <th className="px-6 py-4 font-bold">Session</th>
+                          <th className="px-6 py-4 font-bold">Uploaded by</th>
+                          <th className="px-6 py-4 font-bold">Size</th>
+                          <th className="px-6 py-4 font-bold">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {adminMaterials.map((mat) => (
+                          <tr key={mat.id} className="hover:bg-slate-50">
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                                  mat.fileType.startsWith('image/') ? 'bg-blue-100' : mat.fileType.startsWith('video/') ? 'bg-purple-100' : 'bg-red-100'
+                                }`}>
+                                  {mat.fileType.startsWith('image/') ? <ImageIcon size={18} className="text-blue-600" /> :
+                                    mat.fileType.startsWith('video/') ? <Film size={18} className="text-purple-600" /> :
+                                    <FileText size={18} className="text-red-600" />}
+                                </div>
+                                <div>
+                                  <p className="text-sm font-bold truncate max-w-[200px]">{mat.fileName}</p>
+                                  <p className="text-[11px] text-slate-400">
+                                    {mat.createdAt?.toDate ? mat.createdAt.toDate().toLocaleDateString() : '—'}
+                                  </p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-sm text-slate-600">{mat.roomName || <span className="text-slate-300">—</span>}</td>
+                            <td className="px-6 py-4 text-sm text-slate-500">{mat.presenterName || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-slate-500">
+                              {mat.fileSizeBytes < 1024 ? `${mat.fileSizeBytes} B` :
+                                mat.fileSizeBytes < 1024 * 1024 ? `${(mat.fileSizeBytes / 1024).toFixed(1)} KB` :
+                                `${(mat.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`}
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-2">
+                                <a href={mat.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700" title="Download">
+                                  <Download size={18} />
+                                </a>
+                                <button type="button" onClick={() => handleAdminDeleteMaterial(mat)} className="text-slate-300 hover:text-red-500" title="Delete">
+                                  <Trash2 size={18} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </section>
           )}
