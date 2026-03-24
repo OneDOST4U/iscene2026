@@ -607,14 +607,9 @@ export function AdminDashboard({
   const [newRoomStartTime, setNewRoomStartTime] = React.useState('');
   const [newRoomEndTime, setNewRoomEndTime] = React.useState('');
   const [newRoomDate, setNewRoomDate] = React.useState('');
-  const [newRoomMaterials, setNewRoomMaterials] = React.useState('');
   const [newRoomPresenterChoice, setNewRoomPresenterChoice] = React.useState('');
   const [newRoomSelectedPresenters, setNewRoomSelectedPresenters] = React.useState<string[]>([]);
   const [newRoomPresenters, setNewRoomPresenters] = React.useState('');
-  const [newRoomProjectDetail, setNewRoomProjectDetail] = React.useState('');
-  const [newRoomCertificateProcessSteps, setNewRoomCertificateProcessSteps] = React.useState('');
-  const [newRoomBackgroundImage, setNewRoomBackgroundImage] = React.useState('');
-  const [roomBackgroundFile, setRoomBackgroundFile] = React.useState<File | null>(null);
   const [roomSaving, setRoomSaving] = React.useState(false);
 
   const [venues, setVenues] = React.useState<Venue[]>([]);
@@ -960,12 +955,6 @@ export function AdminDashboard({
         .map((name) => presenterRegs.find((r) => (r.fullName as string)?.trim() === name)?.positionTitle as string | undefined)
         .map((t) => (t && String(t).trim()) || undefined);
       const timeline = `${newRoomStartTime} - ${newRoomEndTime}`;
-      let backgroundImageUrl = newRoomBackgroundImage;
-      if (roomBackgroundFile) {
-        const path = `roomBackgrounds/${Date.now()}_${roomBackgroundFile.name}`;
-        await uploadBytes(ref(storage, path), roomBackgroundFile, { contentType: roomBackgroundFile.type || 'image/jpeg' });
-        backgroundImageUrl = await getDownloadURL(ref(storage, path));
-      }
       const venue = newRoomVenue?.trim() || '';
       const payload: Record<string, any> = {
         name: newRoomName.trim(),
@@ -974,15 +963,14 @@ export function AdminDashboard({
         description: newRoomDesc.trim(),
         timeline,
         sessionDate: newRoomDate,
-        materials: newRoomMaterials.trim(),
+        materials: '',
         presenterNames,
         ...(presenterUids.length > 0 && { presenterUids }),
         ...(presenterTitles.some(Boolean) && { presenterTitles: presenterTitles.map((t) => t ?? null) }),
-        projectDetail: newRoomProjectDetail.trim() || null,
-        certificateProcessSteps: newRoomCertificateProcessSteps.trim() || null,
+        projectDetail: null,
+        certificateProcessSteps: null,
         createdAt: Timestamp.now(),
       };
-      if (backgroundImageUrl) payload.backgroundImage = backgroundImageUrl;
       Object.keys(payload).forEach((k) => { if (payload[k] === undefined) delete payload[k]; });
       const docRef = await addDoc(collection(db, 'rooms'), payload);
       const createdRoom = { id: docRef.id, ...payload };
@@ -995,14 +983,9 @@ export function AdminDashboard({
       setNewRoomStartTime('');
       setNewRoomEndTime('');
       setNewRoomDate('');
-      setNewRoomMaterials('');
       setNewRoomPresenterChoice('');
       setNewRoomSelectedPresenters([]);
       setNewRoomPresenters('');
-      setNewRoomProjectDetail('');
-      setNewRoomCertificateProcessSteps('');
-      setNewRoomBackgroundImage('');
-      setRoomBackgroundFile(null);
       clearMessageSoon('Breakout room created.');
     } catch (err) {
       console.error('createRoom', err);
@@ -1034,17 +1017,12 @@ export function AdminDashboard({
     setNewRoomCapacity(String(room.capacity || ''));
     setNewRoomDesc(room.description || '');
     setNewRoomDate(room.sessionDate || '');
-    setNewRoomMaterials(room.materials || '');
     const names = room.presenterNames || [];
     const registeredSet = new Set(presenterOptions.map((n) => n.trim().toLowerCase()));
     const fromDropdown = names.filter((n) => registeredSet.has(String(n).trim().toLowerCase()));
     const manual = names.filter((n) => !registeredSet.has(String(n).trim().toLowerCase()));
     setNewRoomSelectedPresenters(fromDropdown);
     setNewRoomPresenters(manual.join(', '));
-    setNewRoomProjectDetail(room.projectDetail || '');
-    setNewRoomCertificateProcessSteps(room.certificateProcessSteps || '');
-    setNewRoomBackgroundImage(room.backgroundImage || '');
-    setRoomBackgroundFile(null);
     const [start, end] = (room.timeline || '').split(/\s*-\s*/);
     setNewRoomStartTime(start?.trim() || '');
     setNewRoomEndTime(end?.trim() || '');
@@ -1059,14 +1037,9 @@ export function AdminDashboard({
     setNewRoomStartTime('');
     setNewRoomEndTime('');
     setNewRoomDate('');
-    setNewRoomMaterials('');
     setNewRoomPresenterChoice('');
     setNewRoomSelectedPresenters([]);
     setNewRoomPresenters('');
-    setNewRoomProjectDetail('');
-    setNewRoomCertificateProcessSteps('');
-    setNewRoomBackgroundImage('');
-    setRoomBackgroundFile(null);
   };
 
   const handleUpdateRoom = async (e: React.FormEvent) => {
@@ -1084,16 +1057,7 @@ export function AdminDashboard({
       return;
     }
     setRoomSaving(true);
-    // #region agent log
-    try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:start',message:'Admin update room start',data:{roomId:editingRoom.id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{}); } catch(_) {}
-    // #endregion
     try {
-      let backgroundImageUrl: string | null = newRoomBackgroundImage || null;
-      if (roomBackgroundFile) {
-        const path = `roomBackgrounds/${editingRoom.id}/${Date.now()}_${roomBackgroundFile.name}`;
-        await uploadBytes(ref(storage, path), roomBackgroundFile, { contentType: roomBackgroundFile.type || 'image/jpeg' });
-        backgroundImageUrl = await getDownloadURL(ref(storage, path));
-      }
       const manualPresenterNames = newRoomPresenters.split(',').map((p) => p.trim()).filter(Boolean);
       const presenterNames = Array.from(new Set([...newRoomSelectedPresenters, ...manualPresenterNames]));
       const presenterUids = Array.from(
@@ -1115,22 +1079,14 @@ export function AdminDashboard({
         description: newRoomDesc.trim(),
         timeline,
         sessionDate: newRoomDate,
-        materials: newRoomMaterials.trim(),
         presenterNames,
         ...(presenterUids.length > 0 && { presenterUids }),
         ...(presenterTitles.some(Boolean) && { presenterTitles: presenterTitles.map((t) => t ?? null) }),
-        projectDetail: newRoomProjectDetail.trim() || null,
-        certificateProcessSteps: newRoomCertificateProcessSteps.trim() || null,
       };
-      payload.backgroundImage = backgroundImageUrl ? backgroundImageUrl : deleteField();
       if (presenterUids.length === 0) payload.presenterUids = deleteField();
       Object.keys(payload).forEach((k) => { if (payload[k] === undefined) delete payload[k]; });
-      // #region agent log
-      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:preUpdate',message:'Admin payload before update',data:{roomId:editingRoom.id,keys:Object.keys(payload),hasUndefined:Object.values(payload).some(v=>v===undefined)},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{}); } catch(_) {}
-      // #endregion
       await updateDoc(doc(db, 'rooms', editingRoom.id), payload);
       const payloadForState = { ...payload };
-      if (payloadForState.backgroundImage && typeof payloadForState.backgroundImage !== 'string') payloadForState.backgroundImage = undefined;
       if (presenterUids.length === 0) delete payloadForState.presenterUids;
       const updated = { ...editingRoom, ...payloadForState };
       setRooms((prev) => prev.map((r) => (r.id === editingRoom.id ? updated : r)));
@@ -1140,9 +1096,6 @@ export function AdminDashboard({
       closeEditRoom();
       clearMessageSoon('Breakout room updated.');
     } catch (err: any) {
-      // #region agent log
-      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'AdminDashboard.tsx:handleUpdateRoom:catch',message:'Admin update error',data:{roomId:editingRoom?.id,errCode:err?.code,errMessage:String(err?.message||err)},timestamp:Date.now(),hypothesisId:'A,B,C,D,E'})}).catch(()=>{}); } catch(_) {}
-      // #endregion
       console.error('updateRoom', err);
       setActionMessage('Failed to update room. Please try again.');
       setTimeout(() => setActionMessage(null), 4000);
@@ -1866,31 +1819,6 @@ export function AdminDashboard({
                         </p>
                       </div>
                     </Field>
-                    <Field label="Materials / Equipment">
-                      <input value={newRoomMaterials} onChange={(e) => setNewRoomMaterials(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Projector, Whiteboard, Laptops" />
-                    </Field>
-                    <Field label="Background Image">
-                      <div className="space-y-2">
-                        {newRoomBackgroundImage && (
-                          <div className="relative rounded-xl overflow-hidden border border-slate-200 h-24">
-                            <img src={newRoomBackgroundImage} alt="Room background" className="w-full h-full object-contain bg-slate-100" />
-                            <button type="button" onClick={() => { setNewRoomBackgroundImage(''); setRoomBackgroundFile(null); }} className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"><X size={12} /></button>
-                          </div>
-                        )}
-                        <div className="flex gap-2">
-                          <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setRoomBackgroundFile(f); setNewRoomBackgroundImage(URL.createObjectURL(f)); } }} className="hidden" id="room-bg-upload" />
-                          <label htmlFor="room-bg-upload" className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 cursor-pointer">
-                            <ImageIcon size={16} /> Upload Image
-                          </label>
-                        </div>
-                      </div>
-                    </Field>
-                    <Field label="Project Detail">
-                      <textarea value={newRoomProjectDetail} onChange={(e) => setNewRoomProjectDetail(e.target.value)} rows={4} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Detailed project description, objectives, outcomes..." />
-                    </Field>
-                    <Field label="Certificate Process Steps">
-                      <textarea value={newRoomCertificateProcessSteps} onChange={(e) => setNewRoomCertificateProcessSteps(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder={'Step 1: Attend the session\nStep 2: Submit a review\nStep 3: Download certificate from dashboard'} />
-                    </Field>
                     <div className="flex gap-2">
                       <button type="submit" disabled={roomSaving} className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-50">
                         {roomSaving ? (editingRoom ? 'Updating...' : 'Creating...') : (editingRoom ? 'Update Session' : 'Create Session & Generate QR')}
@@ -2194,29 +2122,6 @@ export function AdminDashboard({
                           )}
                           <input value={newRoomPresenters} onChange={(e) => setNewRoomPresenters(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Additional names (comma-separated)" />
                         </div>
-                      </Field>
-                      <Field label="Materials / Equipment">
-                        <input value={newRoomMaterials} onChange={(e) => setNewRoomMaterials(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Projector, Whiteboard" />
-                      </Field>
-                      <Field label="Background Image">
-                        <div className="space-y-2">
-                          {newRoomBackgroundImage && (
-                            <div className="relative rounded-xl overflow-hidden border border-slate-200 h-24">
-                              <img src={newRoomBackgroundImage} alt="" className="w-full h-full object-contain bg-slate-100" />
-                              <button type="button" onClick={() => { setNewRoomBackgroundImage(''); setRoomBackgroundFile(null); }} className="absolute top-1 right-1 rounded-full bg-red-500 p-1 text-white hover:bg-red-600"><X size={12} /></button>
-                            </div>
-                          )}
-                          <input type="file" accept="image/*" id="edit-room-bg" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setRoomBackgroundFile(f); setNewRoomBackgroundImage(URL.createObjectURL(f)); } }} />
-                          <label htmlFor="edit-room-bg" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 cursor-pointer">
-                            <ImageIcon size={16} /> Upload Image
-                          </label>
-                        </div>
-                      </Field>
-                      <Field label="Project Detail">
-                        <textarea value={newRoomProjectDetail} onChange={(e) => setNewRoomProjectDetail(e.target.value)} rows={4} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Detailed description..." />
-                      </Field>
-                      <Field label="Certificate Process Steps">
-                        <textarea value={newRoomCertificateProcessSteps} onChange={(e) => setNewRoomCertificateProcessSteps(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Step 1: Attend..." />
                       </Field>
                       <div className="flex gap-2 pt-2">
                         <button type="submit" disabled={roomSaving} className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2">
