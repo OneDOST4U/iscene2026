@@ -48,6 +48,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
+import { getEntranceCalendarDateKey } from './entranceCheckInDay';
 import { QrScanModal } from './QrScanModal';
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -289,9 +290,17 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
 
       if (scanMode.type === 'entrance') {
         const docId = `${uid}_entrance`;
-        await setDoc(doc(db, 'attendance', docId), {
-          uid, type: 'entrance', recordedBy: user.uid, createdAt: Timestamp.now(),
-        }, { merge: true });
+        await setDoc(
+          doc(db, 'attendance', docId),
+          {
+            uid,
+            type: 'entrance',
+            entranceDateKey: getEntranceCalendarDateKey(),
+            recordedBy: user.uid,
+            createdAt: Timestamp.now(),
+          },
+          { merge: true },
+        );
         setAttendance((prev) => {
           const filtered = prev.filter((a) => a.id !== docId);
           return [...filtered, { id: docId, uid, type: 'entrance', createdAt: Timestamp.now() }];

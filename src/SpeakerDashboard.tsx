@@ -53,6 +53,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, auth, storage } from './firebase';
+import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey } from './entranceCheckInDay';
 import { QrScanModal } from './QrScanModal';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +179,12 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   const [allRooms, setAllRooms] = React.useState<Room[]>([]);
   const [sessionReviews, setSessionReviews] = React.useState<SessionReview[]>([]);
   const [materials, setMaterials] = React.useState<PresenterMaterial[]>([]);
-  const [hasEntryAttendance, setHasEntryAttendance] = React.useState(false);
+  const [entranceAttendanceRaw, setEntranceAttendanceRaw] = React.useState<Record<string, unknown> | null>(null);
+  const [entranceTodayKey, setEntranceTodayKey] = React.useState(() => getEntranceCalendarDateKey());
+  const hasEntryAttendance = React.useMemo(
+    () => isEntranceCheckedInForDateKey(entranceAttendanceRaw, entranceTodayKey),
+    [entranceAttendanceRaw, entranceTodayKey],
+  );
   const [loading, setLoading] = React.useState(true);
 
   const [selectedRoomForChat, setSelectedRoomForChat] = React.useState<Room | null>(null);
@@ -197,6 +203,31 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   // ── Upload ───────────────────────────────────────────────────────────────
   const [uploadingFile, setUploadingFile] = React.useState(false);
   const [uploadRoomId, setUploadRoomId] = React.useState<string>('');
+
+  React.useEffect(() => {
+    const tick = () => setEntranceTodayKey(getEntranceCalendarDateKey());
+    const id = window.setInterval(tick, 60_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const ref = doc(db, 'attendance', `${user.uid}_entrance`);
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        setEntranceAttendanceRaw(snap.exists() ? (snap.data() as Record<string, unknown>) : null);
+      },
+      (err) => console.error('[iSCENE] speaker entrance attendance snapshot', err),
+    );
+    return () => unsub();
+  }, [user.uid]);
 
   const getReviewRating = (r: SessionReview): number => {
     if (typeof r.rating === 'number') return r.rating;
@@ -240,10 +271,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           }
         }
         if (!cancelled) setSessionReviews(reviews);
-
-        // Entry attendance
-        const entryDoc = await getDoc(doc(db, 'attendance', `${user.uid}_entrance`));
-        if (!cancelled) setHasEntryAttendance(entryDoc.exists());
       } catch (err) { console.error('SpeakerDashboard load', err); }
       finally { if (!cancelled) setLoading(false); }
     };
@@ -303,13 +330,24 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       const type = parseQrContent(text);
       if (type === 'entrance') {
         const docRef = doc(db, 'attendance', `${user.uid}_entrance`);
-        await setDoc(docRef, {
-          uid: user.uid,
-          name: fullName,
-          type: 'entrance',
-          scannedAt: Timestamp.now(),
-        });
-        setHasEntryAttendance(true);
+        const today = getEntranceCalendarDateKey();
+        const existing = await getDoc(docRef);
+        if (existing.exists() && isEntranceCheckedInForDateKey(existing.data() as Record<string, unknown>, today)) {
+          setScanToast("✅ You're already checked in for today.");
+          setTimeout(() => setScanToast(null), 4000);
+          return;
+        }
+        await setDoc(
+          docRef,
+          {
+            uid: user.uid,
+            name: fullName,
+            type: 'entrance',
+            entranceDateKey: today,
+            scannedAt: Timestamp.now(),
+          },
+          { merge: true },
+        );
         setScanToast('✅ Entrance check-in successful!');
       } else {
         setScanToast('❌ Unrecognized QR. Use main entrance QR.');

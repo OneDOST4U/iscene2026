@@ -24,6 +24,9 @@ import {
   ExternalLink,
   Rocket,
   Menu,
+  Copy,
+  ClipboardList,
+  Link2,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -40,6 +43,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, auth, storage } from './firebase';
+import { EXHIBITOR_BOOTH_CATEGORIES, exhibitorCategoryLabel } from './exhibitorBoothCategory';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -80,6 +84,10 @@ function fileIconBg(type: string) {
   return 'bg-slate-100';
 }
 
+function trimUrl(u: unknown): string {
+  return typeof u === 'string' ? u.trim() : '';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +119,8 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const [boothProducts, setBoothProducts] = React.useState((registration?.boothProducts as string) || '');
   const [boothImageUrl, setBoothImageUrl] = React.useState((registration?.boothImageUrl as string) || '');
   const [boothBackgroundUrl, setBoothBackgroundUrl] = React.useState((registration?.boothBackgroundUrl as string) || '');
+  const [boothCategory, setBoothCategory] = React.useState((registration?.boothCategory as string) || '');
+  const [boothCategoryOther, setBoothCategoryOther] = React.useState((registration?.boothCategoryOther as string) || '');
   const [uploadingBoothImage, setUploadingBoothImage] = React.useState(false);
   const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
   const [savingBooth, setSavingBooth] = React.useState(false);
@@ -129,6 +139,27 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const digitalIdQrData = `https://iscene.app/verify?uid=${user.uid}&name=${encodeURIComponent(fullName)}&role=exhibitor`;
   const digitalIdQrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(digitalIdQrData)}`;
   const idNumber = user.uid.slice(0, 8).toUpperCase();
+  const sectorLabel = (registration?.sector as string) || 'Exhibitor (Booth)';
+  const bgUrl = trimUrl(boothBackgroundUrl);
+  const logoUrl = trimUrl(boothImageUrl);
+
+  const boothChecklist = [
+    { done: !!bgUrl, label: 'Banner background', hint: 'Wide image participants see at the top' },
+    { done: !!logoUrl, label: 'Booth logo / image', hint: 'Shown with your profile in listings' },
+    { done: !!boothDesc.trim(), label: 'Booth description', hint: 'Tell visitors what you offer' },
+    { done: materials.length > 0, label: 'At least one material', hint: 'Brochures, PDFs, or media' },
+    { done: !!boothWebsite.trim(), label: 'Website link', hint: 'Optional but recommended' },
+  ];
+  const checklistDone = boothChecklist.filter((c) => c.done).length;
+
+  const copyVerifyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(digitalIdQrData);
+      showToast('✅ Verification link copied to clipboard.');
+    } catch {
+      showToast('❌ Could not copy. Copy manually from your browser.');
+    }
+  };
 
   // ── Event milestones ──────────────────────────────────────────────────
   const milestones = [
@@ -139,6 +170,11 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   ];
 
   // ── Load data ─────────────────────────────────────────────────────────
+  React.useEffect(() => {
+    setBoothCategory((registration?.boothCategory as string) || '');
+    setBoothCategoryOther((registration?.boothCategoryOther as string) || '');
+  }, [registration?.id, registration?.boothCategory, registration?.boothCategoryOther]);
+
   React.useEffect(() => {
     let cancelled = false;
     getDocs(query(collection(db, 'presenterMaterials'), where('uid', '==', user.uid), orderBy('createdAt', 'desc')))
@@ -199,11 +235,17 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
 
   const handleSaveBooth = async () => {
     if (!registration?.id) return;
+    if (boothCategory === 'Other' && !boothCategoryOther.trim()) {
+      showToast('❌ Please describe your category when you choose Other.');
+      return;
+    }
     setSavingBooth(true);
     try {
       await updateDoc(doc(db, 'registrations', registration.id), {
         boothDescription: boothDesc, boothWebsite, boothProducts,
         boothImageUrl: boothImageUrl.trim() || '', boothBackgroundUrl: boothBackgroundUrl.trim() || '',
+        boothCategory: boothCategory.trim() || '',
+        boothCategoryOther: boothCategory === 'Other' ? boothCategoryOther.trim() : '',
       });
       setEditing(false);
       showToast('✅ Booth profile updated.');
@@ -344,35 +386,41 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
 
         {/* ══════════════ MY BOOTH ══════════════ */}
         {activeTab === 'my-booth' && (
-          <div className="max-w-5xl p-4 sm:p-6 md:p-8 lg:p-12">
+          <div className="max-w-5xl p-4 sm:p-6 md:p-8 lg:p-12 space-y-8">
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-              {/* LEFT: What participants see */}
+              {/* LEFT: What participants see (matches participant app: background banner + profile avatar) */}
               <section>
                 <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">What Participants See</h3>
                 <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                  <div className={`h-32 w-full flex items-center justify-center overflow-hidden ${boothImageUrl ? '' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'}`}>
-                    {boothImageUrl ? (
-                      <img src={boothImageUrl} alt="Booth" className="w-full h-full object-cover" />
+                  <div className={`h-32 w-full flex items-center justify-center overflow-hidden shrink-0 ${bgUrl ? '' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'}`}>
+                    {bgUrl ? (
+                      <img src={bgUrl} alt="" className="w-full h-full object-cover" />
                     ) : (
                       <Store size={48} className="text-blue-300" />
                     )}
                   </div>
                   <div className="p-4">
                     <div className="flex items-center gap-2 mb-1">
-                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-black text-blue-600 shrink-0">{initials}</div>
+                      <div className="w-8 h-8 rounded-full overflow-hidden bg-blue-100 flex items-center justify-center text-xs font-black text-blue-600 shrink-0">
+                        {profilePicUrl ? (
+                          <img src={profilePicUrl} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          initials
+                        )}
+                      </div>
                       <div>
                         <p className="font-bold text-sm">{fullName}</p>
-                        <p className="text-[10px] text-slate-400">{registration?.sector || 'Exhibitor (Booth)'}</p>
+                        <p className="text-[10px] text-slate-400">{sectorLabel}</p>
                       </div>
                     </div>
-                    <p className="text-xs text-slate-500 line-clamp-2 mb-2">{orgName || 'Event booth participant'}</p>
-                    {boothDesc && <p className="text-xs text-slate-600 line-clamp-2 mb-2">{boothDesc}</p>}
+                    <p className="text-xs text-slate-500 max-h-14 overflow-y-auto mb-2 pr-0.5 leading-relaxed [scrollbar-width:thin]">{orgName || 'Event booth participant'}</p>
+                    {boothDesc ? <p className="text-xs text-slate-600 max-h-16 overflow-y-auto mb-2 pr-0.5 [scrollbar-width:thin]">{boothDesc}</p> : null}
                     <div className="flex items-center justify-between flex-wrap gap-1">
                       <span className="text-[11px] text-slate-400">Booth {boothNumber}</span>
                       <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Approved</span>
                     </div>
                     {materials.length > 0 && (
-                      <p className="text-[11px] text-slate-400 mt-2">{materials.length} material{materials.length !== 1 ? 's' : ''} available</p>
+                      <p className="text-[11px] text-slate-400 mt-2">{materials.length} material{materials.length !== 1 ? 's' : ''} available to download</p>
                     )}
                   </div>
                 </div>
@@ -420,6 +468,65 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 </div>
               </section>
             </div>
+
+            {/* Quick actions */}
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Quick actions</h3>
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                <button type="button" onClick={copyVerifyLink} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-800 hover:bg-slate-100 transition-colors">
+                  <Copy size={16} className="text-blue-600" /> Copy verify link
+                </button>
+                <button type="button" onClick={() => setIdModal(true)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 transition-colors">
+                  <CreditCard size={16} /> Open digital ID
+                </button>
+                <button type="button" onClick={() => setActiveTab('materials')} className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100 transition-colors">
+                  <FolderOpen size={16} /> Manage materials
+                </button>
+                <a href={digitalIdQrData} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors">
+                  <Link2 size={16} className="text-slate-500" /> Open verify URL
+                </a>
+              </div>
+            </section>
+
+            {/* Booth readiness */}
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <ClipboardList size={20} className="text-blue-600" />
+                  <h3 className="text-sm font-black text-slate-800">Booth readiness</h3>
+                </div>
+                <span className="text-xs font-bold text-slate-500">{checklistDone}/{boothChecklist.length} done</span>
+              </div>
+              <ul className="space-y-3">
+                {boothChecklist.map((item) => (
+                  <li key={item.label} className="flex gap-3">
+                    <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-black ${item.done ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                      {item.done ? '✓' : ''}
+                    </span>
+                    <div>
+                      <p className={`text-sm font-bold ${item.done ? 'text-slate-800' : 'text-slate-600'}`}>{item.label}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">{item.hint}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            {/* Key dates */}
+            <section className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-5 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Key dates · iSCENE 2026</h3>
+              <ul className="space-y-3">
+                {milestones.map((m) => (
+                  <li key={m.label} className={`flex items-start gap-3 rounded-xl border p-3 ${m.locked ? 'border-slate-100 bg-white/60 opacity-80' : 'border-slate-200 bg-white shadow-sm'}`}>
+                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${m.iconBg}`}>{m.icon}</div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-slate-800">{m.label}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{m.date}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
           </div>
         )}
 
@@ -551,7 +658,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                   <p className="font-black text-lg">{fullName}</p>
                   <p className="text-sm text-slate-500">{user.email}</p>
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
-                    <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Technology Booth</span>
+                    <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{sectorLabel}</span>
                     <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${approvalStatus === 'approved' ? 'text-emerald-600 bg-emerald-50' : 'text-amber-600 bg-amber-50'}`}>
                       {approvalStatus === 'approved' ? '✓ Approved' : '⏳ Pending'}
                     </span>
@@ -569,6 +676,13 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                   {[
                     { label: 'Organization', value: registration?.sectorOffice },
                     { label: 'Sector', value: registration?.sector },
+                    {
+                      label: 'Listing category',
+                      value: exhibitorCategoryLabel({
+                        boothCategory: registration?.boothCategory,
+                        boothCategoryOther: registration?.boothCategoryOther,
+                      }),
+                    },
                     { label: 'Position', value: registration?.positionTitle },
                     { label: 'Contact', value: registration?.contactNumber },
                     { label: 'Booth #', value: boothNumber },
@@ -610,6 +724,36 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
               <button type="button" onClick={() => setEditing(false)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center"><X size={15} /></button>
             </div>
             <div className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth category *</label>
+                <select
+                  value={boothCategory}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBoothCategory(v);
+                    if (v !== 'Other') setBoothCategoryOther('');
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select category</option>
+                  {EXHIBITOR_BOOTH_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {boothCategory === 'Other' && (
+                <div>
+                  <label className="text-xs font-bold text-slate-500 mb-1 block">Describe category *</label>
+                  <input
+                    value={boothCategoryOther}
+                    onChange={(e) => setBoothCategoryOther(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="e.g. Healthcare, Education"
+                  />
+                </div>
+              )}
               <div>
                 <label className="text-xs font-bold text-slate-500 mb-1 block">Booth Description</label>
                 <textarea value={boothDesc} onChange={(e) => setBoothDesc(e.target.value)} rows={3}
@@ -669,7 +813,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
             <div className="bg-blue-600 px-4 py-3 flex items-center justify-between">
               <div>
                 <p className="text-white text-xs font-black tracking-widest uppercase">iSCENE 2026</p>
-                <p className="text-blue-200 text-[10px]">Technology Booth Exhibitor</p>
+                <p className="text-blue-200 text-[10px]">{sectorLabel}</p>
               </div>
               <button type="button" onClick={() => setIdModal(false)} className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white"><X size={14} /></button>
             </div>
@@ -679,7 +823,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
               <h3 className="text-base font-black text-center">{fullName}</h3>
               <p className="text-xs text-slate-500 mt-0.5 text-center">{orgName}</p>
-              <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">Technology Booth</span>
+              <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{sectorLabel}</span>
               <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100">
                 <img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44" />
               </div>

@@ -20,3 +20,49 @@
     opacity: 1;
   }
 }
+
+@keyframes id-logo-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 12px rgba(251,191,36,0.7)) drop-shadow(0 0 24px rgba(251,191,36,0.45));
+  }
+  50% {
+    filter: drop-shadow(0 0 18px rgba(251,191,36,0.9)) drop-shadow(0 0 36px rgba(251,191,36,0.6));
+  }
+}
+
+/* Beating glow - heart-like double pulse, then rest before next wave */
+@keyframes id-watermark-wave-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 4px rgba(251,191,36,0.5)) drop-shadow(0 0 10px rgba(251,191,36,0.35));
+    opacity: 0.3;
+    transform: scale(0.97);
+  }
+  8% {
+    filter: drop-shadow(0 0 14px rgba(251,191,36,0.9)) drop-shadow(0 0 28px rgba(251,191,36,0.65));
+    opacity: 0.48;
+    transform: scale(1.05);
+  }
+  16% {
+    filter: drop-shadow(0 0 6px rgba(251,191,36,0.6)) drop-shadow(0 0 12px rgba(251,191,36,0.4));
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  24% {
+    filter: drop-shadow(0 0 12px rgba(251,191,36,0.85)) drop-shadow(0 0 24px rgba(251,191,36,0.6));
+    opacity: 0.45;
+    transform: scale(1.04);
+  }
+  32%, 100% {
+    filter: drop-shadow(0 0 4px rgba(251,191,36,0.5)) drop-shadow(0 0 10px rgba(251,191,36,0.35));
+    opacity: 0.3;
+    transform: scale(0.97);
+  }
+}
+
+.animate-id-logo-glow {
+  animation: id-logo-glow 2.5s ease-in-out infinite;
+}
+
+.animate-id-watermark-wave-glow {
+  animation: id-watermark-wave-glow 2.6s ease-in-out infinite;
+}

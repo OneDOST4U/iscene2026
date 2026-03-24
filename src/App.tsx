@@ -49,6 +49,7 @@ import { SpeakerDashboard } from './SpeakerDashboard';
 import { FacilitatorDashboard } from './FacilitatorDashboard';
 import { FoodBoothDashboard } from './FoodBoothDashboard';
 import { ExhibitorDashboard } from './ExhibitorDashboard';
+import { EXHIBITOR_BOOTH_CATEGORIES } from './exhibitorBoothCategory';
 import { AdminDashboard } from './AdminDashboard';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
@@ -143,6 +144,8 @@ export default function App() {
   );
 
   const [selectedSector, setSelectedSector] = React.useState<string>('');
+  const [exhibitorBoothCategory, setExhibitorBoothCategory] = React.useState('');
+  const [exhibitorBoothCategoryOther, setExhibitorBoothCategoryOther] = React.useState('');
   const [paymentMethod, setPaymentMethod] = React.useState<'upload' | 'pay_at_venue'>('upload');
 
   // Profile picture preview (data URL shown in the form before submit)
@@ -687,6 +690,8 @@ iSCENE 2026 Organizing Team</p>`,
       if (updates.boothWebsite !== undefined) payload.boothWebsite = (updates.boothWebsite as string)?.trim() || '';
       if (updates.boothImageUrl !== undefined) payload.boothImageUrl = (updates.boothImageUrl as string)?.trim() || '';
       if (updates.boothBackgroundUrl !== undefined) payload.boothBackgroundUrl = (updates.boothBackgroundUrl as string)?.trim() || '';
+      if (updates.boothCategory !== undefined) payload.boothCategory = (updates.boothCategory as string)?.trim() || '';
+      if (updates.boothCategoryOther !== undefined) payload.boothCategoryOther = (updates.boothCategoryOther as string)?.trim() || '';
       await updateDoc(doc(db, 'registrations', registrationId), payload);
       setRegistrations((prev) =>
         prev.map((registration) =>
@@ -802,6 +807,20 @@ iSCENE 2026 Organizing Team</p>`,
       return;
     }
 
+    const isExhibitorRegistration = sector === 'Exhibitor' || sector === 'Exhibitor (Booth)';
+    if (isExhibitorRegistration) {
+      if (!exhibitorBoothCategory.trim()) {
+        setRegisterStatus('error');
+        setRegisterMessage('Please select a booth category (Tech, Innovation, Business, Agriculture, or Other).');
+        return;
+      }
+      if (exhibitorBoothCategory === 'Other' && !exhibitorBoothCategoryOther.trim()) {
+        setRegisterStatus('error');
+        setRegisterMessage('Please specify your booth category when you choose Other.');
+        return;
+      }
+    }
+
     try {
       // Create the user account first so the registrant can log in later (after approval).
       // Firebase will also sign them in after account creation.
@@ -857,6 +876,13 @@ iSCENE 2026 Organizing Team</p>`,
         accommodationDetails,
         travelDetails,
         notes,
+        ...(isExhibitorRegistration
+          ? {
+              boothCategory: exhibitorBoothCategory.trim(),
+              boothCategoryOther:
+                exhibitorBoothCategory === 'Other' ? exhibitorBoothCategoryOther.trim() : '',
+            }
+          : {}),
         eventYear: 2026,
         createdAt: Timestamp.now(),
       });
@@ -870,6 +896,8 @@ iSCENE 2026 Organizing Team</p>`,
       setRegisterMessage('Thank you for registering for iSCENE 2026!');
       form.reset();
       setSelectedSector('');
+      setExhibitorBoothCategory('');
+      setExhibitorBoothCategoryOther('');
       setPaymentMethod('upload');
       setProfilePicPreview(null);
       setIsRegisterOpen(false);
@@ -1750,6 +1778,10 @@ iSCENE 2026 Organizing Team</p>`,
                     onChange={(e) => {
                       const v = e.target.value;
                       setSelectedSector(v);
+                      if (v !== 'Exhibitor' && v !== 'Exhibitor (Booth)') {
+                        setExhibitorBoothCategory('');
+                        setExhibitorBoothCategoryOther('');
+                      }
                       if (noFeeSectors.includes(v)) setPaymentMethod('upload');
                     }}
                   >
@@ -1789,6 +1821,43 @@ iSCENE 2026 Organizing Team</p>`,
                     placeholder="Name of your organization"
                   />
                 </div>
+                {(selectedSector === 'Exhibitor' || selectedSector === 'Exhibitor (Booth)') && (
+                  <div className="rounded-xl border border-cyan-200 bg-cyan-50/70 p-4 space-y-3">
+                    <p className="text-sm font-semibold text-slate-800">Booth listing category *</p>
+                    <p className="text-xs text-slate-600">Shown to participants for search and filters on the Exhibitors page.</p>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
+                      <select
+                        required
+                        value={exhibitorBoothCategory}
+                        onChange={(e) => setExhibitorBoothCategory(e.target.value)}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22M6%209l6%206%206-6%22%2F%3E%3C%2Fsvg%3E')] bg-[length:1.25rem] bg-[right_0.5rem_center] bg-no-repeat pr-10"
+                      >
+                        <option value="" disabled>
+                          Select category
+                        </option>
+                        {EXHIBITOR_BOOTH_CATEGORIES.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {exhibitorBoothCategory === 'Other' && (
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Describe your category *</label>
+                        <input
+                          required
+                          type="text"
+                          value={exhibitorBoothCategoryOther}
+                          onChange={(e) => setExhibitorBoothCategoryOther(e.target.value)}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="e.g. Healthcare, Education, NGO"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Payment section: only for sectors that require payment */}

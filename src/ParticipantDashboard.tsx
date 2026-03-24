@@ -34,8 +34,9 @@ import {
   Camera,
   RefreshCw,
   Trophy,
-  Cpu,
   MapPin,
+  AlertTriangle,
+  Search,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -54,6 +55,8 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
+import { EXHIBITOR_BOOTH_CATEGORIES, exhibitorCategoryLabel } from './exhibitorBoothCategory';
+import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey } from './entranceCheckInDay';
 import { QrScanModal } from './QrScanModal';
 import { jsPDF } from 'jspdf';
 
@@ -61,6 +64,8 @@ import { jsPDF } from 'jspdf';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 type Tab = 'home' | 'schedule' | 'exhibitors' | 'materials' | 'profile' | 'meals';
+
+const TRAVEL_ACCOMMODATION_REMINDER_MS = 3 * 60 * 60 * 1000;
 
 type Room = {
   id: string;
@@ -165,7 +170,41 @@ const TRACK_BADGES = [
   { label: 'Research', cls: 'text-cyan-600 bg-cyan-100' },
 ];
 
-/** Format room date + timeline as "March 23 7-8 am" */
+/** Parse timeline (e.g. "8:00 AM - 9:00 AM") to minutes from midnight. Returns null if unparseable. */
+function parseTimelineToMinutes(timeline: string): { start: number; end: number } | null {
+  const parts = timeline.split(/[–-]/).map((s) => s.trim());
+  if (parts.length !== 2) return null;
+  const parseOne = (s: string): number | null => {
+    const t = s.trim();
+    const m = t.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm|NN|nn)/i);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    if (/NN/i.test(m[3])) return 12 * 60 + min;
+    if (/PM/i.test(m[3]) && h !== 12) h += 12;
+    if (/AM/i.test(m[3]) && h === 12) h = 0;
+    return h * 60 + min;
+  };
+  const start = parseOne(parts[0]);
+  const end = parseOne(parts[1]);
+  if (start == null || end == null) return null;
+  return { start, end };
+}
+
+/** Check if two rooms overlap in date and time. Returns true if they overlap. */
+function roomsOverlap(a: { sessionDate?: string; timeline?: string }, b: { sessionDate?: string; timeline?: string }): boolean {
+  if (!a.sessionDate || !b.sessionDate) return false;
+  const dateA = String(a.sessionDate).split('T')[0];
+  const dateB = String(b.sessionDate).split('T')[0];
+  if (dateA !== dateB) return false;
+  if (!a.timeline || !b.timeline) return false;
+  const rangeA = parseTimelineToMinutes(a.timeline);
+  const rangeB = parseTimelineToMinutes(b.timeline);
+  if (!rangeA || !rangeB) return false;
+  return rangeA.start < rangeB.end && rangeB.start < rangeA.end;
+}
+
+/** Format room date + timeline as "March 24, 8am-10pm" */
 function formatSessionDateTime(room: { sessionDate?: string; timeline?: string }): string {
   const parts: string[] = [];
   if (room.sessionDate) {
@@ -174,12 +213,24 @@ function formatSessionDateTime(room: { sessionDate?: string; timeline?: string }
   }
   if (room.timeline) {
     const short = room.timeline
-      .replace(/0?(\d{1,2}):00\s*(AM|PM)/gi, '$1 $2')
-      .replace(/\s*[–-]\s*/g, ' - ')
+      .replace(/0?(\d{1,2}):00\s*(AM|PM)/gi, (_, num, m) => String(parseInt(num, 10)) + m.toLowerCase())
+      .replace(/(\d{1,2})\s+(am|pm)\b/gi, (_, num, m) => String(parseInt(num, 10)) + m.toLowerCase())
+      .replace(/\s*[–-]\s*/g, '-')
       .trim();
-    parts.push(short.toLowerCase());
+    parts.push(short);
   }
-  return parts.join(' ') || '—';
+  return parts.join(', ') || '—';
+}
+
+/** Banner strip: booth background image only (not logo or profile). */
+function exhibitorBackgroundSrc(booth: { boothBackgroundUrl?: string }): string {
+  const u = typeof booth.boothBackgroundUrl === 'string' ? booth.boothBackgroundUrl.trim() : '';
+  return u;
+}
+
+function exhibitorProfileSrc(booth: { profilePictureUrl?: string }): string {
+  const u = typeof booth.profilePictureUrl === 'string' ? booth.profilePictureUrl.trim() : '';
+  return u;
 }
 
 function getDefaultDOSTSpeakerRatings(): DOSTSpeakerRatings {
@@ -193,11 +244,17 @@ function getDefaultDOSTSpeakerRatings(): DOSTSpeakerRatings {
 }
 
 function DOSTScale15({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  const labels = ['1', '2', '3', '4', '5'];
+  const labels = [
+    { n: 1, l: 'Poor' },
+    { n: 2, l: 'Average' },
+    { n: 3, l: 'Good' },
+    { n: 4, l: 'Very Good' },
+    { n: 5, l: 'Excellent' },
+  ];
   return (
-    <div className="flex gap-1 flex-wrap">
-      {[5, 4, 3, 2, 1].map((n) => (
-        <button key={n} type="button" onClick={() => onChange(n)} className={`w-8 h-8 rounded-lg text-sm font-bold transition-colors ${value === n ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>{n}</button>
+    <div className="grid grid-cols-5 gap-2 w-full">
+      {labels.map(({ n, l }) => (
+        <button key={n} type="button" onClick={() => onChange(n)} title={l} className={`aspect-square min-h-[2.5rem] rounded-xl text-sm font-bold transition-all flex items-center justify-center active:scale-95 ${value === n ? 'bg-blue-600 text-white ring-2 ring-blue-300 shadow-md shadow-blue-200/50' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{n}</button>
       ))}
     </div>
   );
@@ -206,9 +263,9 @@ function DOSTScale15({ value, onChange }: { value: number; onChange: (v: number)
 function DOSTPart1Scale({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const opts = [{ v: 'low', l: 'Low' }, { v: 'satisfactory', l: 'Satisfactory' }, { v: 'very_good', l: 'Very Good' }];
   return (
-    <div className="flex gap-2 flex-wrap">
+    <div className="grid grid-cols-3 gap-2">
       {opts.map((o) => (
-        <button key={o.v} type="button" onClick={() => onChange(o.v)} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${value === o.v ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{o.l}</button>
+        <button key={o.v} type="button" onClick={() => onChange(o.v)} className={`py-2.5 rounded-xl text-sm font-semibold transition-colors ${value === o.v ? 'bg-blue-600 text-white ring-2 ring-blue-300 shadow-md shadow-blue-200/50' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-[0.98]'}`}>{o.l}</button>
       ))}
     </div>
   );
@@ -227,11 +284,17 @@ function StarPicker({ value, onChange }: { value: number; onChange: (v: number) 
 // ─────────────────────────────────────────────────────────────────────────────
 // Desktop sidebar nav item
 // ─────────────────────────────────────────────────────────────────────────────
-function NavItem({ icon, label, active, onClick }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void }) {
+function NavItem({ icon, label, active, onClick, badge }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void; badge?: number }) {
   return (
     <button type="button" onClick={onClick}
       className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${active ? 'bg-blue-600 text-white shadow-md shadow-blue-200' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}>
-      {icon}<span>{label}</span>
+      {icon}
+      <span className="flex-1 text-left">{label}</span>
+      {badge != null && badge > 0 && (
+        <span className={`min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-black shrink-0 ${active ? 'bg-white/25 text-white' : 'bg-blue-600 text-white'}`}>
+          {badge > 99 ? '99+' : badge}
+        </span>
+      )}
     </button>
   );
 }
@@ -257,7 +320,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [reviews, setReviews] = React.useState<Record<string, Review>>({});
   const [boothRegs, setBoothRegs] = React.useState<any[]>([]);
   const [presenterMaterials, setPresenterMaterials] = React.useState<{ id: string; roomId?: string; roomName?: string; fileName: string; downloadUrl: string; fileType: string; fileSizeBytes: number }[]>([]);
-  const [hasEntryAttendance, setHasEntryAttendance] = React.useState(false);
+  const [entranceAttendanceRaw, setEntranceAttendanceRaw] = React.useState<Record<string, unknown> | null>(null);
+  const [entranceTodayKey, setEntranceTodayKey] = React.useState(() => getEntranceCalendarDateKey());
+
+  const hasEntryAttendance = React.useMemo(
+    () => isEntranceCheckedInForDateKey(entranceAttendanceRaw, entranceTodayKey),
+    [entranceAttendanceRaw, entranceTodayKey],
+  );
+
   const [loading, setLoading] = React.useState(true);
 
   // ── Modals ─────────────────────────────────────────────────────────────────
@@ -266,6 +336,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [idModal, setIdModal] = React.useState(false);
   const [reviewModal, setReviewModal] = React.useState<{ roomId: string; roomName: string; presenterNames: string[]; fromRoom?: Room } | null>(null);
   const [certModal, setCertModal] = React.useState(false);
+  const [certificatePreview, setCertificatePreview] = React.useState<{ roomId: string; roomName: string } | null>(null);
   const [detailRoom, setDetailRoom] = React.useState<Room | null>(null);
   const [exhibitorDetailBooth, setExhibitorDetailBooth] = React.useState<any | null>(null);
   const [exhibitorMaterials, setExhibitorMaterials] = React.useState<{ id: string; fileName: string; materialName?: string; downloadUrl: string; fileType: string; fileSizeBytes: number }[]>([]);
@@ -276,6 +347,9 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   // ── Mobile filter ──────────────────────────────────────────────────────────
   const [mobileFilter, setMobileFilter] = React.useState<string>('all');
 
+  const [exhibitorSearchQuery, setExhibitorSearchQuery] = React.useState('');
+  const [exhibitorCategoryFilter, setExhibitorCategoryFilter] = React.useState<string>('all');
+
   // ── Mobile sidebar drawer ──────────────────────────────────────────────────
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
 
@@ -285,6 +359,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [dostPart2, setDostPart2] = React.useState<Record<string, DOSTSpeakerRatings>>({});
   const [dostPart3, setDostPart3] = React.useState({ venue: 5, food: 5, organizerResponse: 5, description: '' });
   const [dostPart4, setDostPart4] = React.useState('');
+  const [part4Error, setPart4Error] = React.useState<string | null>(null);
 
 
   // ── Profile edit ───────────────────────────────────────────────────────────
@@ -296,6 +371,53 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   // ── Scan toast ─────────────────────────────────────────────────────────────
   const [scanToast, setScanToast] = React.useState<string | null>(null);
+  const [overlapModal, setOverlapModal] = React.useState<{ conflictingRoomName: string } | null>(null);
+
+  // ── Content notification (new meals, rooms, certificates) ───────────────────
+  const [contentNotify, setContentNotify] = React.useState<{ msg: string; type: 'meal' | 'room' | 'certificate' | 'travel' } | null>(null);
+  type InAppNotifyType = 'meal' | 'room' | 'certificate' | 'travel';
+  type InAppNotificationItem = { id: string; msg: string; type: InAppNotifyType; read: boolean; createdAt: number };
+  const [inAppNotifications, setInAppNotifications] = React.useState<InAppNotificationItem[]>([]);
+  const [bellPanelOpen, setBellPanelOpen] = React.useState(false);
+  const mobileBellRef = React.useRef<HTMLDivElement>(null);
+  const desktopBellRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const tick = () => setEntranceTodayKey(getEntranceCalendarDateKey());
+    const id = window.setInterval(tick, 60_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const ref = doc(db, 'attendance', `${user.uid}_entrance`);
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        setEntranceAttendanceRaw(snap.exists() ? (snap.data() as Record<string, unknown>) : null);
+      },
+      (err) => console.error('[iSCENE] entrance attendance snapshot', err),
+    );
+    return () => unsub();
+  }, [user.uid]);
+
+  const pushInAppNotification = React.useCallback((msg: string, type: InAppNotifyType) => {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    setInAppNotifications((prev) => [{ id, msg, type, read: false, createdAt: Date.now() }, ...prev].slice(0, 40));
+  }, []);
+
+  const bellUnreadCount = inAppNotifications.filter((n) => !n.read).length;
+  const prevCountsRef = React.useRef({ meals: 0, rooms: 0, certificates: 0 });
+  const hasInitialSyncRef = React.useRef({ meals: false, rooms: false });
+  /** Room IDs seen on last rooms update — ID diff detects new docs (count-based failed with loadAll vs snapshot race / orderBy issues). */
+  const prevRoomIdsRef = React.useRef<Set<string> | null>(null);
+  const certNotifyInitializedRef = React.useRef(false);
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const firstName = (registration?.fullName as string | undefined)?.split(' ')[0] || 'Attendee';
@@ -305,7 +427,15 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const attendedRoomIds = (Object.values(reservations) as Reservation[]).filter((r) => r.attended).map((r) => r.roomId);
   const reviewedRoomIds = Object.keys(reviews);
-  const certReady = attendedRoomIds.length > 0 && attendedRoomIds.some((rid) => reviewedRoomIds.includes(rid));
+  const certifiableRooms = React.useMemo(() => {
+    return attendedRoomIds
+      .filter((rid) => reviewedRoomIds.includes(rid))
+      .map((rid) => {
+        const room = rooms.find((r) => r.id === rid);
+        return { roomId: rid, roomName: room?.name || 'Session' };
+      });
+  }, [attendedRoomIds, reviewedRoomIds, rooms]);
+  const certReady = certifiableRooms.length > 0;
 
   const getReviewDisplayRating = (rev: Review | undefined): number => {
     if (!rev) return 0;
@@ -319,6 +449,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const participantSector = (registration?.sector as string) || '';
   const registrationId = registration?.id as string | undefined;
+  const travelAccIncomplete =
+    !String(travelDetails || '').trim() || !String(accommodationDetails || '').trim();
   const eligibleMeals = React.useMemo(
     () => meals.filter((m) => {
       const byPerson = m.eligibleParticipantIds && m.eligibleParticipantIds.length > 0 && registrationId && m.eligibleParticipantIds.includes(registrationId);
@@ -329,6 +461,134 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   );
   const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
   const unclaimedMealsCount = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
+
+  const filteredBoothRegs = React.useMemo(() => {
+    const q = exhibitorSearchQuery.trim().toLowerCase();
+    return boothRegs.filter((b) => {
+      if (exhibitorCategoryFilter !== 'all') {
+        const cat = String(b.boothCategory || '').trim();
+        if (exhibitorCategoryFilter === 'Other') {
+          if (cat !== 'Other') return false;
+        } else if (cat !== exhibitorCategoryFilter) return false;
+      }
+      if (!q) return true;
+      const blob = [
+        b.fullName,
+        b.sectorOffice,
+        b.boothDescription,
+        b.boothProducts,
+        exhibitorCategoryLabel(b),
+      ]
+        .map((x) => String(x || '').toLowerCase())
+        .join(' ');
+      return blob.includes(q);
+    });
+  }, [boothRegs, exhibitorSearchQuery, exhibitorCategoryFilter]);
+
+  const exhibitorCategoryChipCls = (c: string) =>
+    `text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+      c === 'Tech'
+        ? 'bg-blue-100 text-blue-800'
+        : c === 'Innovation'
+          ? 'bg-violet-100 text-violet-800'
+          : c === 'Business'
+            ? 'bg-amber-100 text-amber-800'
+            : c === 'Agriculture'
+              ? 'bg-emerald-100 text-emerald-900'
+              : 'bg-slate-100 text-slate-700'
+    }`;
+  const scheduleNewCount = React.useMemo(() => rooms.filter((r) => !reservations[r.id]).length, [rooms, reservations]);
+
+  const badgeStorageKey = (k: string) => `iscene_${user.uid}_badgeAck_${k}`;
+  const parseAck = (v: string | null): number | null => {
+    if (v === null) return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  };
+  const [ackCertCount, setAckCertCount] = React.useState<number | null>(() => parseAck(localStorage.getItem(`iscene_${user.uid}_badgeAck_cert`)));
+  const [ackMealsCount, setAckMealsCount] = React.useState<number | null>(() => parseAck(localStorage.getItem(`iscene_${user.uid}_badgeAck_meals`)));
+  const [ackScheduleCount, setAckScheduleCount] = React.useState<number | null>(() => parseAck(localStorage.getItem(`iscene_${user.uid}_badgeAck_schedule`)));
+
+  React.useEffect(() => {
+    if (ackCertCount !== null && certifiableRooms.length < ackCertCount) {
+      const n = certifiableRooms.length;
+      setAckCertCount(n);
+      localStorage.setItem(badgeStorageKey('cert'), String(n));
+    }
+  }, [certifiableRooms.length, ackCertCount, user.uid]);
+  React.useEffect(() => {
+    if (ackMealsCount !== null && unclaimedMealsCount < ackMealsCount) {
+      setAckMealsCount(unclaimedMealsCount);
+      localStorage.setItem(badgeStorageKey('meals'), String(unclaimedMealsCount));
+    }
+  }, [unclaimedMealsCount, ackMealsCount, user.uid]);
+  React.useEffect(() => {
+    if (ackScheduleCount !== null && scheduleNewCount < ackScheduleCount) {
+      setAckScheduleCount(scheduleNewCount);
+      localStorage.setItem(badgeStorageKey('schedule'), String(scheduleNewCount));
+    }
+  }, [scheduleNewCount, ackScheduleCount, user.uid]);
+
+  React.useEffect(() => {
+    if (!certModal && !certificatePreview) return;
+    const n = certifiableRooms.length;
+    setAckCertCount(n);
+    localStorage.setItem(badgeStorageKey('cert'), String(n));
+  }, [certModal, certificatePreview, certifiableRooms.length, user.uid]);
+
+  const prevTabRef = React.useRef<Tab>(activeTab);
+  React.useEffect(() => {
+    const prev = prevTabRef.current;
+    if (activeTab === 'schedule' && prev !== 'schedule') {
+      setAckScheduleCount(scheduleNewCount);
+      localStorage.setItem(badgeStorageKey('schedule'), String(scheduleNewCount));
+    }
+    if (activeTab === 'meals' && prev !== 'meals') {
+      setAckMealsCount(unclaimedMealsCount);
+      localStorage.setItem(badgeStorageKey('meals'), String(unclaimedMealsCount));
+    }
+    prevTabRef.current = activeTab;
+  }, [activeTab, scheduleNewCount, unclaimedMealsCount, user.uid]);
+
+  const certBadgeDisplay = ackCertCount === null
+    ? certifiableRooms.length
+    : Math.max(0, certifiableRooms.length - ackCertCount);
+  const mealsBadgeDisplay = ackMealsCount === null
+    ? unclaimedMealsCount
+    : Math.max(0, unclaimedMealsCount - ackMealsCount);
+  const scheduleBadgeDisplay = ackScheduleCount === null
+    ? scheduleNewCount
+    : Math.max(0, scheduleNewCount - ackScheduleCount);
+
+  /** Persist quick-action badge acks for notification types (certificate / meals / schedule). */
+  const syncQuickActionBadgesForNotifyTypes = React.useCallback((types: Set<InAppNotifyType>) => {
+    const storageKey = (suffix: string) => `iscene_${user.uid}_badgeAck_${suffix}`;
+    if (types.has('certificate')) {
+      const n = certifiableRooms.length;
+      setAckCertCount(n);
+      try {
+        localStorage.setItem(storageKey('cert'), String(n));
+      } catch {
+        /* ignore quota / private mode */
+      }
+    }
+    if (types.has('meal')) {
+      setAckMealsCount(unclaimedMealsCount);
+      try {
+        localStorage.setItem(storageKey('meals'), String(unclaimedMealsCount));
+      } catch {
+        /* ignore */
+      }
+    }
+    if (types.has('room')) {
+      setAckScheduleCount(scheduleNewCount);
+      try {
+        localStorage.setItem(storageKey('schedule'), String(scheduleNewCount));
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [user.uid, certifiableRooms.length, unclaimedMealsCount, scheduleNewCount]);
 
   const digitalIdQrData = `https://www.iscene.app/verify?uid=${user.uid}&name=${encodeURIComponent(fullName)}`;
   const digitalIdQrImg = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(digitalIdQrData)}`;
@@ -352,17 +612,15 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         try { return await fn(); } catch (e) { console.error('loadAll query failed', e); return fallback; }
       };
 
-      const [roomsSnap, mealsSnap, resSnap, revSnap, entryDoc, boothSnap, claimsSnap] = await Promise.all([
-        load(() => getDocs(query(collection(db, 'rooms'), orderBy('createdAt', 'desc'))), { docs: [] } as { docs: any[] }),
+      const [mealsSnap, resSnap, revSnap, boothSnap, claimsSnap] = await Promise.all([
         load(() => getDocs(query(collection(db, 'meals'), orderBy('createdAt', 'desc'))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'reservations'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'reviews'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
-        load(() => getDoc(doc(db, 'attendance', `${user.uid}_entrance`)), { exists: () => false } as any),
         load(() => getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor']))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid))), { docs: [] } as { docs: any[] }),
       ]);
 
-      setRooms(roomsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Room, 'id'>) })));
+      /* Rooms: only real-time listener (no orderBy) — avoids missing docs without createdAt and races with loadAll */
       setMeals(mealsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) })));
       setFoodClaims(claimsSnap.docs.map((d) => ({ id: d.id, mealId: (d.data() as any).mealId, claimedAt: (d.data() as any).claimedAt })));
 
@@ -374,7 +632,6 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       revSnap.docs.forEach((d) => { const data = d.data() as Omit<Review, 'id'>; revMap[data.roomId] = { id: d.id, ...data }; });
       setReviews(revMap);
 
-      setHasEntryAttendance(entryDoc.exists?.() ? entryDoc.exists() : false);
       setBoothRegs(boothSnap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })));
     } catch (err) { console.error('loadAll', err); }
     finally { setLoading(false); }
@@ -393,29 +650,88 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       .catch(() => setPresenterMaterials([]));
   }, [reservations]);
 
-  // Real-time updates for meals and food claims (notification when new data arrives)
+  // Real-time updates for meals, rooms, food claims; notifications when new content created
   React.useEffect(() => {
     const unsubMeals = onSnapshot(query(collection(db, 'meals'), orderBy('createdAt', 'desc')), (snap) => {
-      setMeals(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) })));
-    });
+      const newMeals = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) }));
+      const count = newMeals.length;
+      if (hasInitialSyncRef.current.meals) {
+        if (count > prevCountsRef.current.meals) {
+          const n = count - prevCountsRef.current.meals;
+          const mealMsg = `🍽️ ${n} new meal${n > 1 ? 's' : ''} available!`;
+          setContentNotify({ msg: mealMsg, type: 'meal' });
+          pushInAppNotification(mealMsg, 'meal');
+          setTimeout(() => setContentNotify(null), 4000);
+        }
+      } else hasInitialSyncRef.current.meals = true;
+      prevCountsRef.current.meals = count;
+      setMeals(newMeals);
+    }, (err) => console.error('[iSCENE] meals snapshot', err));
+    const unsubRooms = onSnapshot(
+      query(collection(db, 'rooms')),
+      (snap) => {
+        const newRooms = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Room, 'id'>) }));
+        const sorted = [...newRooms].sort((a, b) => {
+          const ac = (a as any).createdAt?.toMillis?.() ?? ((a as any).createdAt?.seconds != null ? (a as any).createdAt.seconds * 1000 : 0);
+          const bc = (b as any).createdAt?.toMillis?.() ?? ((b as any).createdAt?.seconds != null ? (b as any).createdAt.seconds * 1000 : 0);
+          if (bc !== ac) return bc - ac;
+          return (a.name || '').localeCompare(b.name || '');
+        });
+        const nextIds = new Set(sorted.map((r) => r.id));
+        if (prevRoomIdsRef.current !== null) {
+          let added = 0;
+          for (const id of nextIds) {
+            if (!prevRoomIdsRef.current.has(id)) added++;
+          }
+          if (added > 0) {
+            const roomMsg = `📅 ${added} new breakout session${added > 1 ? 's' : ''} added!`;
+            setContentNotify({ msg: roomMsg, type: 'room' });
+            pushInAppNotification(roomMsg, 'room');
+            setTimeout(() => setContentNotify(null), 5000);
+          }
+        }
+        prevRoomIdsRef.current = nextIds;
+        prevCountsRef.current.rooms = sorted.length;
+        hasInitialSyncRef.current.rooms = true;
+        setRooms(sorted);
+      },
+      (err) => console.error('[iSCENE] rooms snapshot — check Firestore rules / network', err),
+    );
     const unsubClaims = onSnapshot(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid)), (snap) => {
       setFoodClaims(snap.docs.map((d) => ({ id: d.id, mealId: (d.data() as any).mealId, claimedAt: (d.data() as any).claimedAt })));
     });
     const unsubBooths = onSnapshot(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor'])), (snap) => {
       setBoothRegs(snap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })));
     });
-    return () => { unsubMeals(); unsubClaims(); unsubBooths(); };
-  }, [user.uid]);
+    return () => { unsubMeals(); unsubRooms(); unsubClaims(); unsubBooths(); };
+  }, [user.uid, pushInAppNotification]);
+
+  // Notification when new certificate becomes available (user completed review)
+  React.useEffect(() => {
+    const count = certifiableRooms.length;
+    if (certNotifyInitializedRef.current && count > prevCountsRef.current.certificates) {
+      const certMsg = '🏆 New certificate available! View & download from Profile.';
+      setContentNotify({ msg: certMsg, type: 'certificate' });
+      pushInAppNotification(certMsg, 'certificate');
+      setTimeout(() => setContentNotify(null), 5000);
+    }
+    certNotifyInitializedRef.current = true;
+    prevCountsRef.current.certificates = count;
+  }, [certifiableRooms, pushInAppNotification]);
 
   React.useEffect(() => {
     if (reviewModal) {
-      const names = reviewModal.presenterNames?.length ? reviewModal.presenterNames : ['Speaker'];
+      const raw = reviewModal.presenterNames || [];
+      const names = raw.filter((n) => n && String(n).trim() && n.toLowerCase() !== 'presenter').length
+        ? raw.filter((n) => n && String(n).trim() && n.toLowerCase() !== 'presenter')
+        : ['Speaker'];
       const init: Record<string, DOSTSpeakerRatings> = {};
       names.forEach((n) => { init[n] = getDefaultDOSTSpeakerRatings(); });
       setDostPart2(init);
       setDostPart1({ levelOfContent: 'satisfactory', appropriateness: 'satisfactory', applicability: 'satisfactory' });
       setDostPart3({ venue: 5, food: 5, organizerResponse: 5, description: '' });
       setDostPart4('');
+      setPart4Error(null);
     }
   }, [reviewModal?.roomId]);
 
@@ -440,6 +756,71 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       .then((snap) => setExhibitorMaterials(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }))))
       .catch(() => setExhibitorMaterials([]));
   }, [exhibitorDetailBooth?.uid]);
+
+  React.useEffect(() => {
+    if (loading) return;
+    const t = String(travelDetails || '').trim();
+    const a = String(accommodationDetails || '').trim();
+    const storageKey = `iscene_${user.uid}_lastTravelAccReminder`;
+    if (t && a) {
+      try {
+        localStorage.removeItem(storageKey);
+      } catch {
+        /* ignore quota / private mode */
+      }
+      return;
+    }
+    let last = 0;
+    try {
+      last = Number(localStorage.getItem(storageKey) || '0');
+    } catch {
+      last = 0;
+    }
+    const now = Date.now();
+    if (last && now - last < TRAVEL_ACCOMMODATION_REMINDER_MS) return;
+    try {
+      localStorage.setItem(storageKey, String(now));
+    } catch {
+      /* still show toast once this session */
+    }
+    const travelMsg = 'Please complete your travel and accommodation in Profile (both required for organizers).';
+    setContentNotify({ msg: travelMsg, type: 'travel' });
+    pushInAppNotification(travelMsg, 'travel');
+    const tid = window.setTimeout(() => setContentNotify(null), 8000);
+    return () => window.clearTimeout(tid);
+  }, [loading, user.uid, travelDetails, accommodationDetails, pushInAppNotification]);
+
+  React.useEffect(() => {
+    if (!bellPanelOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (mobileBellRef.current?.contains(t) || desktopBellRef.current?.contains(t)) return;
+      setBellPanelOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [bellPanelOpen]);
+
+  const handleBellToggle = React.useCallback(() => {
+    setBellPanelOpen((open) => {
+      if (open) return false;
+      setInAppNotifications((prev) => {
+        const unreadTypes = new Set(prev.filter((n) => !n.read).map((n) => n.type));
+        queueMicrotask(() => syncQuickActionBadgesForNotifyTypes(unreadTypes));
+        return prev.map((n) => ({ ...n, read: true }));
+      });
+      return true;
+    });
+  }, [syncQuickActionBadgesForNotifyTypes]);
+
+  const dismissContentNotify = React.useCallback(() => {
+    setContentNotify((cur) => {
+      if (cur && (cur.type === 'certificate' || cur.type === 'meal' || cur.type === 'room')) {
+        queueMicrotask(() => syncQuickActionBadgesForNotifyTypes(new Set([cur.type])));
+      }
+      return null;
+    });
+  }, [syncQuickActionBadgesForNotifyTypes]);
 
   // ── Parse QR content (robust: handles URL, query string, or plain text) ───
   const parseQrContent = (raw: string): { type: string | null; id: string | null } => {
@@ -480,13 +861,25 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
       if (type === 'entrance') {
         const docRef = doc(db, 'attendance', `${user.uid}_entrance`);
-        await setDoc(docRef, {
-          uid: user.uid,
-          name: fullName,
-          type: 'entrance',
-          scannedAt: Timestamp.now(),
-        }, { merge: true });
-        setHasEntryAttendance(true);
+        const today = getEntranceCalendarDateKey();
+        const existing = await getDoc(docRef);
+        if (existing.exists() && isEntranceCheckedInForDateKey(existing.data() as Record<string, unknown>, today)) {
+          setScanToast("✅ You're already checked in for today.");
+          setScanModal(false);
+          setTimeout(() => setScanToast(null), 4000);
+          return;
+        }
+        await setDoc(
+          docRef,
+          {
+            uid: user.uid,
+            name: fullName,
+            type: 'entrance',
+            entranceDateKey: today,
+            scannedAt: Timestamp.now(),
+          },
+          { merge: true },
+        );
         setScanToast('✅ Entrance check-in successful!');
         setScanModal(false);
       } else if (type === 'room' && id) {
@@ -520,6 +913,15 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   };
 
   const handleReserve = async (room: Room) => {
+    setOverlapModal(null);
+    const reservedRoomIds = Object.values(reservations).map((r) => r.roomId);
+    for (const rid of reservedRoomIds) {
+      const existingRoom = rooms.find((r) => r.id === rid);
+      if (existingRoom && roomsOverlap(existingRoom, room)) {
+        setOverlapModal({ conflictingRoomName: existingRoom.name });
+        return;
+      }
+    }
     const resId = `${user.uid}_${room.id}`;
     await setDoc(doc(db, 'reservations', resId), { uid: user.uid, roomId: room.id, roomName: room.name, attended: false, reviewSubmitted: false, reservedAt: Timestamp.now() });
     setReservations((prev) => ({ ...prev, [room.id]: { id: resId, roomId: room.id, roomName: room.name, attended: false, reviewSubmitted: false, reservedAt: Timestamp.now() } }));
@@ -535,7 +937,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     });
   };
 
-  const handleDownloadCertificate = async () => {
+  const handleDownloadCertificate = async (session: { roomId: string; roomName: string }) => {
     try {
       const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const w = pdf.internal.pageSize.getWidth();
@@ -565,16 +967,30 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       pdf.text('Certificate of Participation', w / 2, 100, { align: 'center' });
       pdf.setFontSize(12);
       pdf.setFont('helvetica', 'normal');
-      pdf.text('This certifies that', w / 2, 120, { align: 'center' });
+      pdf.text('This certifies that', w / 2, 118, { align: 'center' });
       pdf.setFontSize(16);
       pdf.setFont('helvetica', 'bold');
-      pdf.text(fullName, w / 2, 132, { align: 'center' });
+      pdf.text(fullName, w / 2, 130, { align: 'center' });
       pdf.setFontSize(11);
       pdf.setFont('helvetica', 'normal');
-      pdf.text('has participated in the iSCENE 2026 Global Summit.', w / 2, 142, { align: 'center' });
+      pdf.text(`has participated in the breakout session "${session.roomName}" at the iSCENE 2026 Global Summit.`, w / 2, 142, { align: 'center', maxWidth: w - 40 });
       pdf.setFontSize(10);
-      pdf.text(new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }), w / 2, 155, { align: 'center' });
-      pdf.save(`iSCENE2026_Certificate_${fullName.replace(/\s+/g, '_')}.pdf`);
+      pdf.text(new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }), w / 2, 158, { align: 'center' });
+      const safeName = session.roomName.replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 40);
+      const filename = `iSCENE2026_Certificate_${fullName.replace(/\s+/g, '_')}_${safeName}.pdf`;
+      const blob = pdf.output('blob');
+      const url = URL.createObjectURL(blob);
+      const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(navigator.userAgent.toLowerCase());
+      if (isMobile) {
+        window.open(url, '_blank', 'noopener');
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
     } catch (err) {
       console.error('Certificate generation failed:', err);
     }
@@ -582,6 +998,12 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const handleSubmitReview = async () => {
     if (!reviewModal) return;
+    setPart4Error(null);
+    const commentsTrimmed = dostPart4.trim();
+    if (!commentsTrimmed) {
+      setPart4Error('Comments & suggestions are required before submitting.');
+      return;
+    }
     setReviewSaving(true);
     try {
       const part2Arr = Object.entries(dostPart2).map(([speakerName, ratings]) => ({ speakerName, ratings }));
@@ -592,16 +1014,21 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         roomName: reviewModal.roomName,
         part1: dostPart1,
         part2: part2Arr,
-        part3: dostPart3,
-        part4: dostPart4.trim() || undefined,
+        part3: { ...dostPart3, description: dostPart3.description?.trim() || undefined },
+        part4: commentsTrimmed,
         submittedAt: Timestamp.now(),
       };
       const docRef = await addDoc(collection(db, 'reviews'), payload);
-      setReviews((prev) => ({ ...prev, [reviewModal.roomId]: { id: docRef.id, roomId: reviewModal.roomId, part1: dostPart1, part2: part2Arr, part3: dostPart3, part4: dostPart4 } }));
-      await updateDoc(doc(db, 'reservations', `${user.uid}_${reviewModal.roomId}`), { reviewSubmitted: true }).catch(() => {});
+      setReviews((prev) => ({ ...prev, [reviewModal.roomId]: { id: docRef.id, roomId: reviewModal.roomId, part1: dostPart1, part2: part2Arr, part3: dostPart3, part4: commentsTrimmed } }));
+      await updateDoc(doc(db, 'reservations', `${user.uid}_${reviewModal.roomId}`), { reviewSubmitted: true });
       setReservations((prev) => ({ ...prev, [reviewModal.roomId]: { ...prev[reviewModal.roomId], reviewSubmitted: true } }));
       setReviewModal(null);
-    } finally { setReviewSaving(false); }
+    } catch (err) {
+      console.error('Failed to submit review:', err);
+      setPart4Error('Failed to save. Please check your connection and try again.');
+    } finally {
+      setReviewSaving(false);
+    }
   };
 
   const handleSendRoomChat = async () => {
@@ -634,6 +1061,32 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     setPwResetSent(true);
     setTimeout(() => setPwResetSent(false), 5000);
   };
+
+  /** Must run before any early return — same hook order when loading vs loaded. */
+  const desktopPageHeader = React.useMemo(() => {
+    switch (activeTab) {
+      case 'home':
+        return {
+          title: 'Home',
+          subtitle: hasEntryAttendance ? "You're checked in · Enjoy the event!" : 'Scan the entrance QR when you arrive.',
+        };
+      case 'schedule':
+        return { title: 'Breakout Sessions', subtitle: 'Reserve · Check in · Review' };
+      case 'exhibitors':
+        return { title: 'Exhibitors', subtitle: 'Approved booth participants at iSCENE 2026.' };
+      case 'materials':
+        return { title: 'Session Materials', subtitle: 'Access materials from your reserved sessions.' };
+      case 'meals':
+        return {
+          title: 'My Entitlements',
+          subtitle: 'Food, kits, and giveaways — claim at the assigned stall within the time window.',
+        };
+      case 'profile':
+        return { title: 'My Profile', subtitle: 'View and update your registration details' };
+      default:
+        return { title: 'iSCENE 2026', subtitle: '' };
+    }
+  }, [activeTab, hasEntryAttendance]);
 
   if (loading) {
     return (
@@ -684,13 +1137,27 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       </div>
 
       {/* Travel */}
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">Travel &amp; Accommodation</p>
-          <button type="button" onClick={() => setEditingTravel(!editingTravel)} className="text-blue-600 text-xs font-bold flex items-center gap-1">
+      <div
+        className={`rounded-2xl shadow-sm p-5 border-2 transition-colors ${
+          travelAccIncomplete
+            ? 'bg-orange-50/80 border-orange-300 ring-1 ring-orange-200/80'
+            : 'bg-white border-slate-100'
+        }`}
+      >
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {travelAccIncomplete ? <AlertTriangle size={16} className="text-orange-600 shrink-0" aria-hidden /> : null}
+            <p className={`text-[11px] font-bold uppercase tracking-wide ${travelAccIncomplete ? 'text-orange-800' : 'text-slate-400'}`}>
+              Travel &amp; Accommodation
+            </p>
+          </div>
+          <button type="button" onClick={() => setEditingTravel(!editingTravel)} className="text-blue-600 text-xs font-bold flex items-center gap-1 shrink-0">
             <Edit2 size={11} /> {editingTravel ? 'Cancel' : 'Edit'}
           </button>
         </div>
+        {travelAccIncomplete && !editingTravel ? (
+          <p className="text-xs font-semibold text-orange-800 mb-2">Please add both travel and accommodation details.</p>
+        ) : null}
         {editingTravel ? (
           <div className="space-y-3">
             <textarea value={travelDetails} onChange={(e) => setTravelDetails(e.target.value)} rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500" placeholder="Travel details…" />
@@ -701,8 +1168,18 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           </div>
         ) : (
           <div className="space-y-2 text-sm">
-            <div><p className="text-[11px] text-slate-400">Travel</p><p className="text-slate-700">{travelDetails || 'Not provided'}</p></div>
-            <div><p className="text-[11px] text-slate-400">Accommodation</p><p className="text-slate-700">{accommodationDetails || 'Not provided'}</p></div>
+            <div>
+              <p className="text-[11px] text-slate-400">Travel</p>
+              <p className={!String(travelDetails || '').trim() ? 'font-semibold text-orange-800' : 'text-slate-700'}>
+                {travelDetails || 'Not provided'}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-400">Accommodation</p>
+              <p className={!String(accommodationDetails || '').trim() ? 'font-semibold text-orange-800' : 'text-slate-700'}>
+                {accommodationDetails || 'Not provided'}
+              </p>
+            </div>
           </div>
         )}
       </div>
@@ -741,14 +1218,27 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         />
         <div className="flex-1 min-w-0 flex items-start justify-between gap-4 p-4">
           <div className="min-w-0">
-            <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}</p>
+            <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}{room.venue ? ` · ${room.venue}` : ''}</p>
             <p className="text-sm font-bold leading-snug text-slate-800">{room.name}</p>
             {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{room.description}</p>}
           </div>
           <div className="flex flex-col items-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-          <button type="button" className={`transition-colors ${res ? 'text-blue-500' : 'text-slate-300 hover:text-blue-500'}`} onClick={() => !res && handleReserve(room)} title={res ? 'Reserved' : 'Reserve slot'}>
-            <Bookmark size={16} fill={res ? 'currentColor' : 'none'} />
-          </button>
+          {!res ? (
+            <button type="button" className="text-slate-300 hover:text-blue-500 transition-colors" onClick={() => handleReserve(room)} title="Reserve slot">
+              <Bookmark size={16} fill="none" />
+            </button>
+          ) : res.attended ? (
+            <button type="button" className="text-blue-500" title="Reserved">
+              <Bookmark size={16} fill="currentColor" />
+            </button>
+          ) : (
+            <>
+              <button type="button" className="text-blue-500" title="Reserved">
+                <Bookmark size={16} fill="currentColor" />
+              </button>
+              <button type="button" onClick={() => handleCancelReservation(room)} className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full hover:bg-red-100">Cancel</button>
+            </>
+          )}
           {res?.attended && !rev && (
             <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full hover:bg-amber-100">Review</button>
           )}
@@ -759,6 +1249,68 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       </div>
     );
   };
+
+  const notifyCategoryLabel = (t: InAppNotifyType): string => {
+    switch (t) {
+      case 'meal': return 'Meals';
+      case 'room': return 'Breakout sessions';
+      case 'travel': return 'Travel & accommodation';
+      case 'certificate': return 'Certificate';
+      default: return 'Update';
+    }
+  };
+
+  const renderBellPanel = () =>
+    bellPanelOpen ? (
+      <div
+        className="absolute right-0 top-full mt-2 z-[60] w-[min(calc(100vw-2rem),20rem)] rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden"
+        role="dialog"
+        aria-label="Notification list"
+      >
+        <div className="px-3 py-2.5 border-b border-slate-100 flex items-center justify-between gap-2 bg-slate-50/80">
+          <p className="text-sm font-black text-slate-800">Notifications</p>
+          {inAppNotifications.length > 0 ? (
+            <button
+              type="button"
+              className="text-[11px] font-bold text-blue-600 hover:underline shrink-0"
+              onClick={() => {
+                setInAppNotifications((prev) => {
+                  const allTypes = new Set(prev.map((n) => n.type));
+                  queueMicrotask(() => syncQuickActionBadgesForNotifyTypes(allTypes));
+                  return [];
+                });
+              }}
+            >
+              Clear all
+            </button>
+          ) : null}
+        </div>
+        <ul className="max-h-72 overflow-y-auto py-1">
+          {inAppNotifications.length === 0 ? (
+            <li className="px-3 py-8 text-center text-sm text-slate-500">No notifications yet.</li>
+          ) : (
+            inAppNotifications.map((n) => (
+              <li
+                key={n.id}
+                className={`px-3 py-2.5 border-b border-slate-100 last:border-0 border-l-4 pl-3 text-left ${
+                  n.type === 'meal'
+                    ? 'border-l-amber-500 bg-amber-50/30'
+                    : n.type === 'room'
+                    ? 'border-l-blue-500 bg-blue-50/30'
+                    : n.type === 'travel'
+                    ? 'border-l-orange-500 bg-orange-50/30'
+                    : 'border-l-emerald-500 bg-emerald-50/30'
+                }`}
+              >
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">{notifyCategoryLabel(n.type)}</p>
+                <p className={`text-sm leading-snug ${n.read ? 'text-slate-600' : 'text-slate-900 font-semibold'}`}>{n.msg}</p>
+                <p className="text-[10px] text-slate-400 mt-1">{new Date(n.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}</p>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+    ) : null;
 
   // ══════════════════════════════════════════════════════════════════════════
   //  MOBILE LAYOUT  (shown on < md)
@@ -777,15 +1329,47 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <p className="text-[9px] uppercase tracking-widest font-bold opacity-60">Global Summit</p>
           </div>
         </div>
-        <button type="button" className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-700">
-          <Bell size={18} />
-        </button>
+        <div ref={mobileBellRef} className="relative shrink-0">
+          <button
+            type="button"
+            onClick={handleBellToggle}
+            className="relative w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-700"
+            aria-label="Notifications"
+            aria-expanded={bellPanelOpen}
+            aria-haspopup="dialog"
+          >
+            <Bell size={18} />
+            {bellUnreadCount > 0 ? (
+              <span className="absolute top-1 right-1 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
+                {Math.min(99, bellUnreadCount)}
+              </span>
+            ) : null}
+          </button>
+          {renderBellPanel()}
+        </div>
       </header>
 
       {/* Scan toast */}
       {scanToast && (
         <div className={`mx-4 mt-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-center ${scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
           {scanToast}
+        </div>
+      )}
+
+      {/* Content notification (new meals, rooms, certificates) */}
+      {contentNotify && (
+        <div
+          className={`mx-4 mt-2 rounded-xl px-4 py-3 text-sm font-semibold flex items-center justify-between gap-3 ${
+            contentNotify.type === 'meal' ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+            contentNotify.type === 'room' ? 'bg-blue-50 text-blue-800 border border-blue-200' :
+            contentNotify.type === 'travel' ? 'bg-orange-50 text-orange-900 border border-orange-200' :
+            'bg-emerald-50 text-emerald-800 border border-emerald-200'
+          }`}
+        >
+          <span>{contentNotify.msg}</span>
+          <button type="button" onClick={dismissContentNotify} className="shrink-0 p-1 rounded-full hover:bg-black/5" aria-label="Dismiss">
+            <X size={16} />
+          </button>
         </div>
       )}
 
@@ -822,13 +1406,24 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { icon: <QrCode size={20} className="text-blue-600" />, label: 'Scan QR', bg: 'bg-blue-50', action: () => setScanModal(true) },
-                  { icon: <Award size={20} className={certReady ? 'text-amber-500' : 'text-purple-600'} />, label: 'Certificate', bg: certReady ? 'bg-amber-50' : 'bg-purple-50', action: () => setCertModal(true) },
+                  { icon: <Award size={20} className={certReady ? 'text-amber-500' : 'text-purple-600'} />, label: 'Certificate', bg: certReady ? 'bg-amber-50' : 'bg-purple-50', action: () => setCertModal(true), badge: certBadgeDisplay },
                   { icon: <CreditCard size={20} className="text-indigo-600" />, label: 'My ID', bg: 'bg-indigo-50', action: () => setIdModal(true) },
-                  { icon: <CalendarDays size={20} className="text-emerald-600" />, label: 'Schedule', bg: 'bg-emerald-50', action: () => setActiveTab('schedule') },
-                  { icon: <Utensils size={20} className="text-orange-500" />, label: 'Meals', bg: 'bg-orange-50', action: () => setActiveTab('meals') },
+                  { icon: <CalendarDays size={20} className="text-emerald-600" />, label: 'Schedule', bg: 'bg-emerald-50', action: () => setActiveTab('schedule'), badge: scheduleBadgeDisplay },
+                  { icon: <Utensils size={20} className="text-orange-500" />, label: 'Meals', bg: 'bg-orange-50', action: () => setActiveTab('meals'), badge: mealsBadgeDisplay },
                   { icon: <MessageSquare size={20} className="text-rose-500" />, label: 'Reviews', bg: 'bg-rose-50', action: () => setActiveTab('schedule') },
-                ].map(({ icon, label, bg, action }) => (
-                  <button key={label} type="button" onClick={action} className="bg-white rounded-2xl p-3 flex flex-col items-center gap-2 shadow-sm border border-slate-100 hover:shadow-md active:scale-95 transition-all">
+                ].map(({ icon, label, bg, action, badge }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={action}
+                    className="relative bg-white rounded-2xl p-3 flex flex-col items-center gap-2 shadow-sm border border-slate-100 hover:shadow-md active:scale-95 transition-all"
+                    aria-label={badge != null && badge > 0 ? `${label}, ${badge} notification${badge > 1 ? 's' : ''}` : label}
+                  >
+                    {badge != null && badge > 0 && (
+                      <span className="absolute top-1.5 right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-black leading-none z-10" aria-hidden>
+                        {badge > 99 ? '99+' : badge}
+                      </span>
+                    )}
                     <div className={`w-10 h-10 ${bg} rounded-full flex items-center justify-center`}>{icon}</div>
                     <span className="text-[11px] font-medium text-slate-600">{label}</span>
                   </button>
@@ -859,7 +1454,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     />
                     <div className="flex-1 min-w-0 flex items-start justify-between gap-2 p-4">
                       <div className="min-w-0">
-                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}</p>
+                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}{room.venue ? ` · ${room.venue}` : ''}</p>
                         <p className="text-sm font-bold text-slate-800 truncate">{room.name}</p>
                         {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{room.description}</p>}
                       </div>
@@ -915,10 +1510,20 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                       />
                       <div className="flex-1 min-w-0 flex items-start justify-between gap-4 p-4">
                       <div className="min-w-0 flex-1">
-                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}</p>
+                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}{room.venue ? ` · ${room.venue}` : ''}</p>
                         <p className="text-sm font-bold text-slate-800 leading-snug">{room.name}</p>
                         {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{room.description}</p>}
                         <div className="flex items-center gap-2 mt-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                          {!res ? (
+                            <button type="button" onClick={() => handleReserve(room)} className="px-3 py-1.5 rounded-full bg-blue-600 text-white text-xs font-bold">Reserve</button>
+                          ) : res.attended ? (
+                            null
+                          ) : (
+                            <>
+                              <span className="px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold">Reserved</span>
+                              <button type="button" onClick={() => handleCancelReservation(room)} className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 text-xs font-bold">Cancel</button>
+                            </>
+                          )}
                           {res?.attended && !rev && (
                             <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold">
                               Review
@@ -974,41 +1579,96 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <div className="px-4 pt-5 pb-2">
               <h2 className="text-2xl font-black tracking-tight">Exhibitors</h2>
               <p className="text-sm text-slate-500 mt-1">Approved booth participants at iSCENE 2026.</p>
+              {boothRegs.length > 0 && (
+                <div className="mt-4 space-y-3">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
+                    <input
+                      type="search"
+                      value={exhibitorSearchQuery}
+                      onChange={(e) => setExhibitorSearchQuery(e.target.value)}
+                      placeholder="Search name, org, products…"
+                      className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExhibitorCategoryFilter('all')}
+                      className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
+                        exhibitorCategoryFilter === 'all'
+                          ? 'border-blue-600 bg-blue-600 text-white'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {EXHIBITOR_BOOTH_CATEGORIES.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setExhibitorCategoryFilter(c)}
+                        className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
+                          exhibitorCategoryFilter === c
+                            ? 'border-blue-600 bg-blue-600 text-white'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                        }`}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             {boothRegs.length === 0 ? (
               <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No exhibitors yet.</div>
+            ) : filteredBoothRegs.length === 0 ? (
+              <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
+                No exhibitors match your search or filter.
+              </div>
             ) : (
               <div className="px-4 flex flex-col gap-4 pb-4">
-                {boothRegs.map((booth, i) => (
+                {filteredBoothRegs.map((booth, i) => {
+                  const boothBg = exhibitorBackgroundSrc(booth);
+                  const boothProf = exhibitorProfileSrc(booth);
+                  const catLabel = exhibitorCategoryLabel(booth);
+                  const chipKey = String(booth.boothCategory || '').trim() || 'Other';
+                  return (
                   <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="w-full text-left flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm hover:shadow-md transition-shadow">
-                    <div className={`h-32 w-full flex items-center justify-center overflow-hidden ${booth.boothImageUrl ? '' : `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}`}`}>
-                      {booth.boothImageUrl ? (
-                        <img src={booth.boothImageUrl} alt="" className="w-full h-full object-cover" />
+                    <div className={`h-32 w-full flex items-center justify-center overflow-hidden shrink-0 ${boothBg ? '' : `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}`}`}>
+                      {boothBg ? (
+                        <img src={boothBg} alt="" className="w-full h-full object-cover" />
                       ) : (
                         <Store size={40} className="text-white/40" />
                       )}
                     </div>
                     <div className="p-4">
                       <div className="flex items-center gap-2 mb-1">
-                        <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!(booth.profilePictureUrl || booth.boothImageUrl) ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
-                          {(booth.profilePictureUrl || booth.boothImageUrl) ? (
-                            <img src={booth.profilePictureUrl || booth.boothImageUrl} alt="" className="w-full h-full object-cover block" />
+                        <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!boothProf ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
+                          {boothProf ? (
+                            <img src={boothProf} alt="" className="w-full h-full object-cover block" />
                           ) : (
                             (booth.fullName as string)?.[0] || 'B'
                           )}
                         </div>
-                        <div>
+                        <div className="min-w-0 flex-1">
                           <p className="font-bold text-sm">{booth.fullName || '—'}</p>
                           <p className="text-[10px] text-slate-400">{booth.sector}</p>
+                          {catLabel ? (
+                            <span className={`mt-1 inline-block ${exhibitorCategoryChipCls(chipKey)}`}>{catLabel}</span>
+                          ) : null}
                         </div>
                       </div>
-                      <p className="text-xs text-slate-500 line-clamp-2 mb-2">{booth.sectorOffice || 'Event booth participant'}</p>
+                      <p className="text-xs text-slate-500 mb-2 max-h-20 overflow-y-auto overscroll-y-contain pr-1 leading-relaxed [scrollbar-width:thin]">{booth.sectorOffice || 'Event booth participant'}</p>
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] text-slate-400">Booth #{booth.id.slice(0, 4).toUpperCase()}</span>
                       </div>
                     </div>
                   </button>
-                ))}
+                );
+                })}
               </div>
             )}
           </>
@@ -1042,29 +1702,19 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     <p className="text-xs text-slate-500">{meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' }) : '—'}</p>
                     {meal.startTime && meal.endTime && <p className="text-xs font-semibold text-blue-600 mt-0.5 flex items-center gap-1"><Clock size={11} /> {meal.startTime} – {meal.endTime}</p>}
                     {meal.location && <p className="text-xs text-slate-500 mt-0.5">📍 {meal.location}</p>}
+                    {isToday && !claimed ? (
+                      <button
+                        type="button"
+                        onClick={() => setIdModal(true)}
+                        className="mt-3 w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-2 shadow-sm"
+                        aria-label="Show digital ID to claim at the booth"
+                      >
+                        <CreditCard size={16} /> Claim
+                      </button>
+                    ) : null}
                   </div>
                 );
               })}
-
-              {/* Certificate card */}
-              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 mt-2">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${certReady ? 'bg-amber-100' : 'bg-slate-100'}`}>
-                    <Award size={20} className={certReady ? 'text-amber-500' : 'text-slate-400'} />
-                  </div>
-                  <div>
-                    <p className="font-bold text-sm">Certificate</p>
-                    <p className="text-xs text-slate-500">{certReady ? 'Ready to download!' : 'Complete requirements'}</p>
-                  </div>
-                </div>
-                {certReady
-                  ? <button type="button" onClick={handleDownloadCertificate} className="w-full py-2.5 bg-amber-500 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2"><Download size={14} /> Download Certificate</button>
-                  : <div className="space-y-1.5 text-xs text-slate-400">
-                      {[{ l: 'Attend a session', d: attendedRoomIds.length > 0 }, { l: 'Submit a review', d: reviewedRoomIds.length > 0 }].map(({ l, d }) => (
-                        <div key={l} className="flex items-center gap-2">{d ? <CheckCircle2 size={12} className="text-emerald-500" /> : <Clock size={12} />}<span className={d ? 'text-slate-600' : ''}>{l}</span></div>
-                      ))}
-                    </div>}
-              </div>
             </div>
           </>
         )}
@@ -1105,7 +1755,12 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((item) => (
           <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
             className={`flex flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}>
-            {item.icon}
+            <span className="relative inline-flex">
+              {item.icon}
+              {item.id === 'profile' && travelAccIncomplete ? (
+                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-white" aria-hidden />
+              ) : null}
+            </span>
             <span className="text-[9px] font-black uppercase">{item.label}</span>
           </button>
         ))}
@@ -1146,11 +1801,11 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
               {([
                 { id: 'home' as Tab, label: 'Home', icon: <Home size={18} /> },
-                { id: 'schedule' as Tab, label: 'Break out room', icon: <Rocket size={18} /> },
+                { id: 'schedule' as Tab, label: 'Break out room', icon: <Rocket size={18} />, badge: scheduleBadgeDisplay },
                 { id: 'exhibitors' as Tab, label: 'Exhibitors', icon: <Store size={18} /> },
                 { id: 'materials' as Tab, label: 'Materials', icon: <BookOpen size={18} /> },
-                { id: 'meals' as Tab, label: 'My Meals', icon: <Utensils size={18} />, badge: unclaimedMealsCount },
-                { id: 'profile' as Tab, label: 'Profile', icon: <User size={18} /> },
+                { id: 'meals' as Tab, label: 'My Meals', icon: <Utensils size={18} />, badge: mealsBadgeDisplay },
+                { id: 'profile' as Tab, label: 'Profile', icon: <User size={18} />, badge: travelAccIncomplete ? 1 : undefined },
               ]).map((item) => (
                 <button
                   key={item.id}
@@ -1232,11 +1887,11 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           <NavItem icon={<Home size={17} />} label="Home" active={activeTab === 'home'} onClick={() => setActiveTab('home')} />
-          <NavItem icon={<CalendarDays size={17} />} label="Schedule" active={activeTab === 'schedule'} onClick={() => setActiveTab('schedule')} />
+          <NavItem icon={<CalendarDays size={17} />} label="Schedule" active={activeTab === 'schedule'} onClick={() => setActiveTab('schedule')} badge={scheduleBadgeDisplay} />
           <NavItem icon={<Store size={17} />} label="Exhibitors" active={activeTab === 'exhibitors'} onClick={() => setActiveTab('exhibitors')} />
           <NavItem icon={<BookOpen size={17} />} label="Materials" active={activeTab === 'materials'} onClick={() => setActiveTab('materials')} />
-          <NavItem icon={<Utensils size={17} />} label="My Meals" active={activeTab === 'meals'} onClick={() => setActiveTab('meals')} />
-          <NavItem icon={<User size={17} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
+          <NavItem icon={<Utensils size={17} />} label="My Meals" active={activeTab === 'meals'} onClick={() => setActiveTab('meals')} badge={mealsBadgeDisplay} />
+          <NavItem icon={<User size={17} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} badge={travelAccIncomplete ? 1 : undefined} />
         </nav>
         <div className="border-t border-slate-100 p-4">
           <div className="mb-3 flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
@@ -1262,29 +1917,64 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         </div>
       </aside>
 
-      {/* Main */}
+      {/* Main — max-width + stronger side padding on laptop so content isn’t flush to the sidebar */}
       <main className="flex-1 ml-56 overflow-y-auto min-h-screen">
-        {/* Top header */}
-        <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-sm border-b border-slate-100 px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-black">Welcome back, {firstName}!</h1>
-            <p className="text-sm text-slate-500">{hasEntryAttendance ? "You're checked in · Enjoy the event!" : "Scan the entrance QR when you arrive."}</p>
+        <div className="mx-auto w-full max-w-7xl px-5 sm:px-8 lg:px-10 xl:px-12 2xl:px-14">
+        {/* Top header — title row separate from toast so flex doesn’t crush the subtitle */}
+        <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-sm border-b border-slate-100 py-4">
+          <div className="flex items-start justify-between gap-4 min-w-0">
+            <div className="min-w-0 flex-1 pr-2">
+              <h1 className="text-2xl font-black leading-tight text-slate-900">{desktopPageHeader.title}</h1>
+              {desktopPageHeader.subtitle ? (
+                <p className="text-slate-500 text-sm mt-1 max-w-prose leading-relaxed">{desktopPageHeader.subtitle}</p>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0 pt-0.5">
+              {scanToast && <span className={`hidden sm:inline text-xs font-semibold px-3 py-1.5 rounded-full shrink-0 max-w-[10rem] truncate ${scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`} title={scanToast}>{scanToast}</span>}
+              <button type="button" onClick={() => setScanModal(true)} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-blue-100 flex items-center justify-center transition-colors shrink-0"><QrCode size={17} className="text-slate-600" /></button>
+              <div ref={desktopBellRef} className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={handleBellToggle}
+                  className="relative w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors"
+                  aria-label="Notifications"
+                  aria-expanded={bellPanelOpen}
+                  aria-haspopup="dialog"
+                >
+                  <Bell size={17} className="text-slate-600" />
+                  {bellUnreadCount > 0 ? (
+                    <span className="absolute top-0.5 right-0.5 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold leading-none">
+                      {Math.min(99, bellUnreadCount)}
+                    </span>
+                  ) : null}
+                </button>
+                {renderBellPanel()}
+              </div>
+              <button type="button" onClick={() => setActiveTab('profile')} className="w-9 h-9 rounded-full overflow-hidden bg-blue-600 flex items-center justify-center text-white text-xs font-black ring-2 ring-blue-200 hover:ring-blue-400 transition-all shrink-0">
+                {profilePicUrl
+                  ? <img src={profilePicUrl} alt={fullName} className="w-full h-full object-cover" />
+                  : <span>{initials}</span>}
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            {scanToast && <span className={`text-xs font-semibold px-3 py-1.5 rounded-full ${scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>{scanToast}</span>}
-            <button type="button" onClick={() => setScanModal(true)} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-blue-100 flex items-center justify-center transition-colors"><QrCode size={17} className="text-slate-600" /></button>
-            <button type="button" className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center"><Bell size={17} className="text-slate-600" /></button>
-            <button type="button" onClick={() => setActiveTab('profile')} className="w-9 h-9 rounded-full overflow-hidden bg-blue-600 flex items-center justify-center text-white text-xs font-black ring-2 ring-blue-200 hover:ring-blue-400 transition-all">
-              {profilePicUrl
-                ? <img src={profilePicUrl} alt={fullName} className="w-full h-full object-cover" />
-                : <span>{initials}</span>}
-            </button>
-          </div>
+          {contentNotify ? (
+            <div
+              className={`mt-3 flex items-start gap-2 px-3 py-2.5 rounded-xl text-xs sm:text-sm font-semibold border w-full ${
+                contentNotify.type === 'meal' ? 'bg-amber-50 text-amber-800 border-amber-200' :
+                contentNotify.type === 'room' ? 'bg-blue-50 text-blue-800 border-blue-200' :
+                contentNotify.type === 'travel' ? 'bg-orange-50 text-orange-900 border-orange-200' :
+                'bg-emerald-50 text-emerald-800 border-emerald-200'
+              }`}
+            >
+              <span className="min-w-0 flex-1 leading-snug">{contentNotify.msg}</span>
+              <button type="button" onClick={dismissContentNotify} className="p-1 rounded-full hover:bg-black/5 shrink-0 mt-0.5" aria-label="Dismiss"><X size={14} /></button>
+            </div>
+          ) : null}
         </header>
 
         {/* HOME */}
         {activeTab === 'home' && (
-          <div className="p-4 sm:p-6 lg:p-8 space-y-7">
+          <div className="py-4 sm:py-6 lg:py-8 space-y-7">
             {/* Hero */}
             <div className="relative rounded-2xl overflow-hidden h-52 shadow-lg" style={{ backgroundImage: 'url(/icon.jpg)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
               <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />
@@ -1298,15 +1988,27 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             {/* Quick actions */}
             <div>
               <div className="flex items-center gap-2 mb-3"><Zap size={16} className="text-blue-600" /><h2 className="text-sm font-bold text-slate-700">Quick Actions</h2></div>
-              <div className="grid grid-cols-5 gap-3">
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
                 {[
                   { icon: <QrCode size={20} className="text-blue-600" />, label: 'Attendance', bg: 'bg-blue-50', action: () => setScanModal(true) },
-                  { icon: <Award size={20} className={certReady ? 'text-amber-500' : 'text-purple-600'} />, label: 'Certificate', bg: certReady ? 'bg-amber-50' : 'bg-purple-50', action: () => setCertModal(true) },
-                  { icon: <CalendarDays size={20} className="text-emerald-600" />, label: 'Schedule', bg: 'bg-emerald-50', action: () => setActiveTab('schedule') },
+                  { icon: <Award size={20} className={certReady ? 'text-amber-500' : 'text-purple-600'} />, label: 'Certificate', bg: certReady ? 'bg-amber-50' : 'bg-purple-50', action: () => setCertModal(true), badge: certBadgeDisplay },
+                  { icon: <CalendarDays size={20} className="text-emerald-600" />, label: 'Schedule', bg: 'bg-emerald-50', action: () => setActiveTab('schedule'), badge: scheduleBadgeDisplay },
+                  { icon: <Utensils size={20} className="text-orange-500" />, label: 'Meals', bg: 'bg-orange-50', action: () => setActiveTab('meals'), badge: mealsBadgeDisplay },
                   { icon: <BookOpen size={20} className="text-orange-500" />, label: 'Materials', bg: 'bg-orange-50', action: () => setActiveTab('materials') },
                   { icon: <MessageSquare size={20} className="text-rose-500" />, label: 'Feedback', bg: 'bg-rose-50', action: () => setActiveTab('schedule') },
-                ].map(({ icon, label, bg, action }) => (
-                  <button key={label} type="button" onClick={action} className="bg-white rounded-2xl p-4 flex flex-col items-center gap-2.5 shadow-sm border border-slate-100 hover:shadow-md hover:-translate-y-0.5 transition-all">
+                ].map(({ icon, label, bg, action, badge }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={action}
+                    className="relative bg-white rounded-2xl p-4 flex flex-col items-center gap-2.5 shadow-sm border border-slate-100 hover:shadow-md hover:-translate-y-0.5 transition-all"
+                    aria-label={badge != null && badge > 0 ? `${label}, ${badge} notification${badge > 1 ? 's' : ''}` : label}
+                  >
+                    {badge != null && badge > 0 && (
+                      <span className="absolute top-2 right-2 min-w-[20px] h-5 px-1 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-black leading-none z-10" aria-hidden>
+                        {badge > 99 ? '99+' : badge}
+                      </span>
+                    )}
                     <div className={`w-11 h-11 ${bg} rounded-full flex items-center justify-center`}>{icon}</div>
                     <span className="text-[12px] font-medium text-slate-600">{label}</span>
                   </button>
@@ -1344,28 +2046,40 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   {boothRegs.length === 0
                     ? <div className="bg-white rounded-2xl border border-slate-100 p-5 text-center text-slate-400 text-xs shadow-sm">No exhibitors yet.</div>
                     : <div className="space-y-3">
-                        {boothRegs.slice(0, 3).map((booth, i) => (
-                          <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="w-full text-left bg-white rounded-2xl border border-slate-100 p-3 shadow-sm hover:shadow-md transition-shadow">
+                        {boothRegs.slice(0, 3).map((booth, i) => {
+                          const fBg = exhibitorBackgroundSrc(booth);
+                          const fProf = exhibitorProfileSrc(booth);
+                          const featCat = exhibitorCategoryLabel(booth);
+                          const featChipKey = String(booth.boothCategory || '').trim() || 'Other';
+                          return (
+                          <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="w-full text-left bg-white rounded-2xl border border-slate-100 p-3 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+                            <div className={`h-20 w-full rounded-xl mb-2 flex items-center justify-center overflow-hidden ${fBg ? '' : 'bg-gradient-to-br from-slate-100 to-slate-200'}`}>
+                              {fBg ? <img src={fBg} alt="" className="w-full h-full object-cover" /> : <Store size={28} className="text-slate-300" />}
+                            </div>
                             <div className="flex items-center gap-2 mb-2">
-                              <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!(booth.profilePictureUrl || booth.boothImageUrl) ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
-                                {(booth.profilePictureUrl || booth.boothImageUrl) ? (
-                                  <img src={booth.profilePictureUrl || booth.boothImageUrl} alt="" className="w-full h-full object-cover block" />
+                              <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!fProf ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
+                                {fProf ? (
+                                  <img src={fProf} alt="" className="w-full h-full object-cover block" />
                                 ) : (
                                   (booth.fullName as string)?.[0] || 'B'
                                 )}
                               </div>
-                              <div className="min-w-0"><p className="text-xs font-bold truncate">{booth.fullName || '—'}</p><p className="text-[10px] text-slate-400 truncate">{booth.sector}</p></div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold truncate">{booth.fullName || '—'}</p>
+                                <p className="text-[10px] text-slate-400 truncate">{booth.sector}</p>
+                                {featCat ? (
+                                  <span className={`mt-0.5 inline-block ${exhibitorCategoryChipCls(featChipKey)}`}>{featCat}</span>
+                                ) : null}
+                              </div>
                             </div>
-                            <div className={`h-20 rounded-xl mb-2 flex items-center justify-center overflow-hidden ${booth.boothImageUrl ? '' : 'bg-gradient-to-br from-slate-100 to-slate-200'}`}>
-                              {booth.boothImageUrl ? <img src={booth.boothImageUrl} alt="" className="w-full h-full object-cover" /> : <Store size={28} className="text-slate-300" />}
-                            </div>
-                            <p className="text-[10px] text-slate-500 line-clamp-2">{booth.sectorOffice || 'Event booth participant'}</p>
+                            <p className="text-[10px] text-slate-500 max-h-14 overflow-y-auto overscroll-y-contain pr-1 leading-relaxed [scrollbar-width:thin]">{booth.sectorOffice || 'Event booth participant'}</p>
                             <div className="flex items-center justify-between mt-2">
                               <span className="text-[10px] text-slate-400">Booth #{booth.id.slice(0, 4).toUpperCase()}</span>
                               <span className="text-[11px] font-bold text-blue-600 flex items-center gap-0.5">View <ExternalLink size={10} /></span>
                             </div>
                           </button>
-                        ))}
+                        );
+                        })}
                       </div>}
                 </div>
                 <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
@@ -1395,10 +2109,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* SCHEDULE */}
         {activeTab === 'schedule' && (
-          <div className="p-4 sm:p-6 lg:p-8">
-            <div className="flex items-end justify-between mb-6">
-              <div><h2 className="text-2xl font-black">Breakout Sessions</h2><p className="text-slate-500 text-sm mt-1">Reserve · Check in · Review</p></div>
-            </div>
+          <div className="py-4 sm:py-6 lg:py-8">
             {rooms.length === 0
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No sessions scheduled yet.</div>
               : <div className="space-y-3">{rooms.map((room, i) => {
@@ -1424,7 +2135,12 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                           {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{room.description}</p>}
                           <div className="flex flex-wrap items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
                             {!res ? <button type="button" onClick={() => handleReserve(room)} className="px-3 py-1.5 bg-blue-600 text-white rounded-full text-xs font-bold hover:bg-blue-700">Reserve</button>
-                              : <span className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>}
+                              : res.attended
+                                ? <span className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>
+                                : <>
+                                    <span className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>
+                                    <button type="button" onClick={() => handleCancelReservation(room)} className="px-3 py-1.5 bg-red-100 text-red-700 rounded-full text-xs font-bold hover:bg-red-200">Cancel</button>
+                                  </>}
                             {res?.attended && !rev && (
                               <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-full text-xs font-bold hover:bg-amber-200"><Star size={11} /> Review</button>
                             )}
@@ -1441,44 +2157,117 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* EXHIBITORS */}
         {activeTab === 'exhibitors' && (
-          <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6"><h2 className="text-2xl font-black">Exhibitors</h2><p className="text-slate-500 text-sm mt-1">Approved booth participants at iSCENE 2026.</p></div>
-            {boothRegs.length === 0
-              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No exhibitors yet.</div>
-              : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {boothRegs.map((booth, i) => (
-                    <button key={booth.id} type="button" onClick={() => setExhibitorDetailBooth(booth)} className="text-left bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
-                      <div className={`h-28 flex items-center justify-center overflow-hidden ${booth.boothImageUrl ? '' : `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}`}`}>
-                        {booth.boothImageUrl ? (
-                          <img src={booth.boothImageUrl} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <Store size={40} className="text-white/30" />
-                        )}
-                      </div>
-                      <div className="p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!(booth.profilePictureUrl || booth.boothImageUrl) ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}>
-                            {(booth.profilePictureUrl || booth.boothImageUrl) ? (
-                              <img src={booth.profilePictureUrl || booth.boothImageUrl} alt="" className="w-full h-full object-cover block" />
+          <div className="py-4 sm:py-6 lg:py-8">
+            {boothRegs.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No exhibitors yet.</div>
+            ) : (
+              <>
+                <div className="mb-6 max-w-2xl space-y-3">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" strokeWidth={2} />
+                    <input
+                      type="search"
+                      value={exhibitorSearchQuery}
+                      onChange={(e) => setExhibitorSearchQuery(e.target.value)}
+                      placeholder="Search name, organization, products…"
+                      className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExhibitorCategoryFilter('all')}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
+                        exhibitorCategoryFilter === 'all'
+                          ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {EXHIBITOR_BOOTH_CATEGORIES.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setExhibitorCategoryFilter(c)}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
+                          exhibitorCategoryFilter === c
+                            ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                        }`}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {filteredBoothRegs.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">
+                    No exhibitors match your search or filter.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredBoothRegs.map((booth, i) => {
+                      const dBg = exhibitorBackgroundSrc(booth);
+                      const dProf = exhibitorProfileSrc(booth);
+                      const catLabel = exhibitorCategoryLabel(booth);
+                      const chipKey = String(booth.boothCategory || '').trim() || 'Other';
+                      return (
+                        <button
+                          key={booth.id}
+                          type="button"
+                          onClick={() => setExhibitorDetailBooth(booth)}
+                          className="text-left bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow"
+                        >
+                          <div
+                            className={`h-28 flex items-center justify-center overflow-hidden shrink-0 ${dBg ? '' : `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}`}`}
+                          >
+                            {dBg ? (
+                              <img src={dBg} alt="" className="w-full h-full object-cover" />
                             ) : (
-                              (booth.fullName as string)?.[0] || 'B'
+                              <Store size={40} className="text-white/30" />
                             )}
                           </div>
-                          <div><p className="text-sm font-bold">{booth.fullName || '—'}</p><p className="text-[10px] text-slate-400">{booth.sector}</p></div>
-                        </div>
-                        <p className="text-xs text-slate-500 line-clamp-2 mb-3">{booth.sectorOffice || 'Event booth participant'}</p>
-                        <div className="flex items-center justify-between"><span className="text-[11px] text-slate-400">Booth #{booth.id.slice(0,4).toUpperCase()}</span></div>
-                      </div>
-                    </button>
-                  ))}
-                </div>}
+                          <div className="p-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <div
+                                className={`w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-black ${!dProf ? SECTOR_COLORS[i % SECTOR_COLORS.length] : 'bg-slate-100'}`}
+                              >
+                                {dProf ? (
+                                  <img src={dProf} alt="" className="w-full h-full object-cover block" />
+                                ) : (
+                                  (booth.fullName as string)?.[0] || 'B'
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold truncate">{booth.fullName || '—'}</p>
+                                <p className="text-[10px] text-slate-400 truncate">{booth.sector}</p>
+                                {catLabel ? (
+                                  <span className={`mt-1 inline-block ${exhibitorCategoryChipCls(chipKey)}`}>{catLabel}</span>
+                                ) : null}
+                              </div>
+                            </div>
+                            <p className="text-xs text-slate-500 mb-3 max-h-24 overflow-y-auto overscroll-y-contain pr-1 leading-relaxed [scrollbar-width:thin]">
+                              {booth.sectorOffice || 'Event booth participant'}
+                            </p>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] text-slate-400">Booth #{booth.id.slice(0, 4).toUpperCase()}</span>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
         {/* MATERIALS */}
         {activeTab === 'materials' && (
-          <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6"><h2 className="text-2xl font-black">Session Materials</h2><p className="text-slate-500 text-sm mt-1">Access materials from your reserved sessions.</p></div>
+          <div className="py-4 sm:py-6 lg:py-8">
             {presenterMaterials.length === 0
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center shadow-sm"><BookOpen size={40} className="text-slate-200 mx-auto mb-3" /><p className="text-slate-400 text-sm">Reserve a breakout session first. Training materials appear here when presenters upload files and link them to their sessions.</p><button type="button" onClick={() => setActiveTab('schedule')} className="mt-4 px-5 py-2 bg-blue-600 text-white rounded-full text-sm font-bold hover:bg-blue-700">Browse Sessions</button></div>
               : <div className="space-y-3">
@@ -1499,8 +2288,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
         {/* MEALS */}
         {activeTab === 'meals' && (
-          <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6"><h2 className="text-2xl font-black">My Entitlements</h2><p className="text-slate-500 text-sm mt-1">Food, kits, and giveaways — claim at the assigned stall within the time window.</p></div>
+          <div className="py-4 sm:py-6 lg:py-8">
             {eligibleMeals.length === 0
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No entitlements available for you yet.</div>
               : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
@@ -1522,32 +2310,30 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                         <p className="text-xs text-slate-500 mb-1">{meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH',{weekday:'long',month:'long',day:'numeric'}) : '—'}</p>
                         {meal.startTime && meal.endTime && <p className="text-xs font-semibold text-blue-600 flex items-center gap-1"><Clock size={12} /> {meal.startTime} – {meal.endTime}</p>}
                         {meal.location && <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">📍 {meal.location}</p>}
+                        {isToday && !claimed ? (
+                          <button
+                            type="button"
+                            onClick={() => setIdModal(true)}
+                            className="mt-4 w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                            aria-label="Show digital ID to claim at the booth"
+                          >
+                            <CreditCard size={16} /> Claim
+                          </button>
+                        ) : null}
                       </div>
                     );
                   })}
                 </div>}
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${certReady ? 'bg-amber-100' : 'bg-slate-100'}`}><Award size={24} className={certReady ? 'text-amber-500' : 'text-slate-400'} /></div>
-                <div><h3 className="font-bold">Certificate of Participation</h3><p className="text-xs text-slate-500">{certReady ? 'Ready to download!' : 'Complete the requirements below'}</p></div>
-              </div>
-              <div className="space-y-2 mb-4">
-                {[{label:'Attend a breakout session',done:attendedRoomIds.length>0},{label:'Submit a session review',done:reviewedRoomIds.length>0}].map(({label,done})=>(
-                  <div key={label} className="flex items-center gap-2 text-sm">{done?<CheckCircle2 size={16} className="text-emerald-500 shrink-0"/>:<Clock size={16} className="text-slate-300 shrink-0"/>}<span className={done?'text-slate-700':'text-slate-400'}>{label}</span></div>
-                ))}
-              </div>
-              {certReady && <button type="button" onClick={handleDownloadCertificate} className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition-colors"><Download size={16} /> Download Certificate</button>}
-            </div>
           </div>
         )}
 
         {/* PROFILE */}
         {activeTab === 'profile' && (
-          <div className="p-4 sm:p-6 lg:p-8 max-w-2xl">
-            <h2 className="text-2xl font-black mb-6">My Profile</h2>
+          <div className="py-4 sm:py-6 lg:py-8 max-w-2xl">
             <ProfileContent />
           </div>
         )}
+        </div>
       </main>
     </div>
   );
@@ -1559,6 +2345,25 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     <>
       {MobileLayout}
       {DesktopLayout}
+
+      {/* Overlap reservation popup */}
+      {overlapModal && (
+        <div className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6">
+            <h3 className="text-lg font-black text-slate-900 mb-3">Cannot Reserve</h3>
+            <p className="text-slate-600 text-sm leading-relaxed mb-4">
+              You already reserved <span className="font-bold text-slate-800">&quot;{overlapModal.conflictingRoomName}&quot;</span>. There is an overlap — you can only reserve one breakout room at a time. Cancel your existing reservation first to reserve this session.
+            </p>
+            <button
+              type="button"
+              onClick={() => setOverlapModal(null)}
+              className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* QR Scanner */}
       {scanModal && (
@@ -1617,24 +2422,25 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </button>
             </div>
             <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50 relative overflow-hidden">
-              {/* Hologram watermark behind profile/info */}
-              <div className="absolute top-10 left-6 pointer-events-none">
-                <div className="relative flex items-center justify-center">
-                  <div
-                    className="absolute h-44 w-44 rounded-full bg-white/20 blur-2xl animate-ping"
-                    style={{ animationDuration: '2.8s' }}
-                  />
-                  <div
-                    className="absolute h-32 w-32 rounded-full bg-white/15 blur-xl animate-ping"
-                    style={{ animationDuration: '2.8s', animationDelay: '0.9s' }}
-                  />
-                  <img
-                    src="/iscene.png"
-                    alt=""
-                    className="h-24 w-24 object-contain opacity-[0.16] mix-blend-multiply animate-[pulse_2.6s_ease-in-out_infinite]"
-                  />
+              {/* Diagonal staggered watermark pattern - like classic "sample" style */}
+              <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden>
+                <div className="absolute -left-16 -top-16 w-[140%] h-[140%] -rotate-45">
+                  <div className="grid" style={{ gridTemplateColumns: 'repeat(10, 44px)', gridTemplateRows: 'repeat(12, 44px)' }}>
+                    {Array.from({ length: 12 * 10 }).map((_, i) => {
+                      const row = Math.floor(i / 10);
+                      const col = i % 10;
+                      return (
+                        <div key={i} className={`flex items-center justify-center ${row % 2 === 1 ? 'translate-x-[22px]' : ''}`}>
+                          <div className="w-8 h-8 animate-id-watermark-wave-glow flex items-center justify-center" style={{ animationDelay: `${col * 0.2}s` }}>
+                            <img src="/iscene.png" alt="" className="w-6 h-6 object-contain" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
+              <div className="relative z-10 flex flex-col items-center">
               {profilePicUrl
                 ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
                 : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
@@ -1651,6 +2457,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               <p className="mt-3 text-[11px] text-slate-500 font-mono tracking-widest text-center">
                 ID <span className="text-slate-400">#</span>{idNumber}
               </p>
+              </div>
             </div>
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
               <span className="text-[10px] text-slate-400">April 9–11, 2026</span>
@@ -1660,26 +2467,100 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         </div>
       )}
 
-      {/* Certificate */}
+      {/* Certificate modal - one certificate per attended & reviewed session */}
       {certModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-4"><h3 className="font-black text-base">Certificate of Participation</h3><button type="button" onClick={() => setCertModal(false)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center"><X size={15} /></button></div>
-            <div className="space-y-2 mb-5">
-              {[{label:'Attend a breakout session',done:attendedRoomIds.length>0},{label:'Submit a session review',done:reviewedRoomIds.length>0},{label:'All conditions met',done:certReady}].map(({label,done})=>(
-                <div key={label} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50">
-                  {done?<CheckCircle2 size={18} className="text-emerald-500 shrink-0"/>:<Clock size={18} className="text-slate-300 shrink-0"/>}
-                  <span className={`text-sm ${done?'text-slate-800 font-medium':'text-slate-400'}`}>{label}</span>
+          <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col border border-slate-200">
+            <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 rounded-t-[22px] text-white">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center"><Trophy size={20} /></div>
+                <div>
+                  <h3 className="font-black text-lg tracking-tight">Certificates</h3>
+                  <p className="text-[11px] font-medium text-blue-100">Your earned participation certificates</p>
                 </div>
-              ))}
+              </div>
+              <button type="button" onClick={() => setCertModal(false)} className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center hover:bg-white/30 transition-colors shrink-0"><X size={18} /></button>
             </div>
-            {certReady?<button type="button" onClick={handleDownloadCertificate} className="w-full py-3 bg-amber-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-amber-600"><Download size={16}/> Download Certificate</button>:<p className="text-xs text-slate-400 text-center">Complete all requirements to unlock your certificate.</p>}
+            <div className="flex-1 overflow-y-auto p-5 bg-slate-50">
+            {certifiableRooms.length > 0 ? (
+              <div className="space-y-6 overflow-y-auto">
+                <p className="text-xs text-slate-500 mb-2">One certificate per attended session. Preview below and download as PDF.</p>
+                {certifiableRooms.map((s) => (
+                  <div key={s.roomId} className="space-y-3">
+                    <div className="aspect-[297/210] max-w-full mx-auto bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden shrink-0">
+                      <div className="h-full w-full flex flex-col items-center justify-center p-4 sm:p-6 text-center">
+                        <img src="/iscene.png" alt="" className="w-10 h-10 sm:w-12 sm:h-12 object-contain mb-2" />
+                        <h2 className="text-lg sm:text-xl font-bold text-slate-800">iSCENE 2026</h2>
+                        <p className="text-[10px] sm:text-xs text-slate-600 mb-1">International Smart &amp; Sustainable Cities Expo</p>
+                        <p className="text-sm sm:text-base font-bold text-slate-800 mb-2">Certificate of Participation</p>
+                        <p className="text-xs text-slate-600 mb-0.5">This certifies that</p>
+                        <p className="text-base sm:text-lg font-bold text-slate-900 mb-1">{fullName}</p>
+                        <p className="text-[10px] sm:text-xs text-slate-600 max-w-xs mx-auto leading-tight">
+                          has participated in the breakout session &ldquo;{s.roomName}&rdquo; at the iSCENE 2026 Global Summit.
+                        </p>
+                        <p className="text-[10px] text-slate-500 mt-2">{new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => handleDownloadCertificate(s)} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 text-sm shadow-md shadow-blue-200/50"><Download size={18} /> Download PDF</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2 mb-4">
+                  {[{label:'Attend a breakout session',done:attendedRoomIds.length>0},{label:'Submit a session review',done:reviewedRoomIds.length>0}].map(({label,done})=>(
+                    <div key={label} className="flex items-center gap-3 p-3 rounded-xl bg-white border border-slate-200">
+                      {done?<CheckCircle2 size={18} className="text-blue-600 shrink-0"/>:<Clock size={18} className="text-slate-400 shrink-0"/>}
+                      <span className={`text-sm ${done?'text-slate-800 font-medium':'text-slate-500'}`}>{label}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-500 text-center">Attend a session and submit a review to earn a certificate for that session.</p>
+              </>
+            )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Certificate preview modal - shows certificate design with download button */}
+      {certificatePreview && (
+        <div className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] border border-slate-200">
+            <div className="flex items-center justify-between gap-3 px-5 py-4 bg-gradient-to-r from-blue-600 to-blue-700 rounded-t-[22px] text-white shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center"><Award size={20} /></div>
+                <h3 className="font-black text-lg tracking-tight">Certificate Preview</h3>
+              </div>
+              <button type="button" onClick={() => setCertificatePreview(null)} className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center hover:bg-white/30 transition-colors shrink-0"><X size={18} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-50">
+              {/* Certificate design - landscape layout matching PDF */}
+              <div className="aspect-[297/210] max-w-full mx-auto bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden" style={{ minHeight: 200 }}>
+                <div className="h-full w-full flex flex-col items-center justify-center p-6 sm:p-8 text-center">
+                  <img src="/iscene.png" alt="" className="w-12 h-12 sm:w-14 sm:h-14 object-contain mb-3" />
+                  <h2 className="text-xl sm:text-2xl font-bold text-slate-800">iSCENE 2026</h2>
+                  <p className="text-xs sm:text-sm text-slate-600 mb-2">International Smart &amp; Sustainable Cities Expo</p>
+                  <p className="text-base sm:text-lg font-bold text-slate-800 mb-4">Certificate of Participation</p>
+                  <p className="text-sm text-slate-600 mb-1">This certifies that</p>
+                  <p className="text-lg sm:text-xl font-bold text-slate-900 mb-2">{fullName}</p>
+                  <p className="text-xs sm:text-sm text-slate-600 max-w-md">
+                    has participated in the breakout session &ldquo;{certificatePreview.roomName}&rdquo; at the iSCENE 2026 Global Summit.
+                  </p>
+                  <p className="text-xs text-slate-500 mt-4">{new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => handleDownloadCertificate(certificatePreview)} className="w-full mt-4 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors shadow-md shadow-blue-200/50"><Download size={20} /> Download PDF</button>
+            </div>
           </div>
         </div>
       )}
 
       {/* Exhibitor Booth Detail modal */}
-      {exhibitorDetailBooth && (
+      {exhibitorDetailBooth && (() => {
+        const detailBannerUrl = exhibitorBackgroundSrc(exhibitorDetailBooth);
+        const detailProfileUrl = exhibitorProfileSrc(exhibitorDetailBooth);
+        return (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-lg max-h-[90vh] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden">
             <div className="shrink-0 flex items-center justify-between p-4 border-b border-slate-200">
@@ -1687,12 +2568,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               <button type="button" onClick={() => setExhibitorDetailBooth(null)} className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200"><X size={18} /></button>
             </div>
             <div className="flex-1 overflow-y-auto">
-              {/* Background / header image */}
-              <div className={`h-36 flex items-center justify-center overflow-hidden ${exhibitorDetailBooth.boothBackgroundUrl || exhibitorDetailBooth.boothImageUrl ? '' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'}`}>
-                {exhibitorDetailBooth.boothBackgroundUrl ? (
-                  <img src={exhibitorDetailBooth.boothBackgroundUrl} alt="" className="w-full h-full object-cover" />
-                ) : exhibitorDetailBooth.boothImageUrl ? (
-                  <img src={exhibitorDetailBooth.boothImageUrl} alt="" className="w-full h-full object-cover" />
+              {/* Booth background banner only (not logo / profile) */}
+              <div className={`h-36 flex items-center justify-center overflow-hidden shrink-0 ${detailBannerUrl ? '' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'}`}>
+                {detailBannerUrl ? (
+                  <img src={detailBannerUrl} alt="" className="w-full h-full object-cover" />
                 ) : (
                   <Store size={48} className="text-blue-300" />
                 )}
@@ -1701,29 +2580,40 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 {/* Profile */}
                 <div className="flex items-center gap-3">
                   <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-base font-black text-blue-600 shrink-0 overflow-hidden">
-                    {(exhibitorDetailBooth.boothImageUrl || exhibitorDetailBooth.profilePictureUrl) ? (
-                      <img src={exhibitorDetailBooth.boothImageUrl || exhibitorDetailBooth.profilePictureUrl} alt="" className="w-full h-full object-cover" />
+                    {detailProfileUrl ? (
+                      <img src={detailProfileUrl} alt="" className="w-full h-full object-cover" />
                     ) : (
                       (exhibitorDetailBooth.fullName as string)?.[0] || 'B'
                     )}
                   </div>
                   <div className="min-w-0">
                     <p className="font-black text-lg">{exhibitorDetailBooth.fullName || '—'}</p>
-                    <p className="text-sm text-slate-500">{exhibitorDetailBooth.sectorOffice || exhibitorDetailBooth.sector || 'Exhibitor'}</p>
-                    <p className="text-[11px] text-slate-400">Booth #{exhibitorDetailBooth.id?.slice(0, 6).toUpperCase() || '—'}</p>
+                    <p className="text-sm text-slate-500 max-h-20 overflow-y-auto [scrollbar-width:thin] leading-snug pr-0.5">{exhibitorDetailBooth.sectorOffice || exhibitorDetailBooth.sector || 'Exhibitor'}</p>
+                    {exhibitorCategoryLabel(exhibitorDetailBooth) ? (
+                      <span
+                        className={`mt-1 inline-block ${exhibitorCategoryChipCls(String(exhibitorDetailBooth.boothCategory || '').trim() || 'Other')}`}
+                      >
+                        {exhibitorCategoryLabel(exhibitorDetailBooth)}
+                      </span>
+                    ) : null}
+                    <p className="text-[11px] text-slate-400 mt-1">Booth #{exhibitorDetailBooth.id?.slice(0, 6).toUpperCase() || '—'}</p>
                   </div>
                 </div>
                 {/* Title & details */}
                 {exhibitorDetailBooth.boothDescription && (
                   <div>
                     <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Description</p>
-                    <p className="text-sm text-slate-700">{exhibitorDetailBooth.boothDescription}</p>
+                    <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5 [scrollbar-width:thin]">
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{exhibitorDetailBooth.boothDescription}</p>
+                    </div>
                   </div>
                 )}
                 {exhibitorDetailBooth.boothProducts && (
                   <div>
                     <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Products / Services</p>
-                    <p className="text-sm text-slate-700">{exhibitorDetailBooth.boothProducts}</p>
+                    <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5 [scrollbar-width:thin]">
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{exhibitorDetailBooth.boothProducts}</p>
+                    </div>
                   </div>
                 )}
                 {exhibitorDetailBooth.boothWebsite && (
@@ -1757,7 +2647,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Breakout Room Detail - Full view with Back */}
       {detailRoom && (() => {
@@ -1800,7 +2691,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     : s.id === 'review' && res?.attended
                     ? () => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }
                     : s.id === 'cert'
-                    ? () => setCertModal(true)
+                    ? () => {
+                        const certForThisRoom = certifiableRooms.find((c) => c.roomId === detailRoom.id);
+                        if (certForThisRoom) {
+                          setCertificatePreview(certForThisRoom);
+                        } else {
+                          setCertModal(true);
+                        }
+                      }
                     : undefined;
                   return (
                   <React.Fragment key={s.id}>
@@ -1860,6 +2758,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </div>
             </div>
 
+            {/* Session description - below image, above reserve slot; capped height, scrollable */}
+            {detailRoom.description && (
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 sm:p-6 max-h-[200px] overflow-y-auto">
+                <p className="text-slate-700 leading-relaxed text-sm sm:text-base">{detailRoom.description}</p>
+              </div>
+            )}
+
             {/* Not reserved: brief prompt */}
             {!res && (
               <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
@@ -1884,18 +2789,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             {/* Full details: Only show AFTER timed in */}
             {res?.attended && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Left: Technology Overview + Features */}
+              {/* Left: Training Materials */}
               <div className="lg:col-span-2 space-y-6">
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center"><Cpu size={18} className="text-blue-600" /></div>
-                    <div>
-                      <h2 className="font-bold text-slate-800">Technology Overview</h2>
-                      <p className="text-xs text-slate-500 uppercase tracking-wider">Core Framework</p>
-                    </div>
-                  </div>
-                  <p className="text-slate-600 leading-relaxed mt-4">Description continues of {detailRoom.projectDetail || detailRoom.description || 'explore innovative frameworks and collaborative tools in this breakout session.'}</p>
-                </div>
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                   <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><BookOpen size={18} className="text-blue-600" /> Training Materials</h3>
                   {roomMats.length > 0 ? (
@@ -1914,35 +2809,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 </div>
               </div>
 
-              {/* Right: Session Host (when has host) + Live Q&A */}
+              {/* Right: Live Q&A */}
               <div className="space-y-6">
-                {(() => {
-                  const names = (detailRoom.presenterNames || []).filter((n) => n && n.trim() && n.toLowerCase() !== 'presenter');
-                  if (names.length > 0) {
-                    return (
-                      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Session Host</p>
-                        <div className="flex items-center gap-4 mb-4">
-                          <div className="relative">
-                            <div className="w-14 h-14 rounded-xl bg-blue-500 text-white flex items-center justify-center text-lg font-bold">
-                              {names[0][0].toUpperCase()}
-                            </div>
-                            <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white" />
-                          </div>
-                          <div>
-                            <p className="font-bold text-slate-800">{names[0]}</p>
-                            <p className="text-xs text-slate-500">Session host @ iSCENE 2026</p>
-                          </div>
-                        </div>
-                        <button type="button" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-2">
-                          Join Session <ChevronRight size={18} />
-                        </button>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                   <div className="flex items-center justify-between gap-2 mb-3">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2"><MessageCircle size={18} className="text-blue-600" /> Live Q&A</h3>
@@ -1968,18 +2836,21 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             )}
 
             {/* Actions bar */}
-            <div id="detail-actions-bar" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-              <div className="flex flex-wrap gap-3">
+            <div id="detail-actions-bar" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3 sm:justify-between">
+              <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 flex-1 sm:flex-initial min-w-0 w-full sm:w-auto">
                 {!res
-                  ? <button type="button" onClick={async () => { await handleReserve(detailRoom); }} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Reserve Slot</button>
+                  ? <button type="button" onClick={async () => { await handleReserve(detailRoom); }} className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Reserve Slot</button>
                   : !res.attended
-                    ? <button type="button" onClick={() => { setScanModalRoom(detailRoom); setScanModal(true); }} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center gap-2"><QrCode size={18} /> Scan QR at Breakout Room Entrance</button>
-                    : <span className="px-6 py-3 bg-emerald-100 text-emerald-700 font-bold rounded-xl flex items-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}
+                    ? <>
+                        <button type="button" onClick={() => { setScanModalRoom(detailRoom); setScanModal(true); }} className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center justify-center gap-2"><QrCode size={18} /> Scan QR at Breakout Room Entrance</button>
+                        <button type="button" onClick={async () => { await handleCancelReservation(detailRoom); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600">Cancel reservation</button>
+                      </>
+                    : <span className="w-full sm:w-auto px-6 py-3 bg-emerald-100 text-emerald-700 font-bold rounded-xl flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}
                 {res?.attended && !rev && (
-                  <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }} className="px-6 py-3 bg-amber-100 text-amber-700 font-bold rounded-xl hover:bg-amber-200 flex items-center gap-2"><Star size={18} /> Submit Review</button>
+                  <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-amber-100 text-amber-700 font-bold rounded-xl hover:bg-amber-200 flex items-center justify-center gap-2"><Star size={18} /> Submit Review</button>
                 )}
               </div>
-              <button type="button" onClick={() => setDetailRoom(null)} className="text-slate-500 hover:text-slate-700 font-medium text-sm">Close</button>
+              <button type="button" onClick={() => { setDetailRoom(null); setOverlapModal(null); }} className="w-full sm:w-auto sm:shrink-0 px-6 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600">Close</button>
             </div>
           </div>
         </div>
@@ -1989,97 +2860,132 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       {/* DOST Review modal */}
       {reviewModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-end justify-center md:items-center md:p-4">
-          <div className="w-full max-w-2xl max-h-[90vh] bg-white rounded-t-3xl md:rounded-3xl shadow-2xl flex flex-col overflow-hidden">
-            <div className="shrink-0 flex items-center justify-between p-4 border-b border-slate-200">
-              <div><h3 className="font-black text-lg">Session Evaluation Form</h3><p className="text-sm text-slate-500 mt-0.5">{reviewModal.roomName}</p></div>
-              <button type="button" onClick={() => { if (reviewModal?.fromRoom) setDetailRoom(reviewModal.fromRoom); setReviewModal(null); }} className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200"><X size={18} /></button>
+          <div className="w-full max-w-2xl max-h-[94vh] md:max-h-[90vh] bg-white rounded-t-3xl md:rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+            {/* Mobile sheet handle */}
+            <div className="md:hidden w-12 h-1 rounded-full bg-slate-300 mx-auto mt-2" aria-hidden />
+            <div className="shrink-0 flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-b from-slate-50 to-white">
+              <div className="min-w-0 flex-1 pr-3">
+                <h3 className="font-black text-lg text-slate-900">Session Evaluation Form</h3>
+                <p className="text-sm font-semibold text-blue-600 mt-0.5 truncate">{reviewModal.roomName}</p>
+              </div>
+              <button type="button" onClick={() => { if (reviewModal?.fromRoom) setDetailRoom(reviewModal.fromRoom); setReviewModal(null); }} className="w-10 h-10 shrink-0 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200 text-slate-600 active:scale-95 transition-transform" aria-label="Close"><X size={18} /></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 pb-8">
               {/* Part I */}
-              <section className="space-y-4">
-                <h4 className="font-bold text-slate-800 border-b border-slate-200 pb-2">PART I. SUBJECT MATTER</h4>
-                <p className="text-xs text-slate-500">Scale: Low / Satisfactory / Very Good</p>
-                <div className="space-y-3">
-                  <div><p className="text-sm font-medium text-slate-700 mb-1">Level of Content</p><DOSTPart1Scale value={dostPart1.levelOfContent} onChange={(v) => setDostPart1((p) => ({ ...p, levelOfContent: v }))} /></div>
-                  <div><p className="text-sm font-medium text-slate-700 mb-1">Appropriateness</p><DOSTPart1Scale value={dostPart1.appropriateness} onChange={(v) => setDostPart1((p) => ({ ...p, appropriateness: v }))} /></div>
-                  <div><p className="text-sm font-medium text-slate-700 mb-1">Applicability</p><DOSTPart1Scale value={dostPart1.applicability} onChange={(v) => setDostPart1((p) => ({ ...p, applicability: v }))} /></div>
+              <section className="space-y-5 p-5 sm:p-6 bg-gradient-to-br from-slate-50 to-white rounded-2xl border border-slate-200/80 shadow-sm">
+                <div>
+                  <h4 className="font-bold text-slate-800 text-base">PART I. SUBJECT MATTER</h4>
+                  <p className="text-xs text-slate-500 mt-1">Rate: Low · Satisfactory · Very Good</p>
+                </div>
+                <div className="space-y-6">
+                  <div className="space-y-2"><p className="text-sm font-semibold text-slate-700">Level of Content</p><DOSTPart1Scale value={dostPart1.levelOfContent} onChange={(v) => setDostPart1((p) => ({ ...p, levelOfContent: v }))} /></div>
+                  <div className="space-y-2"><p className="text-sm font-semibold text-slate-700">Appropriateness</p><DOSTPart1Scale value={dostPart1.appropriateness} onChange={(v) => setDostPart1((p) => ({ ...p, appropriateness: v }))} /></div>
+                  <div className="space-y-2"><p className="text-sm font-semibold text-slate-700">Applicability</p><DOSTPart1Scale value={dostPart1.applicability} onChange={(v) => setDostPart1((p) => ({ ...p, applicability: v }))} /></div>
                 </div>
               </section>
 
-              {/* Part II - Per speaker */}
-              {(reviewModal.presenterNames?.length ? reviewModal.presenterNames : ['Speaker']).map((speakerName, idx) => {
+              {/* Part II - Per speaker (exclude generic "Presenter" placeholder) */}
+              {((reviewModal.presenterNames || []).filter((n) => n && String(n).trim() && n.toLowerCase() !== 'presenter').length
+                ? (reviewModal.presenterNames || []).filter((n) => n && String(n).trim() && n.toLowerCase() !== 'presenter')
+                : ['Speaker']
+              ).map((speakerName) => {
                 const r = dostPart2[speakerName] || getDefaultDOSTSpeakerRatings();
                 const setR = (up: Partial<DOSTSpeakerRatings>) => setDostPart2((p) => ({ ...p, [speakerName]: { ...(p[speakerName] || getDefaultDOSTSpeakerRatings()), ...up } }));
                 return (
-                  <section key={speakerName} className="space-y-4 p-4 bg-slate-50 rounded-xl">
-                    <h4 className="font-bold text-slate-800">PART II. SPEAKER ({speakerName})</h4>
-                    <p className="text-xs text-slate-500">Scale: 1 Poor · 2 Average · 3 Good · 4 Very Good · 5 Excellent</p>
-                    <div className="space-y-4">
-                      <div><p className="text-sm font-medium mb-1">Achievement of Session Objectives</p><DOSTScale15 value={r.achievementOfObjectives} onChange={(v) => setR({ achievementOfObjectives: v })} /></div>
+                  <section key={speakerName} className="space-y-5 p-5 sm:p-6 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                    <div className="pb-4 border-b border-slate-200">
+                      <h4 className="font-bold text-slate-800 text-base">PART II. SPEAKER</h4>
+                      <p className="text-sm font-semibold text-blue-600 mt-1">{speakerName}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">1 Poor → 5 Excellent</p>
+                    </div>
+                    <div className="space-y-6">
+                      <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Achievement of Session Objectives</p><DOSTScale15 value={r.achievementOfObjectives} onChange={(v) => setR({ achievementOfObjectives: v })} /></div>
                       <div>
-                        <p className="text-sm font-medium mb-2">Mastery of Subject Matter</p>
-                        <div className="space-y-2 pl-2">
+                        <p className="text-sm font-semibold text-slate-700 mb-4">Mastery of Subject Matter</p>
+                        <div className="space-y-4">
                           {[
                             { k: 'exhibitKnowledge', l: 'Ability to exhibit knowledge of subject matter' },
                             { k: 'answerQuestions', l: 'Ability to answer participant\'s questions' },
                             { k: 'currentDevelopments', l: 'Ability to inject current developments' },
                             { k: 'balanceTheoryPractice', l: 'Ability to balance principles/theories with practical applications' },
                           ].map(({ k, l }) => (
-                            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3"><span className="text-xs text-slate-600 sm:w-48">{l}</span><DOSTScale15 value={(r.mastery as any)[k]} onChange={(v) => setR({ mastery: { ...r.mastery, [k]: v } })} /></div>
+                            <div key={k} className="space-y-3">
+                              <p className="text-sm text-slate-600 leading-snug">{l}</p>
+                              <DOSTScale15 value={(r.mastery as any)[k]} onChange={(v) => setR({ mastery: { ...r.mastery, [k]: v } })} />
+                            </div>
                           ))}
                         </div>
                       </div>
                       <div>
-                        <p className="text-sm font-medium mb-2">Presentation of Subject Matter</p>
-                        <div className="space-y-2 pl-2">
+                        <p className="text-sm font-semibold text-slate-700 mb-4">Presentation of Subject Matter</p>
+                        <div className="space-y-4">
                           {[
                             { k: 'preparedness', l: 'Preparedness of speaker' },
                             { k: 'organizeMaterials', l: 'Ability to organize materials for clarity and precision' },
                             { k: 'arouseInterest', l: 'Ability to arouse interest' },
                             { k: 'instructionalMaterials', l: 'Ability to use appropriate instructional materials' },
                           ].map(({ k, l }) => (
-                            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3"><span className="text-xs text-slate-600 sm:w-48">{l}</span><DOSTScale15 value={(r.presentation as any)[k]} onChange={(v) => setR({ presentation: { ...r.presentation, [k]: v } })} /></div>
+                            <div key={k} className="space-y-3">
+                              <p className="text-sm text-slate-600 leading-snug">{l}</p>
+                              <DOSTScale15 value={(r.presentation as any)[k]} onChange={(v) => setR({ presentation: { ...r.presentation, [k]: v } })} />
+                            </div>
                           ))}
                         </div>
                       </div>
                       <div>
-                        <p className="text-sm font-medium mb-2">Teacher-Related Personality Traits</p>
-                        <div className="space-y-2 pl-2">
+                        <p className="text-sm font-semibold text-slate-700 mb-4">Teacher-Related Personality Traits</p>
+                        <div className="space-y-4">
                           {[
                             { k: 'rapport', l: 'Ability to establish rapport' },
                             { k: 'considerateness', l: 'Considerateness' },
                           ].map(({ k, l }) => (
-                            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3"><span className="text-xs text-slate-600 sm:w-48">{l}</span><DOSTScale15 value={(r.personality as any)[k]} onChange={(v) => setR({ personality: { ...r.personality, [k]: v } })} /></div>
+                            <div key={k} className="space-y-3">
+                              <p className="text-sm text-slate-600 leading-snug">{l}</p>
+                              <DOSTScale15 value={(r.personality as any)[k]} onChange={(v) => setR({ personality: { ...r.personality, [k]: v } })} />
+                            </div>
                           ))}
                         </div>
                       </div>
-                      <div><p className="text-sm font-medium mb-1">Acceptability of Speaker as Resource Person</p><DOSTScale15 value={r.acceptability} onChange={(v) => setR({ acceptability: v })} /></div>
+                      <div className="pt-4 border-t border-slate-200 space-y-3"><p className="text-sm font-semibold text-slate-700">Acceptability of Speaker as Resource Person</p><DOSTScale15 value={r.acceptability} onChange={(v) => setR({ acceptability: v })} /></div>
                     </div>
                   </section>
                 );
               })}
 
               {/* Part III */}
-              <section className="space-y-4 p-4 bg-slate-50 rounded-xl">
-                <h4 className="font-bold text-slate-800">PART III. TRAINING ENVIRONMENT</h4>
-                <p className="text-xs text-slate-500">Scale: 1 Poor · 2 Average · 3 Good · 4 Very Good · 5 Excellent</p>
-                <div className="space-y-3">
-                  <div><p className="text-sm font-medium mb-1">Venue (room size, lighting, etc.)</p><DOSTScale15 value={dostPart3.venue} onChange={(v) => setDostPart3((p) => ({ ...p, venue: v }))} /></div>
-                  <div><p className="text-sm font-medium mb-1">Food</p><DOSTScale15 value={dostPart3.food} onChange={(v) => setDostPart3((p) => ({ ...p, food: v }))} /></div>
-                  <div><p className="text-sm font-medium mb-1">Ability of organizer to respond to participant&apos;s needs</p><DOSTScale15 value={dostPart3.organizerResponse} onChange={(v) => setDostPart3((p) => ({ ...p, organizerResponse: v }))} /></div>
-                  <div><p className="text-xs text-slate-500 mb-1">Description (optional)</p><textarea value={dostPart3.description} onChange={(e) => setDostPart3((p) => ({ ...p, description: e.target.value }))} rows={2} className="w-full bg-white border border-slate-200 rounded-xl p-2 text-sm" placeholder="Additional remarks..." /></div>
+              <section className="space-y-5 p-5 sm:p-6 bg-gradient-to-br from-slate-50 to-white rounded-2xl border border-slate-200/80 shadow-sm">
+                <div>
+                  <h4 className="font-bold text-slate-800 text-base">PART III. TRAINING ENVIRONMENT</h4>
+                  <p className="text-xs text-slate-500 mt-1">1 Poor → 5 Excellent</p>
+                </div>
+                <div className="space-y-6">
+                  <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Venue (room size, lighting, etc.)</p><DOSTScale15 value={dostPart3.venue} onChange={(v) => setDostPart3((p) => ({ ...p, venue: v }))} /></div>
+                  <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Food</p><DOSTScale15 value={dostPart3.food} onChange={(v) => setDostPart3((p) => ({ ...p, food: v }))} /></div>
+                  <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Ability of organizer to respond to participant&apos;s needs</p><DOSTScale15 value={dostPart3.organizerResponse} onChange={(v) => setDostPart3((p) => ({ ...p, organizerResponse: v }))} /></div>
+                  <div className="space-y-2 pt-2"><p className="text-xs font-medium text-slate-500">Description (optional)</p><textarea value={dostPart3.description} onChange={(e) => setDostPart3((p) => ({ ...p, description: e.target.value }))} rows={2} className="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" placeholder="Additional remarks (optional)..." /></div>
                 </div>
               </section>
 
-              {/* Part IV */}
-              <section className="space-y-2">
-                <h4 className="font-bold text-slate-800">PART IV. COMMENTS/SUGGESTIONS/RECOMMENDATIONS</h4>
-                <p className="text-xs text-slate-500">To improve future provision of DOST training assistance.</p>
-                <textarea value={dostPart4} onChange={(e) => setDostPart4(e.target.value)} rows={4} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Your comments, suggestions, and recommendations..." />
+              {/* Part IV - Required */}
+              <section className="space-y-4 p-5 sm:p-6 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                <div>
+                  <h4 className="font-bold text-slate-800 text-base">PART IV. COMMENTS & SUGGESTIONS <span className="text-red-500">*</span></h4>
+                  <p className="text-xs text-slate-500 mt-1">Required. To improve future provision of DOST training assistance.</p>
+                </div>
+                <div className="space-y-2">
+                  <textarea
+                    value={dostPart4}
+                    onChange={(e) => { setDostPart4(e.target.value); setPart4Error(null); }}
+                    rows={4}
+                    className={`w-full bg-slate-50 border rounded-xl p-4 text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none placeholder:text-slate-400 ${part4Error ? 'border-red-400 ring-2 ring-red-200' : 'border-slate-200 focus:border-blue-500'}`}
+                    placeholder="Your comments, suggestions, and recommendations..."
+                  />
+                  {part4Error && <p className="text-sm font-medium text-red-600">{part4Error}</p>}
+                </div>
               </section>
             </div>
-            <div className="shrink-0 p-4 border-t border-slate-200">
-              <button type="button" onClick={handleSubmitReview} disabled={reviewSaving} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2">
+            <div className="shrink-0 p-4 sm:p-5 pt-3 border-t border-slate-200 bg-white">
+              <button type="button" onClick={handleSubmitReview} disabled={reviewSaving || !dostPart4.trim()} className="w-full py-3.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-blue-200/50 active:scale-[0.98] transition-transform">
                 {reviewSaving ? <><Loader2 size={18} className="animate-spin" /> Submitting…</> : <><Star size={18} /> Submit Review</>}
               </button>
             </div>
