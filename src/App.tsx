@@ -69,6 +69,38 @@ const colors = {
   blue: '#1E88E5',
 };
 
+/** Queues the decline / not-approved email (Firebase Trigger Email reads the `mail` collection). */
+async function enqueueDeclineRegistrationEmail(to: string, fullName: string) {
+  const email = to.trim();
+  if (!email) return;
+  const name = fullName.trim() || 'Participant';
+  await addDoc(collection(db, 'mail'), {
+    to: email,
+    message: {
+      subject: 'Update on your iSCENE 2026 registration',
+      text: `Dear ${name},
+
+Thank you for your interest in the International Smart & Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026).
+
+Please note that iSCENE 2026 has been postponed. Please wait for a further announcement of the new event dates, and stay tuned for updates through the official channels listed on the event website.
+
+After review, your registration has not been approved for this year's program.
+
+If you have questions or believe this is an error, please contact the iSCENE 2026 organizers through those same official channels.
+
+Best regards,
+iSCENE 2026 Organizing Team`,
+      html: `<p>Dear ${name},</p>
+<p>Thank you for your interest in the <strong>International Smart &amp; Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026)</strong>.</p>
+<p><strong>Please note:</strong> iSCENE 2026 has been <strong>postponed</strong>. Please wait for a further announcement of the <strong>new event dates</strong>, and <strong>stay tuned</strong> for updates through the official channels listed on the event website.</p>
+<p>After review, your registration has <strong>not been approved</strong> for this year&rsquo;s program.</p>
+<p>If you have questions or believe this is an error, please contact the <strong>iSCENE 2026</strong> organizers through those same official channels.</p>
+<p>Best regards,<br/>
+iSCENE 2026 Organizing Team</p>`,
+    },
+  });
+}
+
 const SectionTitle = ({ children, subtitle }: { children: React.ReactNode, subtitle?: string }) => (
   <div className="mb-12 text-center">
     <motion.h2 
@@ -640,36 +672,10 @@ iSCENE 2026 Organizing Team</p>`,
 
       if (status === 'declined') {
         try {
-          const to = (registration.email as string) || '';
-          const fullName = (registration.fullName as string) || 'Participant';
-
-          if (to) {
-            await addDoc(collection(db, 'mail'), {
-              to,
-              message: {
-                subject: 'Update on your iSCENE 2026 registration',
-                text: `Dear ${fullName},
-
-Thank you for your interest in the International Smart & Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026).
-
-Please note that iSCENE 2026 has been postponed. Please wait for a further announcement of the new event dates, and stay tuned for updates through the official channels listed on the event website.
-
-After review, your registration has not been approved for this year's program.
-
-If you have questions or believe this is an error, please contact the iSCENE 2026 organizers through those same official channels.
-
-Best regards,
-iSCENE 2026 Organizing Team`,
-                html: `<p>Dear ${fullName},</p>
-<p>Thank you for your interest in the <strong>International Smart &amp; Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026)</strong>.</p>
-<p><strong>Please note:</strong> iSCENE 2026 has been <strong>postponed</strong>. Please wait for a further announcement of the <strong>new event dates</strong>, and <strong>stay tuned</strong> for updates through the official channels listed on the event website.</p>
-<p>After review, your registration has <strong>not been approved</strong> for this year&rsquo;s program.</p>
-<p>If you have questions or believe this is an error, please contact the <strong>iSCENE 2026</strong> organizers through those same official channels.</p>
-<p>Best regards,<br/>
-iSCENE 2026 Organizing Team</p>`,
-              },
-            });
-          }
+          await enqueueDeclineRegistrationEmail(
+            (registration.email as string) || '',
+            (registration.fullName as string) || 'Participant',
+          );
         } catch (emailErr) {
           console.error('Error enqueuing decline email', emailErr);
           setAdminAuthError(
@@ -687,6 +693,8 @@ iSCENE 2026 Organizing Team</p>`,
     registrationId: string,
     updates: Record<string, any>,
   ) => {
+    const prev = registrations.find((r) => r.id === registrationId);
+    const prevStatus = (prev?.status as string | undefined) ?? 'pending';
     try {
       const payload: Record<string, unknown> = {
         fullName: (updates.fullName as string | undefined)?.trim() || '',
@@ -707,12 +715,28 @@ iSCENE 2026 Organizing Team</p>`,
       if (updates.boothBackgroundUrl !== undefined) payload.boothBackgroundUrl = (updates.boothBackgroundUrl as string)?.trim() || '';
       if (updates.boothCategory !== undefined) payload.boothCategory = (updates.boothCategory as string)?.trim() || '';
       if (updates.boothCategoryOther !== undefined) payload.boothCategoryOther = (updates.boothCategoryOther as string)?.trim() || '';
+      const newStatus = (payload.status as string) || 'pending';
       await updateDoc(doc(db, 'registrations', registrationId), payload);
       setRegistrations((prev) =>
         prev.map((registration) =>
           registration.id === registrationId ? { ...registration, ...payload } : registration,
         ),
       );
+
+      // Same as Decline button: saving status "declined" from the edit form must queue mail too.
+      if (newStatus === 'declined' && prevStatus !== 'declined') {
+        try {
+          await enqueueDeclineRegistrationEmail(
+            (payload.email as string) || '',
+            (payload.fullName as string) || 'Participant',
+          );
+        } catch (emailErr) {
+          console.error('Error enqueuing decline email (save registration)', emailErr);
+          setAdminAuthError(
+            'Details saved, but failed to enqueue decline email. See console for details.',
+          );
+        }
+      }
     } catch (err) {
       console.error('Error saving registration details', err);
       setAdminAuthError('Failed to save registration changes. Check console for details.');
