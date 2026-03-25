@@ -637,6 +637,46 @@ iSCENE 2026 Organizing Team</p>`,
           );
         }
       }
+
+      if (status === 'declined') {
+        try {
+          const to = (registration.email as string) || '';
+          const fullName = (registration.fullName as string) || 'Participant';
+
+          if (to) {
+            await addDoc(collection(db, 'mail'), {
+              to,
+              message: {
+                subject: 'Update on your iSCENE 2026 registration',
+                text: `Dear ${fullName},
+
+Thank you for your interest in the International Smart & Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026).
+
+Please note that iSCENE 2026 has been postponed. Please wait for a further announcement of the new event dates, and stay tuned for updates through the official channels listed on the event website.
+
+After review, your registration has not been approved for this year's program.
+
+If you have questions or believe this is an error, please contact the iSCENE 2026 organizers through those same official channels.
+
+Best regards,
+iSCENE 2026 Organizing Team`,
+                html: `<p>Dear ${fullName},</p>
+<p>Thank you for your interest in the <strong>International Smart &amp; Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026)</strong>.</p>
+<p><strong>Please note:</strong> iSCENE 2026 has been <strong>postponed</strong>. Please wait for a further announcement of the <strong>new event dates</strong>, and <strong>stay tuned</strong> for updates through the official channels listed on the event website.</p>
+<p>After review, your registration has <strong>not been approved</strong> for this year&rsquo;s program.</p>
+<p>If you have questions or believe this is an error, please contact the <strong>iSCENE 2026</strong> organizers through those same official channels.</p>
+<p>Best regards,<br/>
+iSCENE 2026 Organizing Team</p>`,
+              },
+            });
+          }
+        } catch (emailErr) {
+          console.error('Error enqueuing decline email', emailErr);
+          setAdminAuthError(
+            'Status updated, but failed to enqueue decline email. See console for details.',
+          );
+        }
+      }
     } catch (err) {
       console.error('Error updating status', err);
       setAdminAuthError('Failed to update status. Check console for details.');
