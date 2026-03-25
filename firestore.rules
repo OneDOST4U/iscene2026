@@ -26,6 +26,13 @@ service cloud.firestore {
         && !(request.auth.token.admin == true);
     }
 
+    // True when the signed-in user is listed on the room as a presenter (presenterUids).
+    function roomPresentersIncludeAuthUid(roomId) {
+      return exists(/databases/$(database)/documents/rooms/$(roomId))
+        && 'presenterUids' in get(/databases/$(database)/documents/rooms/$(roomId)).data
+        && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.presenterUids;
+    }
+
     // ─────────────────────────────────────────────────────────────
     // ADMINS  /admins/{uid}
     // UIDs listed here are treated as admins (alternative to custom claims).
@@ -114,14 +121,26 @@ service cloud.firestore {
 
     // ─────────────────────────────────────────────────────────────
     // REVIEWS  /reviews/{docId}
-    // Participants submit their own; admin reads all.
+    // Participants create/update their own (uid must stay the same).
+    // Admin reads all. Presenters read reviews for rooms where they appear in presenterUids.
     // ─────────────────────────────────────────────────────────────
     match /reviews/{docId} {
+      // part4 = required comments; part3.description is optional (omit field if empty — Firestore forbids undefined).
       allow create: if signedIn()
-        && request.resource.data.uid == request.auth.uid;
-      allow read:   if isAdmin()
-        || (signedIn() && resource.data.uid == request.auth.uid);
-      allow update, delete: if isAdmin();
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasAll(['roomId', 'uid', 'part4'])
+        && request.resource.data.part4 is string
+        && request.resource.data.part4.size() > 0;
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid)
+        || (signedIn()
+          && resource.data.keys().hasAll(['roomId'])
+          && roomPresentersIncludeAuthUid(resource.data.roomId));
+      allow update: if isAdmin()
+        || (signedIn()
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.uid == resource.data.uid);
+      allow delete: if isAdmin();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -193,11 +212,6 @@ service cloud.firestore {
       allow update: if isAdmin()
         || (signedIn() && resource.data.uid == request.auth.uid);
     }
-
-    // ─────────────────────────────────────────────────────────────
-    // REVIEWS — also readable by presenters for their own rooms
-    // (Override the earlier reviews rule to add presenter read access)
-    // ─────────────────────────────────────────────────────────────
 
     // ─────────────────────────────────────────────────────────────
     // ROOM CHAT  /roomChat/{docId}

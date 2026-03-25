@@ -162,31 +162,6 @@ export default function App() {
   // Only show fee/payment UI when the selected sector requires payment (not Speakers, Facilitators, etc.)
   const sectorRequiresPayment = Boolean(selectedSector && !noFeeSectors.includes(selectedSector));
 
-  // Countdown to April 9, 2026 (event start)
-  const eventDate = React.useMemo(() => new Date(2026, 3, 9, 0, 0, 0), []);
-  const [countdown, setCountdown] = React.useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
-  const [countdownEnded, setCountdownEnded] = React.useState(false);
-
-  React.useEffect(() => {
-    const tick = () => {
-      const now = new Date();
-      const diff = eventDate.getTime() - now.getTime();
-      if (diff <= 0) {
-        setCountdownEnded(true);
-        return;
-      }
-      setCountdown({
-        days: Math.floor(diff / (1000 * 60 * 60 * 24)),
-        hours: Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)),
-        minutes: Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60)),
-        seconds: Math.floor((diff % (1000 * 60)) / 1000),
-      });
-    };
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [eventDate]);
-
   const sectorFilterOptions = React.useMemo(
     () =>
       Array.from(
@@ -1045,6 +1020,25 @@ iSCENE 2026 Organizing Team</p>`,
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.45 }}
+            className="mb-8"
+          >
+            <div
+              className="mx-auto max-w-3xl rounded-2xl border border-red-200 bg-gradient-to-b from-red-50 to-white px-6 py-5 sm:px-10 sm:py-6 shadow-md shadow-red-900/[0.06] ring-1 ring-red-100"
+              role="status"
+            >
+              <p className="text-xs sm:text-sm font-bold uppercase tracking-[0.2em] text-red-500 mb-3">
+                Important notice
+              </p>
+              <p className="text-sm sm:text-base md:text-lg font-extrabold uppercase tracking-wide sm:tracking-wider text-red-700 leading-snug sm:leading-relaxed">
+                Postponed — please wait for further announcement of the new date.
+              </p>
+            </div>
+          </motion.div>
+
+          <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.5 }}
@@ -1108,11 +1102,13 @@ iSCENE 2026 Organizing Team</p>`,
             transition={{ delay: 0.4 }}
             className="flex flex-col md:flex-row items-center justify-center gap-6 mb-16"
           >
-            <div className="flex items-center gap-3 bg-white px-6 py-4 rounded-2xl shadow-sm border border-slate-100">
-              <Calendar className="text-blue-600" size={24} />
-              <div className="text-left">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Date</p>
-                <p className="font-bold text-slate-900">April 9-11, 2026</p>
+            <div className="flex items-center gap-3 bg-red-50 px-6 py-4 rounded-2xl shadow-sm border border-red-200 ring-1 ring-red-100">
+              <Calendar className="text-red-600 shrink-0" size={24} />
+              <div className="text-left min-w-0">
+                <p className="text-xs font-bold text-red-500 uppercase tracking-wider">Date</p>
+                <p className="font-extrabold text-red-700 uppercase tracking-wide text-xs sm:text-sm leading-snug">
+                  Postponed — new date to be announced
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-3 bg-white px-6 py-4 rounded-2xl shadow-sm border border-slate-100">
@@ -1122,33 +1118,6 @@ iSCENE 2026 Organizing Team</p>`,
                 <p className="font-bold text-slate-900">ICON, Cauayan City, Isabela</p>
               </div>
             </div>
-          </motion.div>
-
-          {/* Countdown to April 9, 2026 */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.45 }}
-            className="mb-12"
-          >
-            <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Event starts in</p>
-            {countdownEnded ? (
-              <p className="text-xl font-bold text-green-600">Event has started! See you at iSCENE 2026.</p>
-            ) : (
-              <div className="flex flex-wrap justify-center gap-3 sm:gap-6">
-                {[
-                  { value: countdown.days, label: 'Days' },
-                  { value: countdown.hours, label: 'Hours' },
-                  { value: countdown.minutes, label: 'Minutes' },
-                  { value: countdown.seconds, label: 'Seconds' },
-                ].map(({ value, label }) => (
-                  <div key={label} className="bg-white rounded-2xl shadow-sm border border-slate-100 px-5 py-4 min-w-[4.5rem] sm:min-w-[5.5rem]">
-                    <span className="block text-2xl sm:text-3xl font-black text-slate-900 tabular-nums">{String(value).padStart(2, '0')}</span>
-                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
           </motion.div>
 
           <motion.div
@@ -1370,7 +1339,7 @@ iSCENE 2026 Organizing Team</p>`,
       {/* Schedule Section */}
       <section id="schedule" className="py-24 bg-slate-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <SectionTitle subtitle="Join us for four days of intensive collaboration and discovery.">
+          <SectionTitle subtitle="Event dates to be announced. Below is the planned flow for each program day.">
             Event Schedule
           </SectionTitle>
 
@@ -1378,7 +1347,7 @@ iSCENE 2026 Organizing Team</p>`,
             {[
               { 
                 day: "Day 0", 
-                date: "April 8, 2026 | Wednesday", 
+                date: "To be announced", 
                 events: [
                   { time: "10:00 AM - 03:00 PM", activity: "Arrival of Delegates", venue: "Cauayan City Airport" },
                   { time: "01:00 PM - 05:00 PM", activity: "Registration and Claiming of Kits", venue: "SM City Cauayan" },
@@ -1387,7 +1356,7 @@ iSCENE 2026 Organizing Team</p>`,
               },
               { 
                 day: "Day 1", 
-                date: "April 9, 2026 | Thursday", 
+                date: "To be announced", 
                 events: [
                   { time: "08:00 AM - 12:00 NN", activity: "Presidential Program & Opening Ceremonies", venue: "ICON Main Hall" },
                   { time: "01:00 PM - 05:00 PM", activity: "Plenary & Breakout Sessions", venue: "ICON Main Hall" }
@@ -1395,7 +1364,7 @@ iSCENE 2026 Organizing Team</p>`,
               },
               { 
                 day: "Day 2", 
-                date: "April 10, 2026 | Friday", 
+                date: "To be announced", 
                 events: [
                   { time: "09:00 AM - 12:00 NN", activity: "Knowledge & Collaboration Sessions", venue: "ICON Main Hall" },
                   { time: "01:00 PM - 05:00 PM", activity: "Expo Walkthroughs & Partnership Dialogues", venue: "ICON Function Rooms" }
@@ -1403,7 +1372,7 @@ iSCENE 2026 Organizing Team</p>`,
               },
               { 
                 day: "Day 3", 
-                date: "April 11, 2026 | Saturday", 
+                date: "To be announced", 
                 events: [
                   { time: "09:00 AM - 12:00 NN", activity: "Visit to Cauayan City Smart Command Center", venue: "Cauayan City" },
                   { time: "01:00 PM - 05:00 PM", activity: "Tour of Smart Agriculture Facilities & Health Hubs", venue: "Cauayan City" }

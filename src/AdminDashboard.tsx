@@ -33,6 +33,7 @@ import {
   Loader2,
   Upload,
   ChevronRight,
+  Star,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -586,6 +587,10 @@ export function AdminDashboard({
   const [selectedQrRoom, setSelectedQrRoom] = React.useState<Room | null>(null);
   const [editingRoom, setEditingRoom] = React.useState<Room | null>(null);
   const [roomDetailView, setRoomDetailView] = React.useState<Room | null>(null);
+  const [roomDetailReviews, setRoomDetailReviews] = React.useState<
+    { id: string; participantName?: string; part4?: string; comment?: string; submittedAt?: any }[]
+  >([]);
+  const [roomDetailReviewsLoading, setRoomDetailReviewsLoading] = React.useState(false);
   const [chatModalRoom, setChatModalRoom] = React.useState<Room | null>(null);
   const [roomChatMessages, setRoomChatMessages] = React.useState<RoomChatMessage[]>([]);
   const [editingRegistration, setEditingRegistration] = React.useState<any | null>(null);
@@ -746,6 +751,39 @@ export function AdminDashboard({
   React.useEffect(() => {
     setSidebarOpen(false);
   }, [activeTab]);
+
+  React.useEffect(() => {
+    if (!roomDetailView?.id) {
+      setRoomDetailReviews([]);
+      return;
+    }
+    let cancelled = false;
+    setRoomDetailReviewsLoading(true);
+    getDocs(query(collection(db, 'reviews'), where('roomId', '==', roomDetailView.id)))
+      .then((snap) => {
+        if (cancelled) return;
+        const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Record<string, unknown>) })) as {
+          id: string;
+          participantName?: string;
+          part4?: string;
+          comment?: string;
+          submittedAt?: any;
+        }[];
+        const ms = (r: (typeof list)[0]) =>
+          r.submittedAt?.toMillis?.() ?? (r.submittedAt?.seconds != null ? r.submittedAt.seconds * 1000 : 0);
+        list.sort((a, b) => ms(b) - ms(a));
+        setRoomDetailReviews(list);
+      })
+      .catch(() => {
+        if (!cancelled) setRoomDetailReviews([]);
+      })
+      .finally(() => {
+        if (!cancelled) setRoomDetailReviewsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomDetailView?.id]);
 
   const roomIdForChat = chatModalRoom?.id ?? roomDetailView?.id;
   React.useEffect(() => {
@@ -2137,7 +2175,7 @@ export function AdminDashboard({
               {/* Room Detail Modal with Chat */}
               {roomDetailView && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col overflow-hidden">
                     <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-4 shrink-0">
                       <div className="min-w-0 flex-1">
                         <h3 className="text-xl font-black text-slate-900">{roomDetailView.name}</h3>
@@ -2184,6 +2222,38 @@ export function AdminDashboard({
                           )}
                         </div>
                         <p className="text-[10px] text-slate-400 mt-2">Read-only for admin. Participants can add questions from their dashboard.</p>
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+                          <Star size={16} className="text-amber-500" /> Session evaluations ({roomDetailReviews.length})
+                        </h4>
+                        {roomDetailReviewsLoading ? (
+                          <p className="text-sm text-slate-400 py-4 flex items-center gap-2">
+                            <Loader2 size={16} className="animate-spin" /> Loading reviews…
+                          </p>
+                        ) : roomDetailReviews.length === 0 ? (
+                          <p className="text-sm text-slate-400 rounded-xl border border-slate-200 bg-slate-50/50 py-6 text-center">
+                            No attendee evaluations yet for this session.
+                          </p>
+                        ) : (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50/50 max-h-56 overflow-y-auto p-3 space-y-3">
+                            {roomDetailReviews.map((rev) => {
+                              const text = rev.part4 || rev.comment;
+                              return (
+                                <div key={rev.id} className="flex flex-col gap-0.5 rounded-lg border border-slate-100 bg-white p-3">
+                                  <p className="text-xs font-semibold text-slate-700">{rev.participantName || 'Attendee'}</p>
+                                  {text ? <p className="text-sm text-slate-600 italic">&ldquo;{text}&rdquo;</p> : <p className="text-xs text-slate-400">(No written comments)</p>}
+                                  <p className="text-[10px] text-slate-400">
+                                    {rev.submittedAt?.toDate ? rev.submittedAt.toDate().toLocaleString() : '—'}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <p className="text-[10px] text-slate-400 mt-2">
+                          Speakers see these in their portal after breakout rooms include their account in <strong>presenterUids</strong> (re-save the session in admin if needed).
+                        </p>
                       </div>
                     </div>
                     <div className="p-5 border-t border-slate-100 flex gap-2 shrink-0">

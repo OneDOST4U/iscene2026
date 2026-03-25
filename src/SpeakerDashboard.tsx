@@ -248,11 +248,17 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     const load = async () => {
       setLoading(true);
       try {
-        // Rooms where this presenter is listed
-        const roomsSnap = await getDocs(
-          query(collection(db, 'rooms'), where('presenterNames', 'array-contains', fullName))
-        );
-        const rooms: Room[] = roomsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Room, 'id'>) }));
+        // Rooms where this presenter is listed (by name and/or uid — rules use presenterUids for review reads)
+        const [byNameSnap, byUidSnap] = await Promise.all([
+          getDocs(query(collection(db, 'rooms'), where('presenterNames', 'array-contains', fullName))),
+          getDocs(query(collection(db, 'rooms'), where('presenterUids', 'array-contains', user.uid))),
+        ]);
+        const roomMap = new Map<string, Room>();
+        byNameSnap.docs.forEach((d) => roomMap.set(d.id, { id: d.id, ...(d.data() as Omit<Room, 'id'>) }));
+        byUidSnap.docs.forEach((d) => {
+          if (!roomMap.has(d.id)) roomMap.set(d.id, { id: d.id, ...(d.data() as Omit<Room, 'id'>) });
+        });
+        const rooms: Room[] = Array.from(roomMap.values());
         if (!cancelled) setAssignedRooms(rooms);
 
         // All rooms (fallback for dropdown when no assigned rooms match)
@@ -270,7 +276,26 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
             revSnap.docs.forEach((d) => reviews.push({ id: d.id, ...(d.data() as Omit<SessionReview, 'id'>) }));
           }
         }
-        if (!cancelled) setSessionReviews(reviews);
+        if (!cancelled) {
+          setSessionReviews(reviews);
+          // #region agent log
+          try {
+            fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'd914bb' },
+              body: JSON.stringify({
+                sessionId: 'd914bb',
+                runId: 'verify',
+                hypothesisId: 'A',
+                location: 'SpeakerDashboard.tsx:load',
+                message: 'speaker reviews loaded',
+                data: { assignedRoomCount: rooms.length, reviewsCount: reviews.length },
+                timestamp: Date.now(),
+              }),
+            }).catch(() => {});
+          } catch (_) {}
+          // #endregion
+        }
       } catch (err) { console.error('SpeakerDashboard load', err); }
       finally { if (!cancelled) setLoading(false); }
     };
@@ -429,9 +454,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       return;
     }
     setEditSessionSaving(true);
-    // #region agent log
-    try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'SpeakerDashboard.tsx:handleUpdateSession:start',message:'Speaker update session start',data:{roomId:editingSessionRoom.id,hasPresenterUids:!!editingSessionRoom.presenterUids,userInPresenters:editingSessionRoom.presenterUids?.includes(auth.currentUser?.uid || '')},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{}); } catch(_) {}
-    // #endregion
     try {
       let backgroundImageUrl: string | null = null;
       if (editSessionBgFile) {
@@ -467,13 +489,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       closeEditSession();
       setScanToast('✅ Session updated successfully.');
       setTimeout(() => setScanToast(null), 3000);
-      // #region agent log
-      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'SpeakerDashboard.tsx:handleUpdateSession:success',message:'Speaker update success',data:{roomId:editingSessionRoom.id},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{}); } catch(_) {}
-      // #endregion
     } catch (err: any) {
-      // #region agent log
-      try { fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'78a594'},body:JSON.stringify({sessionId:'78a594',location:'SpeakerDashboard.tsx:handleUpdateSession:catch',message:'Speaker update error',data:{roomId:editingSessionRoom?.id,errCode:err?.code,errMessage:String(err?.message||err)},timestamp:Date.now(),hypothesisId:'A,B,C,D,E'})}).catch(()=>{}); } catch(_) {}
-      // #endregion
       console.error('updateSession', err);
       setScanToast('❌ Failed to update session. You may not have permission.');
       setTimeout(() => setScanToast(null), 4000);
@@ -496,7 +512,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center overflow-x-hidden bg-slate-50">
         <Loader2 className="animate-spin text-blue-600" size={36} />
       </div>
     );
@@ -635,7 +651,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   // Main render
   // ─────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex min-h-screen overflow-hidden bg-slate-50 text-slate-900">
+    <div className="flex min-h-dvh max-w-[100vw] overflow-x-hidden overflow-y-hidden bg-slate-50 text-slate-900">
 
       {sidebarOpen && (
         <button
@@ -694,7 +710,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       </aside>
 
       {/* ── Main content ─────────────────────────────────────────────── */}
-      <main className="flex-1 min-w-0 overflow-y-auto min-h-screen">
+      <main className="min-h-dvh flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
         {/* Toast */}
         {scanToast && (
           <div className={`fixed left-4 right-4 top-4 z-50 px-5 py-3 rounded-2xl text-sm font-semibold shadow-lg sm:left-auto sm:right-4 ${scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>

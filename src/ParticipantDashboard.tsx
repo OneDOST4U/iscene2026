@@ -346,6 +346,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   // ── Mobile filter ──────────────────────────────────────────────────────────
   const [mobileFilter, setMobileFilter] = React.useState<string>('all');
+  const [roomSearchQuery, setRoomSearchQuery] = React.useState('');
 
   const [exhibitorSearchQuery, setExhibitorSearchQuery] = React.useState('');
   const [exhibitorCategoryFilter, setExhibitorCategoryFilter] = React.useState<string>('all');
@@ -426,7 +427,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const profilePicUrl = (registration?.profilePictureUrl as string | undefined) || null;
 
   const attendedRoomIds = (Object.values(reservations) as Reservation[]).filter((r) => r.attended).map((r) => r.roomId);
-  const reviewedRoomIds = Object.keys(reviews);
+  const reviewedRoomIds = React.useMemo(() => {
+    const s = new Set<string>(Object.keys(reviews));
+    (Object.values(reservations) as Reservation[]).forEach((r) => {
+      if (r.reviewSubmitted) s.add(r.roomId);
+    });
+    return Array.from(s);
+  }, [reviews, reservations]);
   const certifiableRooms = React.useMemo(() => {
     return attendedRoomIds
       .filter((rid) => reviewedRoomIds.includes(rid))
@@ -600,9 +607,32 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     return ['all', ...dates];
   }, [rooms]);
 
-  const filteredRooms = React.useMemo(() =>
-    mobileFilter === 'all' ? rooms : rooms.filter((r) => r.sessionDate === mobileFilter),
-    [rooms, mobileFilter]);
+  const roomsForScheduleDate = React.useMemo(
+    () => (mobileFilter === 'all' ? rooms : rooms.filter((r) => r.sessionDate === mobileFilter)),
+    [rooms, mobileFilter],
+  );
+
+  const filteredRooms = React.useMemo(() => {
+    const q = roomSearchQuery.trim().toLowerCase();
+    const tokens = q.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return roomsForScheduleDate;
+    return roomsForScheduleDate.filter((r) => {
+      const hay = [
+        r.name,
+        r.description,
+        r.venue,
+        r.timeline,
+        r.materials,
+        r.projectDetail,
+        ...(r.presenterNames || []),
+        ...(r.presenterTitles || []),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return tokens.every((t) => hay.includes(t));
+    });
+  }, [roomsForScheduleDate, roomSearchQuery]);
 
   // ── Load data ──────────────────────────────────────────────────────────────
   const loadAll = React.useCallback(async () => {
@@ -628,8 +658,18 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       resSnap.docs.forEach((d) => { const data = d.data() as Omit<Reservation, 'id'>; resMap[data.roomId] = { id: d.id, ...data }; });
       setReservations(resMap);
 
+      const revList = revSnap.docs.map((d) => {
+        const data = d.data() as Omit<Review, 'id'>;
+        return { id: d.id, ...data };
+      });
+      const ms = (r: Review) =>
+        (r as any).submittedAt?.toMillis?.() ??
+        ((r as any).submittedAt?.seconds != null ? (r as any).submittedAt.seconds * 1000 : 0);
+      revList.sort((a, b) => ms(b) - ms(a));
       const revMap: Record<string, Review> = {};
-      revSnap.docs.forEach((d) => { const data = d.data() as Omit<Review, 'id'>; revMap[data.roomId] = { id: d.id, ...data }; });
+      revList.forEach((r) => {
+        if (r.roomId && !revMap[r.roomId]) revMap[r.roomId] = r;
+      });
       setReviews(revMap);
 
       setBoothRegs(boothSnap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })));
@@ -914,7 +954,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const handleReserve = async (room: Room) => {
     setOverlapModal(null);
-    const reservedRoomIds = Object.values(reservations).map((r) => r.roomId);
+    const reservedRoomIds = (Object.values(reservations) as Reservation[]).map((r) => r.roomId);
     for (const rid of reservedRoomIds) {
       const existingRoom = rooms.find((r) => r.id === rid);
       if (existingRoom && roomsOverlap(existingRoom, room)) {
@@ -998,6 +1038,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const handleSubmitReview = async () => {
     if (!reviewModal) return;
+    const resRow = reservations[reviewModal.roomId];
+    if (reviews[reviewModal.roomId] || resRow?.reviewSubmitted) {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d914bb'},body:JSON.stringify({sessionId:'d914bb',runId:'dup-guard',hypothesisId:'G',location:'ParticipantDashboard.tsx:handleSubmitReview:blocked',message:'submit skipped already submitted',data:{roomId:reviewModal.roomId},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      return;
+    }
     setPart4Error(null);
     const commentsTrimmed = dostPart4.trim();
     if (!commentsTrimmed) {
@@ -1007,6 +1054,19 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     setReviewSaving(true);
     try {
       const part2Arr = Object.entries(dostPart2).map(([speakerName, ratings]) => ({ speakerName, ratings }));
+      // Firestore rejects undefined in nested fields — omit optional description when empty (see debug-d914bb invalid-argument part3.description).
+      const part3DescTrimmed = dostPart3.description?.trim() ?? '';
+      const part3Payload: {
+        venue: number;
+        food: number;
+        organizerResponse: number;
+        description?: string;
+      } = {
+        venue: dostPart3.venue,
+        food: dostPart3.food,
+        organizerResponse: dostPart3.organizerResponse,
+      };
+      if (part3DescTrimmed) part3Payload.description = part3DescTrimmed;
       const payload = {
         uid: user.uid,
         participantName: fullName,
@@ -1014,16 +1074,58 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         roomName: reviewModal.roomName,
         part1: dostPart1,
         part2: part2Arr,
-        part3: { ...dostPart3, description: dostPart3.description?.trim() || undefined },
+        part3: part3Payload,
         part4: commentsTrimmed,
         submittedAt: Timestamp.now(),
       };
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d914bb'},body:JSON.stringify({sessionId:'d914bb',runId:'post-desc-fix',hypothesisId:'F',location:'ParticipantDashboard.tsx:handleSubmitReview:start',message:'submit review start',data:{roomId:reviewModal.roomId,part3HasDescription:part3DescTrimmed.length>0},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const docRef = await addDoc(collection(db, 'reviews'), payload);
-      setReviews((prev) => ({ ...prev, [reviewModal.roomId]: { id: docRef.id, roomId: reviewModal.roomId, part1: dostPart1, part2: part2Arr, part3: dostPart3, part4: commentsTrimmed } }));
-      await updateDoc(doc(db, 'reservations', `${user.uid}_${reviewModal.roomId}`), { reviewSubmitted: true });
-      setReservations((prev) => ({ ...prev, [reviewModal.roomId]: { ...prev[reviewModal.roomId], reviewSubmitted: true } }));
+      const resRef = doc(db, 'reservations', `${user.uid}_${reviewModal.roomId}`);
+      await setDoc(
+        resRef,
+        {
+          uid: user.uid,
+          roomId: reviewModal.roomId,
+          roomName: reviewModal.roomName,
+          reviewSubmitted: true,
+        },
+        { merge: true },
+      );
+      setReviews((prev) => ({
+        ...prev,
+        [reviewModal.roomId]: {
+          id: docRef.id,
+          roomId: reviewModal.roomId,
+          part1: dostPart1,
+          part2: part2Arr,
+          part3: { ...part3Payload, ...(part3DescTrimmed ? {} : { description: '' }) },
+          part4: commentsTrimmed,
+        },
+      }));
+      setReservations((prev) => {
+        const cur = prev[reviewModal.roomId];
+        const nextRes: Reservation = cur
+          ? { ...cur, reviewSubmitted: true }
+          : {
+              id: `${user.uid}_${reviewModal.roomId}`,
+              roomId: reviewModal.roomId,
+              roomName: reviewModal.roomName,
+              attended: true,
+              reviewSubmitted: true,
+              reservedAt: Timestamp.now(),
+            };
+        return { ...prev, [reviewModal.roomId]: nextRes };
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d914bb'},body:JSON.stringify({sessionId:'d914bb',runId:'pre-fix',hypothesisId:'C',location:'ParticipantDashboard.tsx:handleSubmitReview:success',message:'submit review ok',data:{reviewDocId:docRef.id,roomId:reviewModal.roomId},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       setReviewModal(null);
-    } catch (err) {
+    } catch (err: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d914bb'},body:JSON.stringify({sessionId:'d914bb',runId:'pre-fix',hypothesisId:'A,C',location:'ParticipantDashboard.tsx:handleSubmitReview:catch',message:'submit review failed',data:{code:err?.code,message:String(err?.message||err)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       console.error('Failed to submit review:', err);
       setPart4Error('Failed to save. Please check your connection and try again.');
     } finally {
@@ -1239,10 +1341,11 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               <button type="button" onClick={() => handleCancelReservation(room)} className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full hover:bg-red-100">Cancel</button>
             </>
           )}
-          {res?.attended && !rev && (
+          {res?.attended && !(rev || res?.reviewSubmitted) && (
             <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full hover:bg-amber-100">Review</button>
           )}
           {rev && <span className="text-amber-400 text-xs">{'★'.repeat(getReviewDisplayRating(rev))}</span>}
+          {res?.reviewSubmitted && !rev && <span className="text-[10px] font-bold text-emerald-600">Reviewed</span>}
           <ChevronRight size={18} className="text-slate-300 mt-1" />
           </div>
         </div>
@@ -1476,6 +1579,34 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               <p className="text-sm text-slate-500 mt-1">Discover breakout sessions and reserve your slot.</p>
             </div>
 
+            <div className="px-4 pb-2">
+              <label htmlFor="breakout-room-search-mobile" className="sr-only">
+                Search breakout sessions
+              </label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" aria-hidden />
+                <input
+                  id="breakout-room-search-mobile"
+                  type="search"
+                  value={roomSearchQuery}
+                  onChange={(e) => setRoomSearchQuery(e.target.value)}
+                  placeholder="Search title, description, venue, speakers…"
+                  autoComplete="off"
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+                {roomSearchQuery ? (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => setRoomSearchQuery('')}
+                    className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
             {/* Filter chips */}
             <div className="flex gap-2 overflow-x-auto px-4 py-3 no-scrollbar">
               {mobileFilterOptions.map((f) => (
@@ -1489,7 +1620,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             {/* Session cards */}
             <div className="flex flex-col gap-5 px-4 pb-4">
               {filteredRooms.length === 0 ? (
-                <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No sessions yet.</div>
+                <div className="rounded-2xl border border-slate-100 bg-white p-10 text-center text-sm text-slate-400 shadow-sm">
+                  {rooms.length === 0
+                    ? 'No breakout sessions yet.'
+                    : roomsForScheduleDate.length === 0
+                      ? 'No sessions for this date.'
+                      : 'No sessions match your search. Try other keywords or clear the search.'}
+                </div>
               ) : (
                 filteredRooms.map((room, i) => {
                   const res = reservations[room.id];
@@ -1524,12 +1661,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                               <button type="button" onClick={() => handleCancelReservation(room)} className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 text-xs font-bold">Cancel</button>
                             </>
                           )}
-                          {res?.attended && !rev && (
+                          {res?.attended && !(rev || res?.reviewSubmitted) && (
                             <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold">
                               Review
                             </button>
                           )}
                           {rev && <span className="text-amber-400 text-xs font-bold">{'★'.repeat(getReviewDisplayRating(rev))}</span>}
+                          {res?.reviewSubmitted && !rev && <span className="text-xs font-bold text-emerald-600">Reviewed</span>}
                         </div>
                       </div>
                       <ChevronRight size={20} className="text-slate-300 shrink-0" />
@@ -2110,10 +2248,62 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* SCHEDULE */}
         {activeTab === 'schedule' && (
           <div className="py-4 sm:py-6 lg:py-8">
-            {rooms.length === 0
-              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No sessions scheduled yet.</div>
-              : <div className="space-y-3">{rooms.map((room, i) => {
-                  const res = reservations[room.id]; const rev = reviews[room.id];
+            <div className="mb-4 max-w-2xl space-y-3">
+              <label htmlFor="breakout-room-search-desktop" className="sr-only">
+                Search breakout sessions
+              </label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" aria-hidden />
+                <input
+                  id="breakout-room-search-desktop"
+                  type="search"
+                  value={roomSearchQuery}
+                  onChange={(e) => setRoomSearchQuery(e.target.value)}
+                  placeholder="Search title, description, venue, speakers…"
+                  autoComplete="off"
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+                {roomSearchQuery ? (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => setRoomSearchQuery('')}
+                    className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {mobileFilterOptions.map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setMobileFilter(f)}
+                    className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                      mobileFilter === f
+                        ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
+                        : 'bg-blue-100/70 text-blue-700 hover:bg-blue-100'
+                    }`}
+                  >
+                    {f === 'all' ? 'All Tracks' : new Date(f).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {rooms.length === 0 ? (
+              <div className="rounded-2xl border border-slate-100 bg-white p-12 text-center text-slate-400 shadow-sm">No breakout sessions yet.</div>
+            ) : filteredRooms.length === 0 ? (
+              <div className="rounded-2xl border border-slate-100 bg-white p-12 text-center text-sm text-slate-400 shadow-sm">
+                {roomsForScheduleDate.length === 0
+                  ? 'No sessions for this date.'
+                  : 'No sessions match your search. Try other keywords or clear the search.'}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredRooms.map((room, i) => {
+                  const res = reservations[room.id];
+                  const rev = reviews[room.id];
                   const grad = CARD_GRADIENTS[i % CARD_GRADIENTS.length];
                   return (
                     <div
@@ -2122,36 +2312,55 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                       tabIndex={0}
                       onClick={() => setDetailRoom(room)}
                       onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
-                      className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow cursor-pointer flex"
+                      className="flex cursor-pointer overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm transition-shadow hover:shadow-md"
                     >
                       <div
                         className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
                         style={room.backgroundImage ? { backgroundImage: `url(${room.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#f1f5f9' } : undefined}
                       />
-                      <div className="flex-1 min-w-0 flex items-start justify-between gap-4 p-5">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}{room.venue && ` · ${room.venue}`}</p>
-                          <h3 className="font-bold text-sm text-slate-800 leading-snug">{room.name}</h3>
-                          {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{room.description}</p>}
-                          <div className="flex flex-wrap items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
-                            {!res ? <button type="button" onClick={() => handleReserve(room)} className="px-3 py-1.5 bg-blue-600 text-white rounded-full text-xs font-bold hover:bg-blue-700">Reserve</button>
-                              : res.attended
-                                ? <span className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>
-                                : <>
-                                    <span className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold flex items-center gap-1"><CheckCircle2 size={12} /> Reserved</span>
-                                    <button type="button" onClick={() => handleCancelReservation(room)} className="px-3 py-1.5 bg-red-100 text-red-700 rounded-full text-xs font-bold hover:bg-red-200">Cancel</button>
-                                  </>}
-                            {res?.attended && !rev && (
-                              <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-full text-xs font-bold hover:bg-amber-200"><Star size={11} /> Review</button>
+                      <div className="flex flex-1 min-w-0 items-start justify-between gap-4 p-5">
+                        <div className="min-w-0 flex-1">
+                          <p className="mb-0.5 text-[11px] text-slate-500">
+                            {formatSessionDateTime(room)}
+                            {room.venue && ` · ${room.venue}`}
+                          </p>
+                          <h3 className="text-sm font-bold leading-snug text-slate-800">{room.name}</h3>
+                          {room.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-slate-400">{room.description}</p>}
+                          <div className="mt-2 flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                            {!res ? (
+                              <button type="button" onClick={() => handleReserve(room)} className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700">
+                                Reserve
+                              </button>
+                            ) : res.attended ? (
+                              <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                                <CheckCircle2 size={12} /> Reserved
+                              </span>
+                            ) : (
+                              <>
+                                <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                                  <CheckCircle2 size={12} /> Reserved
+                                </span>
+                                <button type="button" onClick={() => handleCancelReservation(room)} className="rounded-full bg-red-100 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-200">
+                                  Cancel
+                                </button>
+                              </>
+                            )}
+                            {res?.attended && !(rev || res?.reviewSubmitted) && (
+                              <button type="button" onClick={() => setReviewModal({ roomId: room.id, roomName: room.name, presenterNames: room.presenterNames || [] })} className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-200">
+                                <Star size={11} /> Review
+                              </button>
                             )}
                             {rev && <span className="text-xs font-bold text-amber-500">{'★'.repeat(getReviewDisplayRating(rev))}</span>}
+                            {res?.reviewSubmitted && !rev && <span className="text-xs font-bold text-emerald-600">Reviewed</span>}
                           </div>
                         </div>
-                        <ChevronRight size={20} className="text-slate-300 shrink-0" />
+                        <ChevronRight size={20} className="shrink-0 text-slate-300" />
                       </div>
                     </div>
                   );
-                })}</div>}
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -2654,18 +2863,19 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       {detailRoom && (() => {
         const res = reservations[detailRoom.id];
         const rev = reviews[detailRoom.id];
+        const reviewDone = !!(rev || res?.reviewSubmitted);
         const roomMats = presenterMaterials.filter((m) => m.roomId === detailRoom.id);
-        const currentStep = !res ? 1 : !res.attended ? 2 : !rev ? 3 : 4;
+        const currentStep = !res ? 1 : !res.attended ? 2 : !reviewDone ? 3 : 4;
         const steps = [
           { id: 'reserve', label: 'RESERVE', done: !!res, current: currentStep === 1 },
           { id: 'timein', label: 'TIME IN', done: res?.attended, current: currentStep === 2 },
-          { id: 'review', label: 'REVIEW', done: !!rev, current: currentStep === 3 },
-          { id: 'cert', label: 'CERTIFICATE', done: !!rev && !!res?.attended, current: currentStep === 4 },
+          { id: 'review', label: 'REVIEW', done: reviewDone, current: currentStep === 3 },
+          { id: 'cert', label: 'CERTIFICATE', done: reviewDone && !!res?.attended, current: currentStep === 4 },
         ];
         return (
-        <div className="fixed inset-0 z-[70] bg-slate-100 overflow-y-auto">
+        <div className="fixed inset-0 z-[70] min-h-dvh max-h-dvh overflow-y-auto overflow-x-hidden bg-slate-100 overscroll-y-contain pt-[env(safe-area-inset-top)]">
           {/* Header with Back */}
-          <div className="sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3">
+          <div className="sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3 max-w-[100vw]">
             <button
               type="button"
               onClick={() => setDetailRoom(null)}
@@ -2689,7 +2899,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     : s.id === 'timein'
                     ? undefined
                     : s.id === 'review' && res?.attended
-                    ? () => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }
+                    ? () => {
+                        setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom });
+                        setDetailRoom(null);
+                      }
                     : s.id === 'cert'
                     ? () => {
                         const certForThisRoom = certifiableRooms.find((c) => c.roomId === detailRoom.id);
@@ -2717,7 +2930,9 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                       }`}>
                         {s.done ? (s.id === 'cert' ? <Trophy size={16} /> : <CheckCircle2 size={16} />) : s.current && s.id === 'cert' ? <Award size={16} /> : i + 1}
                       </div>
-                      <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">{s.label}</span>
+                      <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">
+                        {s.id === 'review' ? (reviewDone ? 'SUBMITTED' : s.label) : s.label}
+                      </span>
                       {s.id === 'reserve' && (
                         <QrCode size={14} className={`shrink-0 ${s.done || s.current ? 'text-blue-600' : 'text-slate-300'}`} />
                       )}
@@ -2846,7 +3061,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                         <button type="button" onClick={async () => { await handleCancelReservation(detailRoom); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600">Cancel reservation</button>
                       </>
                     : <span className="w-full sm:w-auto px-6 py-3 bg-emerald-100 text-emerald-700 font-bold rounded-xl flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}
-                {res?.attended && !rev && (
+                {res?.attended && !reviewDone && (
                   <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-amber-100 text-amber-700 font-bold rounded-xl hover:bg-amber-200 flex items-center justify-center gap-2"><Star size={18} /> Submit Review</button>
                 )}
               </div>
@@ -2858,9 +3073,12 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       })()}
 
       {/* DOST Review modal */}
-      {reviewModal && (
-        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-end justify-center md:items-center md:p-4">
-          <div className="w-full max-w-2xl max-h-[94vh] md:max-h-[90vh] bg-white rounded-t-3xl md:rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+      {reviewModal && (() => {
+        const resForReviewModal = reservations[reviewModal.roomId];
+        const reviewAlreadySubmitted = !!(reviews[reviewModal.roomId] || resForReviewModal?.reviewSubmitted);
+        return (
+        <div className="fixed inset-0 z-[70] flex max-h-dvh min-h-dvh w-full max-w-[100vw] items-end justify-center overflow-hidden bg-black/60 backdrop-blur-sm md:items-center md:p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] md:pt-4 md:pb-4">
+          <div className="flex max-h-[min(94dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl md:max-h-[min(90dvh,calc(100dvh-2rem))] md:rounded-3xl">
             {/* Mobile sheet handle */}
             <div className="md:hidden w-12 h-1 rounded-full bg-slate-300 mx-auto mt-2" aria-hidden />
             <div className="shrink-0 flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-b from-slate-50 to-white">
@@ -2870,6 +3088,31 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </div>
               <button type="button" onClick={() => { if (reviewModal?.fromRoom) setDetailRoom(reviewModal.fromRoom); setReviewModal(null); }} className="w-10 h-10 shrink-0 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200 text-slate-600 active:scale-95 transition-transform" aria-label="Close"><X size={18} /></button>
             </div>
+            {reviewAlreadySubmitted ? (
+              <>
+                <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-10 text-center">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-4 ring-emerald-100/80">
+                    <CheckCircle2 size={36} strokeWidth={2.25} />
+                  </div>
+                  <div className="space-y-2 max-w-sm">
+                    <p className="text-xl font-black text-slate-900">Submitted</p>
+                    <p className="text-sm text-slate-600 leading-relaxed">
+                      Your evaluation for this session is saved. You cannot submit again for this breakout.
+                    </p>
+                  </div>
+                </div>
+                <div className="shrink-0 border-t border-slate-200 bg-white p-4 sm:p-5 pt-3">
+                  <div
+                    className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl bg-emerald-100 py-3.5 font-bold text-emerald-800"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <CheckCircle2 size={18} /> Submitted
+                  </div>
+                </div>
+              </>
+            ) : (
+            <>
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 pb-8">
               {/* Part I */}
               <section className="space-y-5 p-5 sm:p-6 bg-gradient-to-br from-slate-50 to-white rounded-2xl border border-slate-200/80 shadow-sm">
@@ -2962,7 +3205,17 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Venue (room size, lighting, etc.)</p><DOSTScale15 value={dostPart3.venue} onChange={(v) => setDostPart3((p) => ({ ...p, venue: v }))} /></div>
                   <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Food</p><DOSTScale15 value={dostPart3.food} onChange={(v) => setDostPart3((p) => ({ ...p, food: v }))} /></div>
                   <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Ability of organizer to respond to participant&apos;s needs</p><DOSTScale15 value={dostPart3.organizerResponse} onChange={(v) => setDostPart3((p) => ({ ...p, organizerResponse: v }))} /></div>
-                  <div className="space-y-2 pt-2"><p className="text-xs font-medium text-slate-500">Description (optional)</p><textarea value={dostPart3.description} onChange={(e) => setDostPart3((p) => ({ ...p, description: e.target.value }))} rows={2} className="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" placeholder="Additional remarks (optional)..." /></div>
+                  <div className="space-y-2 pt-2">
+                    <p className="text-xs font-medium text-slate-500">Description (optional)</p>
+                    <textarea
+                      value={dostPart3.description}
+                      onChange={(e) => setDostPart3((p) => ({ ...p, description: e.target.value }))}
+                      rows={2}
+                      aria-required="false"
+                      className="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                      placeholder="Additional remarks (optional)…"
+                    />
+                  </div>
                 </div>
               </section>
 
@@ -2989,9 +3242,12 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 {reviewSaving ? <><Loader2 size={18} className="animate-spin" /> Submitting…</> : <><Star size={18} /> Submit Review</>}
               </button>
             </div>
+            </>
+            )}
           </div>
         </div>
-      )}
+        );
+      })()}
     </>
   );
 }
