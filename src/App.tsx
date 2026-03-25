@@ -82,7 +82,7 @@ async function enqueueDeclineRegistrationEmail(to: string, fullName: string) {
 
 Thank you for your interest in the International Smart & Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026).
 
-Please note that iSCENE 2026 has been postponed. Please wait for a further announcement of the new event dates, and stay tuned for updates through the official channels listed on the event website.
+Please note that iSCENE 2026, previously scheduled for April 9–11, 2026, has been postponed. Please wait for a further announcement of the new event dates, and stay tuned for updates through the official channels listed on the event website.
 
 After review, your registration has not been approved for this year's program.
 
@@ -92,7 +92,7 @@ Best regards,
 iSCENE 2026 Organizing Team`,
       html: `<p>Dear ${name},</p>
 <p>Thank you for your interest in the <strong>International Smart &amp; Sustainable Cities and Communities Exposition and Networking Engagement (iSCENE 2026)</strong>.</p>
-<p><strong>Please note:</strong> iSCENE 2026 has been <strong>postponed</strong>. Please wait for a further announcement of the <strong>new event dates</strong>, and <strong>stay tuned</strong> for updates through the official channels listed on the event website.</p>
+<p><strong>Please note:</strong> <strong>iSCENE 2026</strong>, previously scheduled for <strong>April 9–11, 2026</strong>, has been <strong>postponed</strong>. Please wait for a further announcement of the <strong>new event dates</strong>, and <strong>stay tuned</strong> for updates through the official channels listed on the event website.</p>
 <p>After review, your registration has <strong>not been approved</strong> for this year&rsquo;s program.</p>
 <p>If you have questions or believe this is an error, please contact the <strong>iSCENE 2026</strong> organizers through those same official channels.</p>
 <p>Best regards,<br/>
@@ -1097,7 +1097,7 @@ iSCENE 2026 Organizing Team</p>`,
                 Important notice
               </p>
               <p className="text-sm sm:text-base md:text-lg font-extrabold uppercase tracking-wide sm:tracking-wider text-red-700 leading-snug sm:leading-relaxed">
-                Postponed — please wait for further announcement of the new date.
+                April 9–11, 2026 has been postponed — please wait for further announcement of the new date.
               </p>
             </div>
           </motion.div>
@@ -1171,7 +1171,7 @@ iSCENE 2026 Organizing Team</p>`,
               <div className="text-left min-w-0">
                 <p className="text-xs font-bold text-red-500 uppercase tracking-wider">Date</p>
                 <p className="font-extrabold text-red-700 uppercase tracking-wide text-xs sm:text-sm leading-snug">
-                  Postponed — new date to be announced
+                  April 9–11, 2026 postponed — new date to be announced
                 </p>
               </div>
             </div>
