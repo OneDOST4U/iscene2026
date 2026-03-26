@@ -1320,9 +1320,9 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             </div>
                           </td>
                           <td className="px-5 py-4"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${sectorBadge(p.sector)}`}>{p.sector || 'Participant'}</span></td>
-                          <td className="px-5 py-4 text-sm font-medium">{p.accommodationHotel || <span className="text-slate-300">â€”</span>}</td>
-                          <td className="px-5 py-4 text-sm">{p.accommodationRoom || <span className="text-slate-300">â€”</span>}</td>
-                          <td className="px-5 py-4 text-sm text-slate-500">{p.accommodationCheckIn || <span className="text-slate-300">â€”</span>}</td>
+                          <td className="px-5 py-4 text-sm font-medium">{p.accommodationHotel || <span className="text-slate-300">—</span>}</td>
+                          <td className="px-5 py-4 text-sm">{p.accommodationRoom || <span className="text-slate-300">—</span>}</td>
+                          <td className="px-5 py-4 text-sm text-slate-500">{p.accommodationCheckIn || <span className="text-slate-300">—</span>}</td>
                           <td className="px-5 py-4">
                             <div className={`flex items-center gap-1.5 ${sb.cls}`}>
                               <div className="w-1.5 h-1.5 rounded-full bg-current" />
