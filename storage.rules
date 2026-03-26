@@ -101,5 +101,31 @@ service firebase.storage {
       allow create, update, delete: if isAdmin();
       allow read: if isOwner(userId) || isAdmin();
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // ARTICLE ATTACHMENTS  /articleAttachments/{uid}/{fileName}
+    // Same pattern as presenterMaterials: owner uploads; signed-in read.
+    // No contentType guard (PDFs, Office, etc.); size cap only.
+    // ─────────────────────────────────────────────────────────────
+    match /articleAttachments/{userId}/{fileName} {
+      allow create: if isOwner(userId)
+        && request.resource.size < 50 * 1024 * 1024;
+      allow read: if signedIn();
+      allow delete: if isOwner(userId);
+      allow update: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ARTICLE HEADER IMAGES  /articleHeaders/{uid}/{fileName}
+    // Optional banner shown on article cards / future public views.
+    // ─────────────────────────────────────────────────────────────
+    match /articleHeaders/{userId}/{fileName} {
+      allow create: if isOwner(userId)
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow read: if signedIn();
+      allow delete: if isOwner(userId);
+      allow update: if false;
+    }
   }
 }

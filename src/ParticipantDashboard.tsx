@@ -9,7 +9,6 @@ import {
   QrCode,
   Award,
   FileText,
-  MessageSquare,
   MessageCircle,
   Zap,
   Bookmark,
@@ -37,6 +36,7 @@ import {
   MapPin,
   AlertTriangle,
   Search,
+  Newspaper,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -56,14 +56,20 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { EXHIBITOR_BOOTH_CATEGORIES, exhibitorCategoryLabel } from './exhibitorBoothCategory';
-import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey } from './entranceCheckInDay';
+import { ArticleBrowsePanel } from './ArticleBrowsePanel';
+import type { ArticleDoc } from './ArticlesManager';
+import { useArticleCategoryNames } from './useArticleCategoryNames';
+import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey, mealSessionDateKeyManila } from './entranceCheckInDay';
+import { registrationSectorEligibleForMeal } from './mealEligibility';
+import { MealEntitlementCard } from './MealEntitlementCard';
+import { formatSessionDateTime, roomsOverlap } from './sessionRoomUtils';
 import { QrScanModal } from './QrScanModal';
 import { jsPDF } from 'jspdf';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
-type Tab = 'home' | 'schedule' | 'exhibitors' | 'materials' | 'profile' | 'meals';
+type Tab = 'home' | 'schedule' | 'exhibitors' | 'materials' | 'profile' | 'meals' | 'articles';
 
 const TRAVEL_ACCOMMODATION_REMINDER_MS = 3 * 60 * 60 * 1000;
 
@@ -89,6 +95,7 @@ type MealWindow = {
   itemType?: 'food' | 'kit' | 'both';
   name?: string;
   location?: string;
+  foodLocationDetails?: string;
   assignedBoothUid?: string;
   eligibleSectors?: string[];
   eligibleParticipantIds?: string[];
@@ -169,58 +176,6 @@ const TRACK_BADGES = [
   { label: 'Innovation', cls: 'text-rose-600 bg-rose-100' },
   { label: 'Research', cls: 'text-cyan-600 bg-cyan-100' },
 ];
-
-/** Parse timeline (e.g. "8:00 AM - 9:00 AM") to minutes from midnight. Returns null if unparseable. */
-function parseTimelineToMinutes(timeline: string): { start: number; end: number } | null {
-  const parts = timeline.split(/[–-]/).map((s) => s.trim());
-  if (parts.length !== 2) return null;
-  const parseOne = (s: string): number | null => {
-    const t = s.trim();
-    const m = t.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm|NN|nn)/i);
-    if (!m) return null;
-    let h = parseInt(m[1], 10);
-    const min = m[2] ? parseInt(m[2], 10) : 0;
-    if (/NN/i.test(m[3])) return 12 * 60 + min;
-    if (/PM/i.test(m[3]) && h !== 12) h += 12;
-    if (/AM/i.test(m[3]) && h === 12) h = 0;
-    return h * 60 + min;
-  };
-  const start = parseOne(parts[0]);
-  const end = parseOne(parts[1]);
-  if (start == null || end == null) return null;
-  return { start, end };
-}
-
-/** Check if two rooms overlap in date and time. Returns true if they overlap. */
-function roomsOverlap(a: { sessionDate?: string; timeline?: string }, b: { sessionDate?: string; timeline?: string }): boolean {
-  if (!a.sessionDate || !b.sessionDate) return false;
-  const dateA = String(a.sessionDate).split('T')[0];
-  const dateB = String(b.sessionDate).split('T')[0];
-  if (dateA !== dateB) return false;
-  if (!a.timeline || !b.timeline) return false;
-  const rangeA = parseTimelineToMinutes(a.timeline);
-  const rangeB = parseTimelineToMinutes(b.timeline);
-  if (!rangeA || !rangeB) return false;
-  return rangeA.start < rangeB.end && rangeB.start < rangeA.end;
-}
-
-/** Format room date + timeline as "March 24, 8am-10pm" */
-function formatSessionDateTime(room: { sessionDate?: string; timeline?: string }): string {
-  const parts: string[] = [];
-  if (room.sessionDate) {
-    const d = new Date(room.sessionDate);
-    parts.push(d.toLocaleDateString('en-PH', { month: 'long', day: 'numeric' }));
-  }
-  if (room.timeline) {
-    const short = room.timeline
-      .replace(/0?(\d{1,2}):00\s*(AM|PM)/gi, (_, num, m) => String(parseInt(num, 10)) + m.toLowerCase())
-      .replace(/(\d{1,2})\s+(am|pm)\b/gi, (_, num, m) => String(parseInt(num, 10)) + m.toLowerCase())
-      .replace(/\s*[–-]\s*/g, '-')
-      .trim();
-    parts.push(short);
-  }
-  return parts.join(', ') || '—';
-}
 
 /** Banner strip: booth background image only (not logo or profile). */
 function exhibitorBackgroundSrc(booth: { boothBackgroundUrl?: string }): string {
@@ -309,6 +264,8 @@ type ParticipantDashboardProps = {
 };
 
 export function ParticipantDashboard({ user, registration, onSignOut }: ParticipantDashboardProps) {
+  const { names: articleCategoryChipNames } = useArticleCategoryNames();
+
   // ── Navigation ─────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = React.useState<Tab>('home');
 
@@ -351,6 +308,11 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [exhibitorSearchQuery, setExhibitorSearchQuery] = React.useState('');
   const [exhibitorCategoryFilter, setExhibitorCategoryFilter] = React.useState<string>('all');
 
+  const [participantArticles, setParticipantArticles] = React.useState<ArticleDoc[]>([]);
+  const [articlesLoading, setArticlesLoading] = React.useState(true);
+  const [articleSearchQuery, setArticleSearchQuery] = React.useState('');
+  const [articleCategoryFilter, setArticleCategoryFilter] = React.useState<string>('all');
+
   // ── Mobile sidebar drawer ──────────────────────────────────────────────────
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
 
@@ -383,6 +345,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const mobileBellRef = React.useRef<HTMLDivElement>(null);
   const desktopBellRef = React.useRef<HTMLDivElement>(null);
 
+  const [claimClockTick, setClaimClockTick] = React.useState(() => Date.now());
   React.useEffect(() => {
     const tick = () => setEntranceTodayKey(getEntranceCalendarDateKey());
     const id = window.setInterval(tick, 60_000);
@@ -394,6 +357,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVis);
     };
+  }, []);
+  React.useEffect(() => {
+    const id = window.setInterval(() => setClaimClockTick(Date.now()), 30_000);
+    return () => window.clearInterval(id);
   }, []);
 
   React.useEffect(() => {
@@ -459,19 +426,20 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const travelAccIncomplete =
     !String(travelDetails || '').trim() || !String(accommodationDetails || '').trim();
   const eligibleMeals = React.useMemo(
-    () => meals.filter((m) => {
-      const byPerson = m.eligibleParticipantIds && m.eligibleParticipantIds.length > 0 && registrationId && m.eligibleParticipantIds.includes(registrationId);
-      const bySector = !m.eligibleSectors || m.eligibleSectors.length === 0 || m.eligibleSectors.includes(participantSector);
-      return byPerson || bySector;
-    }),
+    () => meals.filter((m) => registrationSectorEligibleForMeal(m, registrationId, participantSector)),
     [meals, participantSector, registrationId],
+  );
+  /** Exhibitor directory only — Food (Booth) regs are loaded for meal pickup labels only */
+  const exhibitorOnlyBoothRegs = React.useMemo(
+    () => boothRegs.filter((b) => String(b.sector) !== 'Food (Booth)'),
+    [boothRegs],
   );
   const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
   const unclaimedMealsCount = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
 
   const filteredBoothRegs = React.useMemo(() => {
     const q = exhibitorSearchQuery.trim().toLowerCase();
-    return boothRegs.filter((b) => {
+    return exhibitorOnlyBoothRegs.filter((b) => {
       if (exhibitorCategoryFilter !== 'all') {
         const cat = String(b.boothCategory || '').trim();
         if (exhibitorCategoryFilter === 'Other') {
@@ -490,7 +458,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         .join(' ');
       return blob.includes(q);
     });
-  }, [boothRegs, exhibitorSearchQuery, exhibitorCategoryFilter]);
+  }, [exhibitorOnlyBoothRegs, exhibitorSearchQuery, exhibitorCategoryFilter]);
 
   const exhibitorCategoryChipCls = (c: string) =>
     `text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
@@ -646,7 +614,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         load(() => getDocs(query(collection(db, 'meals'), orderBy('createdAt', 'desc'))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'reservations'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'reviews'), where('uid', '==', user.uid))), { docs: [] } as { docs: any[] }),
-        load(() => getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor']))), { docs: [] } as { docs: any[] }),
+        load(() => getDocs(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)']))), { docs: [] } as { docs: any[] }),
         load(() => getDocs(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid))), { docs: [] } as { docs: any[] }),
       ]);
 
@@ -678,6 +646,35 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   }, [user.uid]);
 
   React.useEffect(() => { loadAll(); }, [loadAll]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setArticlesLoading(true);
+    getDocs(collection(db, 'articles'))
+      .then((snap) => {
+        if (cancelled) return;
+        const list: ArticleDoc[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<ArticleDoc, 'id'>),
+        }));
+        list.sort((a, b) => {
+          const ta = (a.createdAt as { seconds?: number } | undefined)?.seconds ?? (a.updatedAt as { seconds?: number } | undefined)?.seconds ?? 0;
+          const tb = (b.createdAt as { seconds?: number } | undefined)?.seconds ?? (b.updatedAt as { seconds?: number } | undefined)?.seconds ?? 0;
+          return tb - ta;
+        });
+        setParticipantArticles(list);
+      })
+      .catch((e) => {
+        console.error('[iSCENE] participant articles load', e);
+        if (!cancelled) setParticipantArticles([]);
+      })
+      .finally(() => {
+        if (!cancelled) setArticlesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   React.useEffect(() => {
     const ids = Object.keys(reservations).slice(0, 30);
@@ -740,7 +737,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     const unsubClaims = onSnapshot(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid)), (snap) => {
       setFoodClaims(snap.docs.map((d) => ({ id: d.id, mealId: (d.data() as any).mealId, claimedAt: (d.data() as any).claimedAt })));
     });
-    const unsubBooths = onSnapshot(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor'])), (snap) => {
+    const unsubBooths = onSnapshot(query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)'])), (snap) => {
       setBoothRegs(snap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })));
     });
     return () => { unsubMeals(); unsubRooms(); unsubClaims(); unsubBooths(); };
@@ -1178,6 +1175,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         return { title: 'Exhibitors', subtitle: 'Approved booth participants at iSCENE 2026.' };
       case 'materials':
         return { title: 'Session Materials', subtitle: 'Access materials from your reserved sessions.' };
+      case 'articles':
+        return { title: 'Articles Home', subtitle: 'News, updates, and resources from the organizers.' };
       case 'meals':
         return {
           title: 'My Entitlements',
@@ -1513,7 +1512,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   { icon: <CreditCard size={20} className="text-indigo-600" />, label: 'My ID', bg: 'bg-indigo-50', action: () => setIdModal(true) },
                   { icon: <CalendarDays size={20} className="text-emerald-600" />, label: 'Schedule', bg: 'bg-emerald-50', action: () => setActiveTab('schedule'), badge: scheduleBadgeDisplay },
                   { icon: <Utensils size={20} className="text-orange-500" />, label: 'Meals', bg: 'bg-orange-50', action: () => setActiveTab('meals'), badge: mealsBadgeDisplay },
-                  { icon: <MessageSquare size={20} className="text-rose-500" />, label: 'Reviews', bg: 'bg-rose-50', action: () => setActiveTab('schedule') },
+                  { icon: <Newspaper size={20} className="text-rose-500" />, label: 'Articles Home', bg: 'bg-rose-50', action: () => setActiveTab('articles') },
                 ].map(({ icon, label, bg, action, badge }) => (
                   <button
                     key={label}
@@ -1717,7 +1716,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <div className="px-4 pt-5 pb-2">
               <h2 className="text-2xl font-black tracking-tight">Exhibitors</h2>
               <p className="text-sm text-slate-500 mt-1">Approved booth participants at iSCENE 2026.</p>
-              {boothRegs.length > 0 && (
+              {exhibitorOnlyBoothRegs.length > 0 && (
                 <div className="mt-4 space-y-3">
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
@@ -1760,7 +1759,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 </div>
               )}
             </div>
-            {boothRegs.length === 0 ? (
+            {exhibitorOnlyBoothRegs.length === 0 ? (
               <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No exhibitors yet.</div>
             ) : filteredBoothRegs.length === 0 ? (
               <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
@@ -1812,6 +1811,20 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           </>
         )}
 
+        {/* ── ARTICLES tab ─────────────────────────────────── */}
+        {activeTab === 'articles' && (
+          <ArticleBrowsePanel
+            variant="mobile"
+            loading={articlesLoading}
+            articles={participantArticles}
+            searchQuery={articleSearchQuery}
+            onSearchChange={setArticleSearchQuery}
+            categoryFilter={articleCategoryFilter}
+            onCategoryChange={setArticleCategoryFilter}
+            categoryChipNames={articleCategoryChipNames}
+          />
+        )}
+
         {/* ── MEALS tab ─────────────────────────────────────── */}
         {activeTab === 'meals' && (
           <>
@@ -1822,37 +1835,17 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <div className="px-4 flex flex-col gap-3 pb-4">
               {eligibleMeals.length === 0 ? (
                 <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No entitlements available for you.</div>
-              ) : eligibleMeals.map((meal) => {
-                const isToday = meal.sessionDate ? new Date(meal.sessionDate).toDateString() === new Date().toDateString() : false;
-                const claimed = hasClaimedMeal(meal.id);
-                return (
-                  <div key={meal.id} className={`rounded-2xl border shadow-sm p-4 ${claimed ? 'bg-emerald-50 border-emerald-200' : isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-2">
-                        <p className="font-bold">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
-                        {meal.itemType && <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meal.itemType === 'kit' ? 'bg-violet-100 text-violet-700' : meal.itemType === 'both' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'}`}>{meal.itemType === 'kit' ? 'Kit' : meal.itemType === 'both' ? 'Food & Kit' : 'Food'}</span>}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {isToday && !claimed && <span className="text-[10px] font-black bg-amber-500 text-white px-2 py-0.5 rounded-full">TODAY</span>}
-                        {claimed && <span className="text-[10px] font-black bg-emerald-500 text-white px-2 py-0.5 rounded-full flex items-center gap-1"><CheckCircle2 size={10} /> Claimed</span>}
-                      </div>
-                    </div>
-                    <p className="text-xs text-slate-500">{meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' }) : '—'}</p>
-                    {meal.startTime && meal.endTime && <p className="text-xs font-semibold text-blue-600 mt-0.5 flex items-center gap-1"><Clock size={11} /> {meal.startTime} – {meal.endTime}</p>}
-                    {meal.location && <p className="text-xs text-slate-500 mt-0.5">📍 {meal.location}</p>}
-                    {isToday && !claimed ? (
-                      <button
-                        type="button"
-                        onClick={() => setIdModal(true)}
-                        className="mt-3 w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-2 shadow-sm"
-                        aria-label="Show digital ID to claim at the booth"
-                      >
-                        <CreditCard size={16} /> Claim
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              })}
+              ) : eligibleMeals.map((meal) => (
+                  <MealEntitlementCard
+                    key={meal.id}
+                    meal={meal}
+                    mealLabels={MEAL_LABELS}
+                    boothRegs={boothRegs}
+                    now={new Date(claimClockTick)}
+                    claimed={hasClaimedMeal(meal.id)}
+                    onClaim={() => setIdModal(true)}
+                  />
+                ))}
             </div>
           </>
         )}
@@ -1867,41 +1860,45 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       </main>
 
       {/* Mobile bottom nav */}
-      <nav className="fixed bottom-0 z-30 flex w-full max-w-md items-center justify-between border-t border-slate-200 bg-white/95 backdrop-blur-md px-5 pb-5 pt-3">
-        {([
-          { id: 'home', label: 'HOME', icon: <Home size={22} /> },
-          { id: 'schedule', label: 'BREAK OUT', icon: <Rocket size={22} /> },
-        ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((item) => (
-          <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
-            className={`flex flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}>
-            {item.icon}
-            <span className="text-[9px] font-black uppercase">{item.label}</span>
-          </button>
-        ))}
+      <nav className="fixed bottom-0 z-30 flex w-full max-w-md items-center justify-between gap-1 border-t border-slate-200 bg-white/95 backdrop-blur-md px-2 pb-5 pt-3 sm:px-4">
+        <div className="flex flex-1 justify-around min-w-0">
+          {([
+            { id: 'home' as const, label: 'HOME', icon: <Home size={22} /> },
+            { id: 'schedule' as const, label: 'BREAK OUT', icon: <Rocket size={22} /> },
+          ] as const).map((item) => (
+            <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
+              className={`flex min-w-0 flex-1 flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}>
+              {item.icon}
+              <span className="text-[8px] font-black uppercase leading-tight text-center">{item.label}</span>
+            </button>
+          ))}
+        </div>
 
         {/* Center QR button */}
-        <div className="relative -top-6">
+        <div className="relative -top-6 shrink-0">
           <button type="button" onClick={() => setScanModal(true)}
             className="w-14 h-14 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-400/50 active:scale-90 transition-transform hover:bg-blue-700">
             <QrCode size={26} />
           </button>
         </div>
 
-        {([
-          { id: 'exhibitors', label: 'EXHIBITORS', icon: <Users size={22} /> },
-          { id: 'profile', label: 'PROFILE', icon: <User size={22} /> },
-        ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((item) => (
-          <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
-            className={`flex flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}>
-            <span className="relative inline-flex">
-              {item.icon}
-              {item.id === 'profile' && travelAccIncomplete ? (
-                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-white" aria-hidden />
-              ) : null}
-            </span>
-            <span className="text-[9px] font-black uppercase">{item.label}</span>
-          </button>
-        ))}
+        <div className="flex flex-1 justify-around min-w-0">
+          {([
+            { id: 'exhibitors' as const, label: 'EXHIBIT', icon: <Users size={20} /> },
+            { id: 'profile' as const, label: 'PROFILE', icon: <User size={20} /> },
+          ] as const).map((item) => (
+            <button key={item.id} type="button" onClick={() => setActiveTab(item.id)}
+              className={`flex min-w-0 flex-1 flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}>
+              <span className="relative inline-flex">
+                {item.icon}
+                {item.id === 'profile' && travelAccIncomplete ? (
+                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-white" aria-hidden />
+                ) : null}
+              </span>
+              <span className="text-[8px] font-black uppercase leading-tight text-center">{item.label}</span>
+            </button>
+          ))}
+        </div>
       </nav>
 
       {/* ── Mobile sidebar drawer ─────────────────────────── */}
@@ -1942,6 +1939,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 { id: 'schedule' as Tab, label: 'Break out room', icon: <Rocket size={18} />, badge: scheduleBadgeDisplay },
                 { id: 'exhibitors' as Tab, label: 'Exhibitors', icon: <Store size={18} /> },
                 { id: 'materials' as Tab, label: 'Materials', icon: <BookOpen size={18} /> },
+                { id: 'articles' as Tab, label: 'Articles Home', icon: <Newspaper size={18} /> },
                 { id: 'meals' as Tab, label: 'My Meals', icon: <Utensils size={18} />, badge: mealsBadgeDisplay },
                 { id: 'profile' as Tab, label: 'Profile', icon: <User size={18} />, badge: travelAccIncomplete ? 1 : undefined },
               ]).map((item) => (
@@ -2028,6 +2026,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           <NavItem icon={<CalendarDays size={17} />} label="Schedule" active={activeTab === 'schedule'} onClick={() => setActiveTab('schedule')} badge={scheduleBadgeDisplay} />
           <NavItem icon={<Store size={17} />} label="Exhibitors" active={activeTab === 'exhibitors'} onClick={() => setActiveTab('exhibitors')} />
           <NavItem icon={<BookOpen size={17} />} label="Materials" active={activeTab === 'materials'} onClick={() => setActiveTab('materials')} />
+          <NavItem icon={<Newspaper size={17} />} label="Articles Home" active={activeTab === 'articles'} onClick={() => setActiveTab('articles')} />
           <NavItem icon={<Utensils size={17} />} label="My Meals" active={activeTab === 'meals'} onClick={() => setActiveTab('meals')} badge={mealsBadgeDisplay} />
           <NavItem icon={<User size={17} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} badge={travelAccIncomplete ? 1 : undefined} />
         </nav>
@@ -2133,7 +2132,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   { icon: <CalendarDays size={20} className="text-emerald-600" />, label: 'Schedule', bg: 'bg-emerald-50', action: () => setActiveTab('schedule'), badge: scheduleBadgeDisplay },
                   { icon: <Utensils size={20} className="text-orange-500" />, label: 'Meals', bg: 'bg-orange-50', action: () => setActiveTab('meals'), badge: mealsBadgeDisplay },
                   { icon: <BookOpen size={20} className="text-orange-500" />, label: 'Materials', bg: 'bg-orange-50', action: () => setActiveTab('materials') },
-                  { icon: <MessageSquare size={20} className="text-rose-500" />, label: 'Feedback', bg: 'bg-rose-50', action: () => setActiveTab('schedule') },
+                  { icon: <Newspaper size={20} className="text-rose-500" />, label: 'Articles Home', bg: 'bg-rose-50', action: () => setActiveTab('articles') },
                 ].map(({ icon, label, bg, action, badge }) => (
                   <button
                     key={label}
@@ -2181,10 +2180,10 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               <div className="col-span-2 space-y-4">
                 <div>
                   <h2 className="text-sm font-bold text-slate-800 mb-3">Featured Exhibitors</h2>
-                  {boothRegs.length === 0
+                  {exhibitorOnlyBoothRegs.length === 0
                     ? <div className="bg-white rounded-2xl border border-slate-100 p-5 text-center text-slate-400 text-xs shadow-sm">No exhibitors yet.</div>
                     : <div className="space-y-3">
-                        {boothRegs.slice(0, 3).map((booth, i) => {
+                        {exhibitorOnlyBoothRegs.slice(0, 3).map((booth, i) => {
                           const fBg = exhibitorBackgroundSrc(booth);
                           const fProf = exhibitorProfileSrc(booth);
                           const featCat = exhibitorCategoryLabel(booth);
@@ -2367,7 +2366,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* EXHIBITORS */}
         {activeTab === 'exhibitors' && (
           <div className="py-4 sm:py-6 lg:py-8">
-            {boothRegs.length === 0 ? (
+            {exhibitorOnlyBoothRegs.length === 0 ? (
               <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No exhibitors yet.</div>
             ) : (
               <>
@@ -2495,43 +2494,38 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           </div>
         )}
 
+        {/* ARTICLES */}
+        {activeTab === 'articles' && (
+          <ArticleBrowsePanel
+            variant="desktop"
+            loading={articlesLoading}
+            articles={participantArticles}
+            searchQuery={articleSearchQuery}
+            onSearchChange={setArticleSearchQuery}
+            categoryFilter={articleCategoryFilter}
+            onCategoryChange={setArticleCategoryFilter}
+            categoryChipNames={articleCategoryChipNames}
+          />
+        )}
+
         {/* MEALS */}
         {activeTab === 'meals' && (
           <div className="py-4 sm:py-6 lg:py-8">
             {eligibleMeals.length === 0
               ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No entitlements available for you yet.</div>
               : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                  {eligibleMeals.map((meal) => {
-                    const isToday = meal.sessionDate ? new Date(meal.sessionDate).toDateString() === new Date().toDateString() : false;
-                    const claimed = hasClaimedMeal(meal.id);
-                    return (
-                      <div key={meal.id} className={`rounded-2xl border shadow-sm p-5 ${claimed ? 'bg-emerald-50 border-emerald-200' : isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <p className="font-bold text-base">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
-                            {meal.itemType && <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meal.itemType === 'kit' ? 'bg-violet-100 text-violet-700' : meal.itemType === 'both' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'}`}>{meal.itemType === 'kit' ? 'Kit' : meal.itemType === 'both' ? 'Food & Kit' : 'Food'}</span>}
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            {isToday && !claimed && <span className="text-[10px] font-black bg-amber-500 text-white px-2 py-0.5 rounded-full uppercase">Today</span>}
-                            {claimed && <span className="text-[10px] font-black bg-emerald-500 text-white px-2 py-0.5 rounded-full flex items-center gap-1"><CheckCircle2 size={10} /> Claimed</span>}
-                          </div>
-                        </div>
-                        <p className="text-xs text-slate-500 mb-1">{meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH',{weekday:'long',month:'long',day:'numeric'}) : '—'}</p>
-                        {meal.startTime && meal.endTime && <p className="text-xs font-semibold text-blue-600 flex items-center gap-1"><Clock size={12} /> {meal.startTime} – {meal.endTime}</p>}
-                        {meal.location && <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">📍 {meal.location}</p>}
-                        {isToday && !claimed ? (
-                          <button
-                            type="button"
-                            onClick={() => setIdModal(true)}
-                            className="mt-4 w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
-                            aria-label="Show digital ID to claim at the booth"
-                          >
-                            <CreditCard size={16} /> Claim
-                          </button>
-                        ) : null}
-                      </div>
-                    );
-                  })}
+                  {eligibleMeals.map((meal) => (
+                    <MealEntitlementCard
+                      key={meal.id}
+                      meal={meal}
+                      mealLabels={MEAL_LABELS}
+                      boothRegs={boothRegs}
+                      now={new Date(claimClockTick)}
+                      claimed={hasClaimedMeal(meal.id)}
+                      onClaim={() => setIdModal(true)}
+                      paddingClass="p-5"
+                    />
+                  ))}
                 </div>}
           </div>
         )}

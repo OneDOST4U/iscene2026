@@ -31,3 +31,25 @@ export function isEntranceCheckedInForDateKey(
   if (fromCreated) return fromCreated === todayKey;
   return false;
 }
+
+/**
+ * Normalized YYYY-MM-DD for a meal entitlement's `sessionDate` in Manila.
+ * Matches how the event thinks about "the day" of pickup (same as entrance check-in).
+ */
+export function mealSessionDateKeyManila(sessionDate: string | undefined | null): string | null {
+  if (sessionDate == null) return null;
+  const raw = String(sessionDate).trim();
+  if (!raw) return null;
+  const ymd = raw.split('T')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-CA', { timeZone: ENTRANCE_CHECKIN_TIMEZONE });
+}
+
+/** True when the meal's session day is "today" in Manila. */
+export function isMealSessionDateTodayManila(sessionDate: string | undefined | null): boolean {
+  const k = mealSessionDateKeyManila(sessionDate);
+  if (!k) return false;
+  return k === getEntranceCalendarDateKey();
+}

@@ -34,6 +34,7 @@ import {
   Upload,
   ChevronRight,
   Star,
+  Newspaper,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -42,6 +43,7 @@ import {
   getDocs,
   deleteDoc,
   doc,
+  setDoc,
   updateDoc,
   Timestamp,
   query,
@@ -51,10 +53,12 @@ import {
   deleteField,
 } from 'firebase/firestore';
 import { db, storage } from './firebase';
+import { formatMealTimeRangeForDisplay } from './mealClaimWindow';
 import { EXHIBITOR_BOOTH_CATEGORIES } from './exhibitorBoothCategory';
+import { ArticlesManager } from './ArticlesManager';
 import { ref, getDownloadURL, uploadBytes, deleteObject } from 'firebase/storage';
 
-type Tab = 'dashboard' | 'registrations' | 'rooms' | 'meals' | 'booths' | 'materials' | 'analytics';
+type Tab = 'dashboard' | 'registrations' | 'rooms' | 'meals' | 'booths' | 'materials' | 'articles' | 'analytics';
 
 export type AdminDashboardProps = {
   user: User;
@@ -113,6 +117,8 @@ type Meal = {
   itemType?: 'food' | 'kit' | 'both';
   name?: string;
   location?: string;
+  /** Extra pickup / service area directions (food & both); shown to participants and booth staff */
+  foodLocationDetails?: string;
   assignedBoothUid?: string;
   eligibleSectors?: string[];
   eligibleParticipantIds?: string[];
@@ -123,6 +129,7 @@ type Meal = {
 };
 
 const BOOTH_SECTORS = ['Food (Booth)', 'Exhibitor (Booth)', 'Exhibitor'];
+const BOOTH_LIST_PAGE_SIZE = 5;
 const ROLE_OPTIONS = [
   'Participants',
   'Speakers',
@@ -131,6 +138,7 @@ const ROLE_OPTIONS = [
   'Exhibitor',
   'Exhibitor (Booth)',
   'DOST',
+  'Articles',
 ];
 
 const MEAL_LABELS: Record<string, string> = {
@@ -139,7 +147,43 @@ const MEAL_LABELS: Record<string, string> = {
   lunch: 'Lunch',
   snacks_pm: 'Snacks (PM)',
   dinner: 'Dinner',
+  kit: 'Kit',
 };
+
+/** Admin list filters — matches `Meal.type` values saved from Create Entitlement */
+const MEAL_ADMIN_TYPE_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: 'all', label: 'All meal types' },
+  { value: 'breakfast', label: MEAL_LABELS.breakfast },
+  { value: 'snacks', label: MEAL_LABELS.snacks },
+  { value: 'lunch', label: MEAL_LABELS.lunch },
+  { value: 'snacks_pm', label: MEAL_LABELS.snacks_pm },
+  { value: 'dinner', label: MEAL_LABELS.dinner },
+  { value: 'kit', label: MEAL_LABELS.kit },
+];
+
+/** Booth dropdown + meal summary: show physical placement when set on the registration */
+function formatBoothOptionLabel(reg: {
+  fullName?: string;
+  sector?: string;
+  sectorOffice?: string;
+  boothLocationDetails?: string;
+}): string {
+  const name = String(reg.fullName || 'Booth').trim();
+  const sector = String(reg.sector || '').trim();
+  const org = String(reg.sectorOffice || '').trim();
+  const loc = String(reg.boothLocationDetails || '').trim();
+  if (loc) {
+    const who = org ? `${name} · ${org}` : name;
+    return `${loc} — ${who}`;
+  }
+  if (org) return `${name} — ${org} (${sector})`;
+  return `${name} (${sector})`;
+}
+
+/** Short label for entitlement "Assigned booth" dropdown — booth name only */
+function formatBoothSelectName(reg: { fullName?: string }) {
+  return String(reg.fullName || 'Booth').trim() || 'Booth';
+}
 
 const DEFAULT_VENUE_OPTIONS = [
   'Main Hall',
@@ -291,7 +335,7 @@ function formatDate(value: any) {
 function formatDateTime(value: any) {
   const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
 function statusColor(status: string) {
@@ -305,6 +349,7 @@ function sectorColor(sector: string) {
   if (sector === 'Facilitators') return 'bg-indigo-100 text-indigo-700';
   if (sector === 'Food (Booth)') return 'bg-orange-100 text-orange-700';
   if (sector === 'Exhibitor' || sector === 'Exhibitor (Booth)') return 'bg-cyan-100 text-cyan-700';
+  if (sector === 'Articles') return 'bg-violet-100 text-violet-700';
   return 'bg-blue-100 text-blue-700';
 }
 
@@ -365,22 +410,35 @@ function Field({
 // ─────────────────────────────────────────────────────────────────────────────
 // Create Entitlement Form (refactored – native selects, no overlay dropdowns)
 // ─────────────────────────────────────────────────────────────────────────────
+export type EntitlementFormPayload = {
+  type: string;
+  itemType: 'food' | 'kit' | 'both';
+  name?: string;
+  location?: string;
+  foodLocationDetails?: string;
+  assignedBoothUid?: string;
+  eligibleSectors?: string[];
+  eligibleParticipantIds?: string[];
+  sessionDate: string;
+  startTime: string;
+  endTime: string;
+};
+
 type CreateEntitlementFormProps = {
-  allBoothRegs: { id: string; fullName?: string; sector?: string; uid?: string }[];
+  allBoothRegs: {
+    id: string;
+    fullName?: string;
+    sector?: string;
+    uid?: string;
+    sectorOffice?: string;
+    boothLocationDetails?: string;
+  }[];
   allRoleOptions: string[];
   approvedRegistrations: { id: string; fullName?: string; sector?: string; email?: string }[];
-  onSubmit: (payload: {
-    type: string;
-    itemType: 'food' | 'kit' | 'both';
-    name?: string;
-    location?: string;
-    assignedBoothUid?: string;
-    eligibleSectors?: string[];
-    eligibleParticipantIds?: string[];
-    sessionDate: string;
-    startTime: string;
-    endTime: string;
-  }) => Promise<void>;
+  /** When set, form loads this meal and saves update to the same id */
+  initialMeal?: Meal | null;
+  onCancelEdit?: () => void;
+  onSubmit: (payload: EntitlementFormPayload, mealId?: string) => Promise<void>;
   onValidationError: (msg: string) => void;
 };
 
@@ -388,6 +446,8 @@ function CreateEntitlementForm({
   allBoothRegs,
   allRoleOptions,
   approvedRegistrations,
+  initialMeal = null,
+  onCancelEdit,
   onSubmit,
   onValidationError,
 }: CreateEntitlementFormProps) {
@@ -397,11 +457,63 @@ function CreateEntitlementForm({
   const [sessionDate, setSessionDate] = React.useState('');
   const [startTime, setStartTime] = React.useState('');
   const [endTime, setEndTime] = React.useState('');
-  const [location, setLocation] = React.useState('');
+  /** Food (Booth) operator for this entitlement; empty = any food booth can process */
   const [assignedBoothUid, setAssignedBoothUid] = React.useState('');
+  /** Optional extra directions for this meal only (saved on entitlement, not booth profile) */
+  const [foodLocationDetails, setFoodLocationDetails] = React.useState('');
   const [eligibleSectors, setEligibleSectors] = React.useState<string[]>([]);
   const [eligibleParticipantIds, setEligibleParticipantIds] = React.useState<string[]>([]);
   const [saving, setSaving] = React.useState(false);
+
+  const editingMealId = initialMeal?.id;
+
+  React.useEffect(() => {
+    if (!initialMeal) {
+      setItemType('food');
+      setMealType('lunch');
+      setName('');
+      setSessionDate('');
+      setStartTime('');
+      setEndTime('');
+      setAssignedBoothUid('');
+      setFoodLocationDetails('');
+      setEligibleSectors([]);
+      setEligibleParticipantIds([]);
+      return;
+    }
+    const m = initialMeal;
+    const it = (m.itemType as 'food' | 'kit' | 'both') || 'food';
+    setItemType(it);
+    if (it === 'kit') {
+      setMealType('lunch');
+    } else {
+      const allowed = ['breakfast', 'snacks', 'lunch', 'snacks_pm', 'dinner'];
+      setMealType(allowed.includes(m.type) ? m.type : 'lunch');
+    }
+    setName(m.name || '');
+    setSessionDate(m.sessionDate || '');
+    setStartTime(m.startTime || '');
+    setEndTime(m.endTime || '');
+    setAssignedBoothUid(m.assignedBoothUid || '');
+    setFoodLocationDetails(m.foodLocationDetails || '');
+    setEligibleSectors(m.eligibleSectors?.length ? [...m.eligibleSectors] : []);
+    setEligibleParticipantIds(m.eligibleParticipantIds?.length ? [...m.eligibleParticipantIds] : []);
+  }, [initialMeal]);
+
+  /** Food / kit entitlements are issued only by Food (Booth) — not exhibitor research booths */
+  const foodServiceBoothRegs = React.useMemo(
+    () => allBoothRegs.filter((r) => (r.sector as string) === 'Food (Booth)'),
+    [allBoothRegs],
+  );
+
+  const selectedAssignedBooth = React.useMemo(
+    () => (assignedBoothUid ? foodServiceBoothRegs.find((r) => (r.uid || '') === assignedBoothUid) : undefined),
+    [assignedBoothUid, foodServiceBoothRegs],
+  );
+
+  /** Physical placement (stall / hall) from booth profile — shown below booth name, saved as meal.location */
+  const boothPlacementFromProfile =
+    selectedAssignedBooth != null ? String(selectedAssignedBooth.boothLocationDetails || '').trim() : '';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -411,28 +523,37 @@ function CreateEntitlementForm({
     }
     setSaving(true);
     try {
-      await onSubmit({
-        type: itemType === 'kit' ? 'kit' : mealType,
-        itemType,
-        name: name.trim() || undefined,
-        location: location.trim() || undefined,
-        assignedBoothUid: assignedBoothUid || undefined,
-        eligibleSectors: eligibleSectors.length > 0 ? eligibleSectors : undefined,
-        eligibleParticipantIds: eligibleParticipantIds.length > 0 ? eligibleParticipantIds : undefined,
-        sessionDate,
-        startTime,
-        endTime,
-      });
-      setItemType('food');
-      setMealType('lunch');
-      setName('');
-      setSessionDate('');
-      setStartTime('');
-      setEndTime('');
-      setLocation('');
-      setAssignedBoothUid('');
-      setEligibleSectors([]);
-      setEligibleParticipantIds([]);
+      const locationLabel = boothPlacementFromProfile || undefined;
+
+      await onSubmit(
+        {
+          type: itemType === 'kit' ? 'kit' : mealType,
+          itemType,
+          name: name.trim() || undefined,
+          location: locationLabel,
+          foodLocationDetails:
+            itemType === 'food' || itemType === 'both' ? foodLocationDetails.trim() || undefined : undefined,
+          assignedBoothUid: assignedBoothUid || undefined,
+          eligibleSectors: eligibleSectors.length > 0 ? eligibleSectors : undefined,
+          eligibleParticipantIds: eligibleParticipantIds.length > 0 ? eligibleParticipantIds : undefined,
+          sessionDate,
+          startTime,
+          endTime,
+        },
+        editingMealId,
+      );
+      if (!editingMealId) {
+        setItemType('food');
+        setMealType('lunch');
+        setName('');
+        setSessionDate('');
+        setStartTime('');
+        setEndTime('');
+        setFoodLocationDetails('');
+        setAssignedBoothUid('');
+        setEligibleSectors([]);
+        setEligibleParticipantIds([]);
+      }
     } catch (err: unknown) {
       console.error('createMeal', err);
       const msg = err instanceof Error ? err.message : 'Failed to create entitlement. Check console.';
@@ -488,23 +609,51 @@ function CreateEntitlementForm({
           <input value={endTime} onChange={(e) => setEndTime(e.target.value)} type="time" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
         </Field>
       </div>
-      <Field label="Location">
-        <select value={location} onChange={(e) => setLocation(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">Any booth</option>
-          {allBoothRegs.map((r) => (
-            <option key={r.id} value={r.fullName || r.id}>{r.fullName} ({r.sector})</option>
+      <Field label="Assigned booth">
+        <select
+          value={assignedBoothUid}
+          onChange={(e) => setAssignedBoothUid(e.target.value)}
+          className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Any food booth (all food operators can process)</option>
+          {foodServiceBoothRegs.map((r) => (
+            <option key={r.id} value={r.uid || ''} disabled={!r.uid}>
+              {formatBoothSelectName(r)}{!r.uid ? ' — no login uid' : ''}
+            </option>
           ))}
         </select>
-        <p className="text-[10px] text-slate-400 mt-1">Where participants claim</p>
+        <p className="text-[10px] text-slate-400 mt-1">
+          Choose first. Only <strong className="font-semibold text-slate-600">Food (Booth)</strong> accounts can issue food; pickup location below comes from that booth&apos;s saved profile.
+        </p>
       </Field>
-      <Field label="Assigned Booth">
-        <select value={assignedBoothUid} onChange={(e) => setAssignedBoothUid(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">Any booth (all can process)</option>
-          {allBoothRegs.map((r) => (
-            <option key={r.id} value={r.uid || ''}>{r.fullName} ({r.sector})</option>
-          ))}
-        </select>
-      </Field>
+      {assignedBoothUid ? (
+        <Field label="Pickup location (from booth profile)">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 whitespace-pre-wrap">
+            {boothPlacementFromProfile || '—'}
+          </div>
+          <p className="text-[10px] text-slate-400 mt-1">
+            Stall / hall line from this booth&apos;s registration (shown to participants as 📍). Empty until they set it on their booth profile.
+          </p>
+        </Field>
+      ) : (
+        <p className="text-[10px] text-slate-400 -mt-1">
+          Pick a specific booth to show its saved pickup location, or leave &quot;Any food booth&quot; for a shared window.
+        </p>
+      )}
+      {(itemType === 'food' || itemType === 'both') && (
+        <Field label="Extra notes (optional)">
+          <textarea
+            value={foodLocationDetails}
+            onChange={(e) => setFoodLocationDetails(e.target.value)}
+            rows={3}
+            placeholder="e.g. Use the side entrance this day, ask for the conference lunch badge…"
+            className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-[10px] text-slate-400 mt-1">
+            Shown to <strong className="font-semibold text-slate-600">everyone</strong> when claiming (participants, speakers, booths) — meal-specific directions on top of the stall line above.
+          </p>
+        </Field>
+      )}
       <Field label="Eligible Sectors">
         <div className="flex flex-wrap gap-2">
           {allRoleOptions.map((sector) => (
@@ -539,6 +688,15 @@ function CreateEntitlementForm({
           </div>
         )}
       </Field>
+      {onCancelEdit && editingMealId ? (
+        <button
+          type="button"
+          onClick={() => onCancelEdit()}
+          className="w-full rounded-xl border border-slate-200 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50"
+        >
+          Cancel editing
+        </button>
+      ) : null}
       <button
         type="button"
         disabled={saving}
@@ -554,7 +712,7 @@ function CreateEntitlementForm({
         }}
         className="w-full rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer"
       >
-        {saving ? 'Saving...' : 'Create Entitlement'}
+        {saving ? 'Saving...' : editingMealId ? 'Update Entitlement' : 'Create Entitlement'}
       </button>
     </form>
   );
@@ -599,9 +757,18 @@ export function AdminDashboard({
   const [passwordResetting, setPasswordResetting] = React.useState(false);
   const [actionMessage, setActionMessage] = React.useState<string | null>(null);
   const [proofError, setProofError] = React.useState<string | null>(null);
-  const [uploadingBoothImage, setUploadingBoothImage] = React.useState(false);
   const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
   const [expandedExhibitorId, setExpandedExhibitorId] = React.useState<string | null>(null);
+  const [boothExhibitorSearch, setBoothExhibitorSearch] = React.useState('');
+  const [boothFoodSearch, setBoothFoodSearch] = React.useState('');
+  const [boothExhibitorStatusFilter, setBoothExhibitorStatusFilter] = React.useState<
+    'all' | 'pending' | 'approved' | 'declined'
+  >('all');
+  const [boothFoodStatusFilter, setBoothFoodStatusFilter] = React.useState<'all' | 'pending' | 'approved' | 'declined'>(
+    'all',
+  );
+  const [boothExhibitorPage, setBoothExhibitorPage] = React.useState(0);
+  const [boothFoodPage, setBoothFoodPage] = React.useState(0);
 
   const [rooms, setRooms] = React.useState<Room[]>([]);
   const [roomsLoading, setRoomsLoading] = React.useState(false);
@@ -624,6 +791,29 @@ export function AdminDashboard({
 
   const [meals, setMeals] = React.useState<Meal[]>([]);
   const [mealsLoading, setMealsLoading] = React.useState(false);
+  const [editingMeal, setEditingMeal] = React.useState<Meal | null>(null);
+  const [mealAdminFilterType, setMealAdminFilterType] = React.useState<string>('all');
+  const [mealAdminFilterDay, setMealAdminFilterDay] = React.useState<string>('');
+
+  const mealSessionDayOptions = React.useMemo(() => {
+    const set = new Set<string>();
+    meals.forEach((m) => {
+      const raw = String(m.sessionDate || '').trim();
+      if (raw) set.add(raw.slice(0, 10));
+    });
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [meals]);
+
+  const filteredMeals = React.useMemo(() => {
+    return meals.filter((m) => {
+      if (mealAdminFilterType !== 'all' && m.type !== mealAdminFilterType) return false;
+      if (mealAdminFilterDay) {
+        const day = String(m.sessionDate || '').trim().slice(0, 10);
+        if (day !== mealAdminFilterDay) return false;
+      }
+      return true;
+    });
+  }, [meals, mealAdminFilterType, mealAdminFilterDay]);
 
   type PresenterMaterial = {
     id: string;
@@ -650,6 +840,95 @@ export function AdminDashboard({
     () => registrations.filter((r) => BOOTH_SECTORS.includes((r.sector as string) || '')),
     [registrations],
   );
+  const exhibitorBoothRegs = React.useMemo(
+    () => boothRegs.filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes((r.sector as string) || '')),
+    [boothRegs],
+  );
+  const foodBoothRegsList = React.useMemo(
+    () => boothRegs.filter((r) => (r.sector as string) === 'Food (Booth)'),
+    [boothRegs],
+  );
+
+  const exhibitorBoothFiltered = React.useMemo(() => {
+    let list = exhibitorBoothRegs;
+    if (boothExhibitorStatusFilter !== 'all') {
+      list = list.filter((r) => ((r.status as string) || 'pending') === boothExhibitorStatusFilter);
+    }
+    const q = boothExhibitorSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((r) =>
+      [
+        r.fullName,
+        r.email,
+        r.sectorOffice,
+        r.positionTitle,
+        r.contactNumber,
+        r.boothLocationDetails,
+        r.boothDescription,
+        r.boothProducts,
+        r.sector,
+      ]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q)),
+    );
+  }, [exhibitorBoothRegs, boothExhibitorStatusFilter, boothExhibitorSearch]);
+
+  const foodBoothFiltered = React.useMemo(() => {
+    let list = foodBoothRegsList;
+    if (boothFoodStatusFilter !== 'all') {
+      list = list.filter((r) => ((r.status as string) || 'pending') === boothFoodStatusFilter);
+    }
+    const q = boothFoodSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((r) =>
+      [
+        r.fullName,
+        r.email,
+        r.sectorOffice,
+        r.positionTitle,
+        r.contactNumber,
+        r.boothLocationDetails,
+        r.boothDescription,
+        r.boothProducts,
+        r.sector,
+      ]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q)),
+    );
+  }, [foodBoothRegsList, boothFoodStatusFilter, boothFoodSearch]);
+
+  const exhibitorBoothPageItems = React.useMemo(() => {
+    const start = boothExhibitorPage * BOOTH_LIST_PAGE_SIZE;
+    return exhibitorBoothFiltered.slice(start, start + BOOTH_LIST_PAGE_SIZE);
+  }, [exhibitorBoothFiltered, boothExhibitorPage]);
+
+  const foodBoothPageItems = React.useMemo(() => {
+    const start = boothFoodPage * BOOTH_LIST_PAGE_SIZE;
+    return foodBoothFiltered.slice(start, start + BOOTH_LIST_PAGE_SIZE);
+  }, [foodBoothFiltered, boothFoodPage]);
+
+  const exhibitorBoothTotalPages =
+    exhibitorBoothFiltered.length === 0 ? 0 : Math.ceil(exhibitorBoothFiltered.length / BOOTH_LIST_PAGE_SIZE);
+  const foodBoothTotalPages =
+    foodBoothFiltered.length === 0 ? 0 : Math.ceil(foodBoothFiltered.length / BOOTH_LIST_PAGE_SIZE);
+
+  React.useEffect(() => {
+    setBoothExhibitorPage(0);
+  }, [boothExhibitorSearch, boothExhibitorStatusFilter]);
+  React.useEffect(() => {
+    setBoothFoodPage(0);
+  }, [boothFoodSearch, boothFoodStatusFilter]);
+
+  React.useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(exhibitorBoothFiltered.length / BOOTH_LIST_PAGE_SIZE) - 1);
+    if (boothExhibitorPage > maxPage) setBoothExhibitorPage(maxPage);
+  }, [exhibitorBoothFiltered.length, boothExhibitorPage]);
+
+  React.useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(foodBoothFiltered.length / BOOTH_LIST_PAGE_SIZE) - 1);
+    if (boothFoodPage > maxPage) setBoothFoodPage(maxPage);
+  }, [foodBoothFiltered.length, boothFoodPage]);
+
   const foodBoothRegs = React.useMemo(
     () => registrations.filter((r) => (r.sector as string) === 'Food (Booth)' && (r.status as string) === 'approved' && r.uid),
     [registrations],
@@ -703,6 +982,22 @@ export function AdminDashboard({
     setActionMessage(message);
     window.setTimeout(() => setActionMessage(null), 3500);
   }, []);
+
+  const handleExportPdfClick = React.useCallback(() => {
+    if (!filteredRegistrations.length) {
+      clearMessageSoon('No registrations to export. Clear sector/status filters or add participants first.');
+      return;
+    }
+    onExportPdf();
+  }, [filteredRegistrations.length, onExportPdf, clearMessageSoon]);
+
+  const handleExportCsvClick = React.useCallback(() => {
+    if (!filteredRegistrations.length) {
+      clearMessageSoon('No registrations to export. Clear sector/status filters or add participants first.');
+      return;
+    }
+    onExportCsv();
+  }, [filteredRegistrations.length, onExportCsv, clearMessageSoon]);
 
   const loadRooms = React.useCallback(async () => {
     setRoomsLoading(true);
@@ -1142,18 +1437,54 @@ export function AdminDashboard({
     }
   };
 
-  const handleCreateMeal = async (payload: {
-    type: string;
-    itemType: 'food' | 'kit' | 'both';
-    name?: string;
-    location?: string;
-    assignedBoothUid?: string;
-    eligibleSectors?: string[];
-    eligibleParticipantIds?: string[];
-    sessionDate: string;
-    startTime: string;
-    endTime: string;
-  }) => {
+  const handleSaveMeal = async (payload: EntitlementFormPayload, mealId?: string) => {
+    if (mealId) {
+      const ref = doc(db, 'meals', mealId);
+      const docPayload: Record<string, unknown> = {
+        type: payload.type,
+        itemType: payload.itemType,
+        sessionDate: payload.sessionDate,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        name: payload.name?.trim() ? payload.name.trim() : deleteField(),
+        location: payload.location?.trim() ? payload.location.trim() : deleteField(),
+        foodLocationDetails: payload.foodLocationDetails?.trim() ? payload.foodLocationDetails.trim() : deleteField(),
+        assignedBoothUid: payload.assignedBoothUid?.trim() ? payload.assignedBoothUid.trim() : deleteField(),
+        eligibleSectors: payload.eligibleSectors?.length ? payload.eligibleSectors : deleteField(),
+        eligibleParticipantIds: payload.eligibleParticipantIds?.length ? payload.eligibleParticipantIds : deleteField(),
+      };
+      await updateDoc(ref, docPayload);
+      setMeals((prev) =>
+        prev.map((m) => {
+          if (m.id !== mealId) return m;
+          const next: Meal = {
+            ...m,
+            type: payload.type,
+            itemType: payload.itemType,
+            sessionDate: payload.sessionDate,
+            startTime: payload.startTime,
+            endTime: payload.endTime,
+          };
+          if (payload.name?.trim()) next.name = payload.name.trim();
+          else delete next.name;
+          if (payload.location?.trim()) next.location = payload.location.trim();
+          else delete next.location;
+          if (payload.foodLocationDetails?.trim()) next.foodLocationDetails = payload.foodLocationDetails.trim();
+          else delete next.foodLocationDetails;
+          if (payload.assignedBoothUid?.trim()) next.assignedBoothUid = payload.assignedBoothUid.trim();
+          else delete next.assignedBoothUid;
+          if (payload.eligibleSectors?.length) next.eligibleSectors = payload.eligibleSectors;
+          else delete next.eligibleSectors;
+          if (payload.eligibleParticipantIds?.length) next.eligibleParticipantIds = payload.eligibleParticipantIds;
+          else delete next.eligibleParticipantIds;
+          return next;
+        }),
+      );
+      setEditingMeal(null);
+      clearMessageSoon('Entitlement updated.');
+      return;
+    }
+
     const docPayload: Record<string, unknown> = {
       type: payload.type,
       itemType: payload.itemType,
@@ -1164,11 +1495,11 @@ export function AdminDashboard({
     };
     if (payload.name?.trim()) docPayload.name = payload.name.trim();
     if (payload.location?.trim()) docPayload.location = payload.location.trim();
+    if (payload.foodLocationDetails?.trim()) docPayload.foodLocationDetails = payload.foodLocationDetails.trim();
     if (payload.assignedBoothUid?.trim()) docPayload.assignedBoothUid = payload.assignedBoothUid.trim();
     if (payload.eligibleSectors?.length) docPayload.eligibleSectors = payload.eligibleSectors;
     if (payload.eligibleParticipantIds?.length) docPayload.eligibleParticipantIds = payload.eligibleParticipantIds;
 
-    // Firestore rejects undefined – strip any that slipped through
     Object.keys(docPayload).forEach((k) => {
       if (docPayload[k] === undefined) delete docPayload[k];
     });
@@ -1183,6 +1514,7 @@ export function AdminDashboard({
     try {
       await deleteDoc(doc(db, 'meals', id));
       setMeals((prev) => prev.filter((meal) => meal.id !== id));
+      setEditingMeal((e) => (e?.id === id ? null : e));
       clearMessageSoon('Meal window deleted.');
     } catch (err) {
       console.error('deleteMeal', err);
@@ -1216,11 +1548,17 @@ export function AdminDashboard({
         travelDetails: editingRegistration.travelDetails || '',
         notes: editingRegistration.notes || '',
       };
+      if (BOOTH_SECTORS.includes(editingRegistration.sector as string)) {
+        updates.boothLocationDetails = String(editingRegistration.boothLocationDetails || '').trim();
+      }
       if (['Exhibitor', 'Exhibitor (Booth)'].includes(editingRegistration.sector)) {
         updates.boothDescription = editingRegistration.boothDescription || '';
         updates.boothProducts = editingRegistration.boothProducts || '';
         updates.boothWebsite = editingRegistration.boothWebsite || '';
-        updates.boothImageUrl = editingRegistration.boothImageUrl || '';
+        updates.boothImageUrl = '';
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ebc0f7' }, body: JSON.stringify({ sessionId: 'ebc0f7', runId: 'post-fix', hypothesisId: 'H-admin-save', location: 'AdminDashboard.tsx:handleSaveRegistration', message: 'booth registration boothImageUrl cleared', data: { sector: editingRegistration.sector, boothImageUrl: updates.boothImageUrl }, timestamp: Date.now() }) }).catch(() => {});
+        // #endregion
         updates.boothBackgroundUrl = editingRegistration.boothBackgroundUrl || '';
         updates.boothCategory = (editingRegistration.boothCategory as string | undefined)?.trim() || '';
         updates.boothCategoryOther =
@@ -1228,7 +1566,33 @@ export function AdminDashboard({
             ? String(editingRegistration.boothCategoryOther || '').trim()
             : '';
       }
+      if (editingRegistration.sector === 'Food (Booth)') {
+        updates.boothDescription = editingRegistration.boothDescription || '';
+        updates.boothProducts = editingRegistration.boothProducts || '';
+        updates.boothWebsite = editingRegistration.boothWebsite || '';
+        updates.boothBackgroundUrl = editingRegistration.boothBackgroundUrl || '';
+        updates.boothImageUrl = '';
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ebc0f7' }, body: JSON.stringify({ sessionId: 'ebc0f7', runId: 'post-fix', hypothesisId: 'H-food-admin-save', location: 'AdminDashboard.tsx:handleSaveRegistration', message: 'food booth save boothImageUrl cleared', data: { sector: editingRegistration.sector, boothImageUrl: updates.boothImageUrl }, timestamp: Date.now() }) }).catch(() => {});
+        // #endregion
+      }
       await onSaveRegistration(editingRegistration.id, updates);
+      const uid = editingRegistration.uid as string | undefined;
+      if (uid) {
+        try {
+          if (updates.sector === 'Articles') {
+            await setDoc(doc(db, 'articleCategoryEditors', uid), { updatedAt: Timestamp.now() }, { merge: true });
+          } else {
+            try {
+              await deleteDoc(doc(db, 'articleCategoryEditors', uid));
+            } catch {
+              /* editor doc may not exist */
+            }
+          }
+        } catch (syncErr) {
+          console.error('articleCategoryEditors sync', syncErr);
+        }
+      }
       clearMessageSoon('Participant details updated.');
       setEditingRegistration(null);
     } catch (err) {
@@ -1278,6 +1642,7 @@ export function AdminDashboard({
     { id: 'meals', label: 'Meals & Food', icon: <UtensilsCrossed size={18} /> },
     { id: 'booths', label: 'Booths', icon: <Store size={18} /> },
     { id: 'materials', label: 'Training Materials', icon: <Package size={18} /> },
+    { id: 'articles', label: 'Articles', icon: <Newspaper size={18} /> },
     { id: 'analytics', label: 'Analytics', icon: <BarChart3 size={18} /> },
   ];
 
@@ -1358,7 +1723,7 @@ export function AdminDashboard({
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-          <div className="flex items-center justify-between gap-3 px-4 py-4 sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
             <div className="flex items-center gap-3">
               <button
                 type="button"
@@ -1371,10 +1736,10 @@ export function AdminDashboard({
                 {activeTab === 'booths' && (
                   <img src="/iscene.png" alt="iSCENE 2026" className="h-8 w-auto object-contain hidden sm:block" />
                 )}
-                <div>
+                <div className="min-w-0">
                   <h2 className="text-xl font-black sm:text-2xl">
                     {activeTab === 'registrations'
-                      ? 'Participant Management'
+                      ? 'Participant Registrations'
                       : activeTab === 'rooms'
                       ? 'Breakout Rooms'
                       : activeTab === 'meals'
@@ -1383,32 +1748,36 @@ export function AdminDashboard({
                       ? 'Booth Management'
                       : activeTab === 'materials'
                       ? 'Training Materials'
+                      : activeTab === 'articles'
+                      ? 'Articles'
                       : activeTab === 'analytics'
                       ? 'Analytics'
                       : 'Event Overview'}
                   </h2>
                   <p className="text-xs text-slate-500 sm:text-sm">
-                    Responsive admin controls for mobile, tablet, and desktop.
+                    {activeTab === 'registrations'
+                      ? 'Edit participant details, roles, approval state, deletion, and password resets.'
+                      : 'Responsive admin controls for mobile, tablet, and desktop.'}
                   </p>
                 </div>
               </div>
             </div>
             {activeTab === 'registrations' && (
-              <div className="hidden items-center gap-2 sm:flex">
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={onExportPdf}
-                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
+                  onClick={handleExportPdfClick}
+                  className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 sm:gap-2 sm:px-4 sm:text-sm"
                 >
-                  <FileText size={15} />
+                  <FileText size={15} className="shrink-0" />
                   PDF
                 </button>
                 <button
                   type="button"
-                  onClick={onExportCsv}
-                  className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                  onClick={handleExportCsvClick}
+                  className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 sm:gap-2 sm:px-4 sm:text-sm"
                 >
-                  <Download size={15} />
+                  <Download size={15} className="shrink-0" />
                   CSV
                 </button>
               </div>
@@ -1478,31 +1847,6 @@ export function AdminDashboard({
 
           {activeTab === 'registrations' && (
             <section>
-              <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-                <div>
-                  <h3 className="text-2xl font-black">Participant Registrations</h3>
-                  <p className="text-sm text-slate-500">Edit participant details, roles, approval state, deletion, and password resets.</p>
-                </div>
-                <div className="flex flex-wrap gap-2 sm:hidden">
-                  <button
-                    type="button"
-                    onClick={onExportPdf}
-                    className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
-                  >
-                    <FileText size={15} />
-                    Export PDF
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onExportCsv}
-                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-                  >
-                    <Download size={15} />
-                    Export CSV
-                  </button>
-                </div>
-              </div>
-
               <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                   <div className="relative md:col-span-2">
@@ -1539,6 +1883,9 @@ export function AdminDashboard({
                 </div>
                 <p className="mt-3 text-xs font-medium text-slate-400">
                   Showing {registrationsView.length} of {totalRegistrations} participants
+                  {registrationsView.length > 10 ? (
+                    <span className="text-slate-400"> · Scroll the list below to see all</span>
+                  ) : null}
                 </p>
               </div>
 
@@ -1548,7 +1895,13 @@ export function AdminDashboard({
                 </div>
               )}
 
-              <div className="space-y-3 lg:hidden">
+              <div
+                className={
+                  registrationsView.length > 10
+                    ? 'max-h-[min(70vh,56rem)] space-y-3 overflow-y-auto overflow-x-hidden pr-1 lg:hidden'
+                    : 'space-y-3 lg:hidden'
+                }
+              >
                 {registrationsLoading && (
                   <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400 shadow-sm">
                     Loading registrations...
@@ -1629,9 +1982,15 @@ export function AdminDashboard({
               </div>
 
               <div className="hidden overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm lg:block">
-                <div className="overflow-x-auto">
+                <div
+                  className={
+                    registrationsView.length > 10
+                      ? 'max-h-[min(70vh,56rem)] overflow-auto'
+                      : 'overflow-x-auto'
+                  }
+                >
                   <table className="w-full min-w-[1180px] text-sm">
-                    <thead className="bg-slate-50 text-[11px] font-black uppercase tracking-wider text-slate-500">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-black uppercase tracking-wider text-slate-500 shadow-[0_1px_0_0_rgb(241_245_249)]">
                       <tr>
                         <th className="px-4 py-3 text-left">Participant</th>
                         <th className="px-4 py-3 text-left">Role & Position</th>
@@ -2304,14 +2663,21 @@ export function AdminDashboard({
               <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <h4 className="mb-4 flex items-center gap-2 text-lg font-black">
-                    <Plus size={18} className="text-blue-600" />
-                    Create Entitlement
+                    {editingMeal ? (
+                      <Pencil size={18} className="text-amber-600" />
+                    ) : (
+                      <Plus size={18} className="text-blue-600" />
+                    )}
+                    {editingMeal ? 'Edit Entitlement' : 'Create Entitlement'}
                   </h4>
                   <CreateEntitlementForm
+                    key={editingMeal?.id ?? 'create-entitlement'}
+                    initialMeal={editingMeal}
+                    onCancelEdit={() => setEditingMeal(null)}
                     allBoothRegs={allBoothRegs}
                     allRoleOptions={allRoleOptions}
                     approvedRegistrations={filteredRegistrations.filter((r) => (r.status as string) === 'approved')}
-                    onSubmit={handleCreateMeal}
+                    onSubmit={handleSaveMeal}
                     onValidationError={clearMessageSoon}
                   />
                 </div>
@@ -2348,30 +2714,104 @@ export function AdminDashboard({
               </div>
 
               <div className="mt-6">
-                <h4 className="mb-3 text-lg font-black">Scheduled Entitlements ({meals.length})</h4>
+                <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+                  <div>
+                    <h4 className="text-lg font-black">Scheduled Entitlements</h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {mealsLoading
+                        ? 'Loading…'
+                        : filteredMeals.length === meals.length
+                          ? `Showing ${meals.length} entitlement${meals.length === 1 ? '' : 's'}`
+                          : `Showing ${filteredMeals.length} of ${meals.length} entitlements`}
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                    <label className="flex flex-col gap-1 min-w-[160px]">
+                      <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Meal type</span>
+                      <select
+                        value={mealAdminFilterType}
+                        onChange={(e) => setMealAdminFilterType(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        {MEAL_ADMIN_TYPE_FILTER_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 min-w-[160px]">
+                      <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Session day</span>
+                      <select
+                        value={mealAdminFilterDay}
+                        onChange={(e) => setMealAdminFilterDay(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">All days</option>
+                        {mealSessionDayOptions.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {(mealAdminFilterType !== 'all' || mealAdminFilterDay !== '') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMealAdminFilterType('all');
+                          setMealAdminFilterDay('');
+                        }}
+                        className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 self-end sm:self-auto"
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                  </div>
+                </div>
                 {mealsLoading && <p className="text-sm text-slate-400">Loading entitlements...</p>}
                 {!mealsLoading && meals.length === 0 && (
                   <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400 shadow-sm">
                     No entitlements yet. Use the form above to create one.
                   </div>
                 )}
+                {!mealsLoading && meals.length > 0 && filteredMeals.length === 0 && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-8 text-center text-sm text-amber-900 shadow-sm">
+                    No entitlements match the current filters. Try another meal type or day, or clear filters.
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {meals.map((meal) => (
+                  {filteredMeals.map((meal) => (
                     <div key={meal.id} className="flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div>
                         <p className="font-black">{meal.name || MEAL_LABELS[meal.type] || meal.type}</p>
                         <p className="mt-1 text-xs text-slate-500">{meal.sessionDate || '—'}</p>
                         {meal.startTime && meal.endTime && (
                           <p className="mt-1 text-xs font-semibold text-blue-600">
-                            {meal.startTime} - {meal.endTime}
+                            {formatMealTimeRangeForDisplay(meal.startTime, meal.endTime)}
                           </p>
                         )}
-                        {meal.location && <p className="mt-1 text-xs text-slate-500">📍 {meal.location}</p>}
-                        {meal.assignedBoothUid && (
-                          <p className="mt-1 text-[10px] text-slate-400">
-                            Booth: {allBoothRegs.find((r) => r.uid === meal.assignedBoothUid)?.fullName || 'Assigned'}
-                          </p>
+                        {meal.location && <p className="mt-1 text-xs text-slate-500">📍 Pickup / booth: {meal.location}</p>}
+                        {meal.foodLocationDetails && (
+                          <p className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">🍽 {meal.foodLocationDetails}</p>
                         )}
+                        {meal.assignedBoothUid && (() => {
+                          const br = allBoothRegs.find((r) => r.uid === meal.assignedBoothUid);
+                          const placement = br?.boothLocationDetails ? String(br.boothLocationDetails).trim() : '';
+                          return (
+                            <div className="mt-1 text-[10px] text-slate-500 space-y-0.5">
+                              {placement ? (
+                                <p className="text-slate-700">
+                                  <span className="font-bold text-slate-600">Booth placement:</span> {placement}
+                                </p>
+                              ) : null}
+                              <p>
+                                <span className="font-bold text-slate-600">Staff booth:</span>{' '}
+                                {br ? `${br.fullName || '—'} (${br.sector || '—'})` : 'Assigned'}
+                              </p>
+                            </div>
+                          );
+                        })()}
                         {meal.itemType && (
                           <span className={`mt-1 inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
                             meal.itemType === 'kit' ? 'bg-amber-100 text-amber-700' :
@@ -2381,9 +2821,24 @@ export function AdminDashboard({
                           </span>
                         )}
                       </div>
-                      <button type="button" onClick={() => handleDeleteMeal(meal.id)} className="rounded-xl p-2 text-slate-400 hover:bg-red-50 hover:text-red-500">
-                        <Trash2 size={14} />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          type="button"
+                          title="Edit"
+                          onClick={() => setEditingMeal(meal)}
+                          className="rounded-xl p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete"
+                          onClick={() => handleDeleteMeal(meal.id)}
+                          className="rounded-xl p-2 text-slate-400 hover:bg-red-50 hover:text-red-500"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2392,37 +2847,58 @@ export function AdminDashboard({
           )}
 
           {activeTab === 'booths' && (
-            <section>
+            <section className="space-y-4">
+              <p className="text-sm text-slate-500">
+                Exhibitor and food booths are listed separately. Up to {BOOTH_LIST_PAGE_SIZE} per section; use search and status filters, then Previous / Next.
+              </p>
 
               <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
                     <h4 className="text-lg font-black">Exhibitor Booths</h4>
                     <span className="rounded-full bg-cyan-50 px-3 py-1 text-[11px] font-black text-cyan-600">
-                      {boothRegs.filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes(r.sector)).length}
+                      {exhibitorBoothRegs.length}
                     </span>
                   </div>
-                  <p className="px-5 pb-3 text-xs text-slate-500">Products, research & company booths — not food.</p>
+                  <p className="px-5 pt-3 text-xs text-slate-500">Products, research & company booths — not food.</p>
+                  <div className="px-5 pb-3 pt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                    <div className="relative flex-1 min-w-[200px]">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                      <input
+                        type="search"
+                        value={boothExhibitorSearch}
+                        onChange={(e) => setBoothExhibitorSearch(e.target.value)}
+                        placeholder="Search name, org, email, location…"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <select
+                      value={boothExhibitorStatusFilter}
+                      onChange={(e) =>
+                        setBoothExhibitorStatusFilter(e.target.value as 'all' | 'pending' | 'approved' | 'declined')
+                      }
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-cyan-500 sm:w-40"
+                    >
+                      <option value="all">All statuses</option>
+                      <option value="pending">Pending</option>
+                      <option value="approved">Approved</option>
+                      <option value="declined">Declined</option>
+                    </select>
+                  </div>
                   <div className="divide-y divide-slate-100">
-                    {boothRegs.filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes(r.sector)).length === 0 && (
+                    {exhibitorBoothRegs.length === 0 && (
                       <p className="p-6 text-sm text-slate-400">No exhibitor registrations yet.</p>
                     )}
-                    {boothRegs
-                      .filter((r) => ['Exhibitor', 'Exhibitor (Booth)'].includes(r.sector))
-                      .map((registration) => (
+                    {exhibitorBoothRegs.length > 0 && exhibitorBoothFiltered.length === 0 && (
+                      <p className="p-6 text-sm text-slate-400">No exhibitor booths match your search or filter.</p>
+                    )}
+                    {exhibitorBoothPageItems.map((registration) => (
                         <div key={registration.id}>
                           <div
                             className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-slate-50/50 transition-colors"
                             onClick={() => setExpandedExhibitorId((id) => (id === registration.id ? null : registration.id))}
                           >
-                            <div className="flex shrink-0 gap-2">
-                              {registration.boothImageUrl ? (
-                                <img src={registration.boothImageUrl} alt="Booth" className="h-12 w-12 rounded-lg object-contain bg-slate-100 border border-slate-200" />
-                              ) : (
-                                <div className="h-12 w-12 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
-                                  <Store size={20} />
-                                </div>
-                              )}
+                            <div className="flex shrink-0">
                               {registration.boothBackgroundUrl ? (
                                 <img src={registration.boothBackgroundUrl} alt="Background" className="h-12 w-20 rounded-lg object-contain bg-slate-100 border border-slate-200" />
                               ) : (
@@ -2432,6 +2908,11 @@ export function AdminDashboard({
                             <div className="min-w-0 flex-1">
                               <p className="truncate text-sm font-bold">{registration.fullName || '—'}</p>
                               <p className="truncate text-xs text-slate-500">{registration.sectorOffice || registration.email || '—'}</p>
+                              {registration.boothLocationDetails ? (
+                                <p className="truncate text-[11px] text-cyan-700 mt-0.5" title={String(registration.boothLocationDetails)}>
+                                  📍 {String(registration.boothLocationDetails)}
+                                </p>
+                              ) : null}
                             </div>
                             <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                               <StatusBadge status={registration.status || 'pending'} />
@@ -2448,16 +2929,18 @@ export function AdminDashboard({
                           {expandedExhibitorId === registration.id && (
                             <div className="border-t border-slate-100 bg-slate-50/80 px-5 py-4 space-y-4">
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+                                <div><p className="text-[11px] text-slate-400 mb-0.5">Booth location</p><p className="text-slate-700 whitespace-pre-wrap">{registration.boothLocationDetails || '—'}</p></div>
                                 <div><p className="text-[11px] text-slate-400 mb-0.5">Description / Topic</p><p className="text-slate-700 whitespace-pre-wrap">{registration.boothDescription || '—'}</p></div>
                                 <div><p className="text-[11px] text-slate-400 mb-0.5">Products / Services</p><p className="text-slate-700">{registration.boothProducts || '—'}</p></div>
                                 <div><p className="text-[11px] text-slate-400 mb-0.5">Website</p>{registration.boothWebsite ? <a href={registration.boothWebsite} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{registration.boothWebsite}</a> : <span className="text-slate-500">—</span>}</div>
                                 <div><p className="text-[11px] text-slate-400 mb-0.5">Contact</p><p className="text-slate-700">{registration.contactNumber || registration.email || '—'}</p></div>
                                 <div><p className="text-[11px] text-slate-400 mb-0.5">Organization</p><p className="text-slate-700">{registration.sectorOffice || '—'}</p></div>
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                                {registration.boothImageUrl && <img src={registration.boothImageUrl} alt="Booth" className="h-20 w-20 rounded-xl object-contain bg-white border border-slate-200" />}
-                                {registration.boothBackgroundUrl && <img src={registration.boothBackgroundUrl} alt="Background" className="h-16 w-24 rounded-xl object-contain bg-white border border-slate-200" />}
-                              </div>
+                              {registration.boothBackgroundUrl ? (
+                                <div className="flex flex-wrap gap-2">
+                                  <img src={registration.boothBackgroundUrl} alt="Background" className="h-16 w-24 rounded-xl object-contain bg-white border border-slate-200" />
+                                </div>
+                              ) : null}
                               <button type="button" onClick={() => setEditingRegistration({ ...registration })} className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-600">
                                 Edit Booth Details
                               </button>
@@ -2466,32 +2949,80 @@ export function AdminDashboard({
                         </div>
                       ))}
                   </div>
+                  {exhibitorBoothRegs.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-5 py-3 bg-slate-50/80">
+                      <p className="text-[11px] text-slate-500">
+                        {exhibitorBoothFiltered.length === 0
+                          ? '—'
+                          : `Showing ${boothExhibitorPage * BOOTH_LIST_PAGE_SIZE + 1}–${Math.min((boothExhibitorPage + 1) * BOOTH_LIST_PAGE_SIZE, exhibitorBoothFiltered.length)} of ${exhibitorBoothFiltered.length}`}
+                        {exhibitorBoothTotalPages > 1 ? ` · Page ${boothExhibitorPage + 1} of ${exhibitorBoothTotalPages}` : null}
+                      </p>
+                      {exhibitorBoothTotalPages > 1 ? (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={boothExhibitorPage <= 0}
+                            onClick={() => setBoothExhibitorPage((p) => Math.max(0, p - 1))}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            disabled={boothExhibitorPage >= exhibitorBoothTotalPages - 1}
+                            onClick={() => setBoothExhibitorPage((p) => p + 1)}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
 
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
                     <h4 className="text-lg font-black">Food Booths</h4>
                     <span className="rounded-full bg-orange-50 px-3 py-1 text-[11px] font-black text-orange-600">
-                      {boothRegs.filter((r) => r.sector === 'Food (Booth)').length}
+                      {foodBoothRegsList.length}
                     </span>
                   </div>
-                  <p className="px-5 pb-3 text-xs text-slate-500">Food service & concessions only.</p>
+                  <p className="px-5 pt-3 text-xs text-slate-500">Food service & concessions only.</p>
+                  <div className="px-5 pb-3 pt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                    <div className="relative flex-1 min-w-[200px]">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                      <input
+                        type="search"
+                        value={boothFoodSearch}
+                        onChange={(e) => setBoothFoodSearch(e.target.value)}
+                        placeholder="Search name, org, email, location…"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-orange-500"
+                      />
+                    </div>
+                    <select
+                      value={boothFoodStatusFilter}
+                      onChange={(e) =>
+                        setBoothFoodStatusFilter(e.target.value as 'all' | 'pending' | 'approved' | 'declined')
+                      }
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-500 sm:w-40"
+                    >
+                      <option value="all">All statuses</option>
+                      <option value="pending">Pending</option>
+                      <option value="approved">Approved</option>
+                      <option value="declined">Declined</option>
+                    </select>
+                  </div>
                   <div className="divide-y divide-slate-100">
-                    {boothRegs.filter((r) => r.sector === 'Food (Booth)').length === 0 && (
+                    {foodBoothRegsList.length === 0 && (
                       <p className="p-6 text-sm text-slate-400">No food booth registrations yet.</p>
                     )}
-                    {boothRegs
-                      .filter((r) => r.sector === 'Food (Booth)')
-                      .map((registration) => (
+                    {foodBoothRegsList.length > 0 && foodBoothFiltered.length === 0 && (
+                      <p className="p-6 text-sm text-slate-400">No food booths match your search or filter.</p>
+                    )}
+                    {foodBoothPageItems.map((registration) => (
                         <div key={registration.id} className="flex items-center gap-3 px-5 py-4">
-                          <div className="flex shrink-0 gap-2">
-                            {registration.boothImageUrl ? (
-                              <img src={registration.boothImageUrl} alt="Booth" className="h-12 w-12 rounded-lg object-cover border border-slate-200" />
-                            ) : (
-                              <div className="h-12 w-12 rounded-lg bg-orange-50 border border-slate-200 flex items-center justify-center text-orange-300">
-                                <UtensilsCrossed size={20} />
-                              </div>
-                            )}
+                          <div className="flex shrink-0">
                             {registration.boothBackgroundUrl ? (
                               <img src={registration.boothBackgroundUrl} alt="Background" className="h-12 w-20 rounded-lg object-cover border border-slate-200" />
                             ) : (
@@ -2501,6 +3032,11 @@ export function AdminDashboard({
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold">{registration.fullName || '—'}</p>
                             <p className="truncate text-xs text-slate-500">{registration.sectorOffice || registration.email || '—'}</p>
+                            {registration.boothLocationDetails ? (
+                              <p className="truncate text-[11px] text-orange-700 mt-0.5" title={String(registration.boothLocationDetails)}>
+                                📍 {String(registration.boothLocationDetails)}
+                              </p>
+                            ) : null}
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <StatusBadge status={registration.status || 'pending'} />
@@ -2515,6 +3051,36 @@ export function AdminDashboard({
                         </div>
                       ))}
                   </div>
+                  {foodBoothRegsList.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-5 py-3 bg-slate-50/80">
+                      <p className="text-[11px] text-slate-500">
+                        {foodBoothFiltered.length === 0
+                          ? '—'
+                          : `Showing ${boothFoodPage * BOOTH_LIST_PAGE_SIZE + 1}–${Math.min((boothFoodPage + 1) * BOOTH_LIST_PAGE_SIZE, foodBoothFiltered.length)} of ${foodBoothFiltered.length}`}
+                        {foodBoothTotalPages > 1 ? ` · Page ${boothFoodPage + 1} of ${foodBoothTotalPages}` : null}
+                      </p>
+                      {foodBoothTotalPages > 1 ? (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={boothFoodPage <= 0}
+                            onClick={() => setBoothFoodPage((p) => Math.max(0, p - 1))}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            disabled={boothFoodPage >= foodBoothTotalPages - 1}
+                            onClick={() => setBoothFoodPage((p) => p + 1)}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               </div>
             </section>
@@ -2632,6 +3198,24 @@ export function AdminDashboard({
                     </table>
                   </div>
                 )}
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'articles' && (
+            <section className="overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-sm">
+              <div className="relative overflow-hidden border-b border-violet-900/15 bg-gradient-to-r from-violet-600 via-indigo-600 to-violet-800 px-5 py-5">
+                <div
+                  className="pointer-events-none absolute inset-0 opacity-25 bg-[radial-gradient(ellipse_at_80%_0%,_white,transparent)]"
+                  aria-hidden
+                />
+                <h4 className="relative text-lg font-black text-white drop-shadow-sm">Event articles</h4>
+                <p className="relative mt-1 text-sm text-violet-100/95">
+                  Manage articles, header images, and attachments. Authors (sector <strong className="text-white">Articles</strong>) only see their own posts.
+                </p>
+              </div>
+              <div className="p-5">
+                <ArticlesManager mode="admin" user={user} />
               </div>
             </section>
           )}
@@ -2815,6 +3399,112 @@ export function AdminDashboard({
                 </Field>
               </div>
 
+              {editingRegistration.sector === 'Food (Booth)' && (
+                <div className="rounded-2xl border border-orange-200 bg-orange-50/50 p-5 space-y-4">
+                  <h4 className="flex items-center gap-2 text-sm font-black text-slate-900">
+                    <UtensilsCrossed size={16} className="text-orange-600" />
+                    Food booth details
+                  </h4>
+                  <div className="grid grid-cols-1 gap-4">
+                    <Field label="Booth location details (shown to participants & staff)">
+                      <textarea
+                        value={editingRegistration.boothLocationDetails || ''}
+                        onChange={(e) =>
+                          setEditingRegistration((prev: any) => ({ ...prev, boothLocationDetails: e.target.value }))
+                        }
+                        rows={3}
+                        placeholder="e.g. Exhibition Hall — north row, stall 5, near restrooms"
+                        className="w-full resize-none rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-500"
+                      />
+                    </Field>
+                    <Field label="Booth description">
+                      <textarea
+                        value={editingRegistration.boothDescription || ''}
+                        onChange={(e) =>
+                          setEditingRegistration((prev: any) => ({ ...prev, boothDescription: e.target.value }))
+                        }
+                        rows={3}
+                        className="w-full resize-none rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-500"
+                        placeholder="What you serve, specials, or stall focus…"
+                      />
+                    </Field>
+                    <Field label="Products / Services">
+                      <input
+                        value={editingRegistration.boothProducts || ''}
+                        onChange={(e) =>
+                          setEditingRegistration((prev: any) => ({ ...prev, boothProducts: e.target.value }))
+                        }
+                        className="w-full rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-500"
+                        placeholder="e.g. Burgers, coffee, snacks…"
+                      />
+                    </Field>
+                    <Field label="Website URL">
+                      <input
+                        value={editingRegistration.boothWebsite || ''}
+                        onChange={(e) =>
+                          setEditingRegistration((prev: any) => ({ ...prev, boothWebsite: e.target.value }))
+                        }
+                        type="url"
+                        className="w-full rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-500"
+                        placeholder="https://…"
+                      />
+                    </Field>
+                    <Field label="Booth background">
+                      <p className="text-[10px] text-slate-500 mb-2">Banner image for listings (booth logo image is not used).</p>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        {editingRegistration.boothBackgroundUrl && (
+                          <img
+                            src={editingRegistration.boothBackgroundUrl}
+                            alt="Background"
+                            className="h-12 w-20 rounded-xl object-contain bg-white border border-orange-200"
+                          />
+                        )}
+                        {editingRegistration.uid ? (
+                          <label
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-orange-200 bg-white text-sm font-semibold cursor-pointer hover:bg-orange-50/80 ${uploadingBoothBackground ? 'opacity-60' : ''}`}
+                          >
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const f = e.target.files?.[0];
+                                if (!f || !f.type.startsWith('image/')) return;
+                                setUploadingBoothBackground(true);
+                                try {
+                                  const path = `boothBackgrounds/${editingRegistration.uid}/${Date.now()}_${f.name.replace(/[^a-zA-Z0-9.\-_]/g, '_')}`;
+                                  await uploadBytes(ref(storage, path), f, { contentType: f.type || 'image/jpeg' });
+                                  const url = await getDownloadURL(ref(storage, path));
+                                  setEditingRegistration((prev: any) => ({ ...prev, boothBackgroundUrl: url }));
+                                } catch (err) {
+                                  console.error(err);
+                                } finally {
+                                  setUploadingBoothBackground(false);
+                                  e.target.value = '';
+                                }
+                              }}
+                            />
+                            {uploadingBoothBackground ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                            {uploadingBoothBackground ? 'Uploading…' : 'Upload'}
+                          </label>
+                        ) : (
+                          <span className="text-xs text-slate-500">Link account to upload</span>
+                        )}
+                        {editingRegistration.boothBackgroundUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => setEditingRegistration((prev: any) => ({ ...prev, boothBackgroundUrl: '' }))}
+                            className="text-xs font-bold text-red-600 hover:underline"
+                          >
+                            Clear
+                          </button>
+                        ) : null}
+                      </div>
+                    </Field>
+                  </div>
+                </div>
+              )}
+
               {['Exhibitor', 'Exhibitor (Booth)'].includes(editingRegistration.sector) && (
                 <div className="rounded-2xl border border-cyan-200 bg-cyan-50/50 p-5 space-y-4">
                   <h4 className="flex items-center gap-2 text-sm font-black text-slate-900">
@@ -2822,6 +3512,17 @@ export function AdminDashboard({
                     Booth / Topic Details
                   </h4>
                   <div className="grid grid-cols-1 gap-4">
+                    <Field label="Booth location details (physical placement)">
+                      <textarea
+                        value={editingRegistration.boothLocationDetails || ''}
+                        onChange={(e) =>
+                          setEditingRegistration((prev: any) => ({ ...prev, boothLocationDetails: e.target.value }))
+                        }
+                        rows={2}
+                        placeholder="e.g. Expo floor — booth A12"
+                        className="w-full resize-none rounded-xl border border-cyan-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </Field>
                     <Field label="Booth category (Exhibitors page)">
                       <select
                         value={editingRegistration.boothCategory || ''}
@@ -2880,34 +3581,6 @@ export function AdminDashboard({
                         className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="https://your-company.com"
                       />
-                    </Field>
-                    <Field label="Booth Image">
-                      <div className="flex items-center gap-3">
-                        {editingRegistration.boothImageUrl && (
-                          <img src={editingRegistration.boothImageUrl} alt="Booth" className="h-16 w-16 rounded-xl object-contain bg-slate-100 border border-slate-200" />
-                        )}
-                        {editingRegistration.uid ? (
-                        <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothImage ? 'opacity-60' : ''}`}>
-                          <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
-                            const f = e.target.files?.[0];
-                            if (!f || !f.type.startsWith('image/')) return;
-                            setUploadingBoothImage(true);
-                            try {
-                              const path = `boothImages/${editingRegistration.uid}/${Date.now()}_${f.name.replace(/[^a-zA-Z0-9.\-_]/g, '_')}`;
-                              await uploadBytes(ref(storage, path), f, { contentType: f.type || 'image/jpeg' });
-                              const url = await getDownloadURL(ref(storage, path));
-                              setEditingRegistration((prev: any) => ({ ...prev, boothImageUrl: url }));
-                            } catch (err) { console.error(err); }
-                            finally { setUploadingBoothImage(false); e.target.value = ''; }
-                          }} />
-                          {uploadingBoothImage ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
-                          {uploadingBoothImage ? 'Uploading…' : 'Upload'}
-                        </label>
-                        ) : <span className="text-xs text-slate-500">Link account to upload images</span>}
-                        {(editingRegistration.boothImageUrl) && (
-                          <button type="button" onClick={() => setEditingRegistration((prev: any) => ({ ...prev, boothImageUrl: '' }))} className="text-xs font-bold text-red-600 hover:underline">Clear</button>
-                        )}
-                      </div>
                     </Field>
                     <Field label="Booth Background">
                       <div className="flex items-center gap-3">

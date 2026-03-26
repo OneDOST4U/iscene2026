@@ -32,6 +32,7 @@ import {
   ImageUp,
   Camera,
   RefreshCw,
+  Utensils,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -46,15 +47,18 @@ import {
   orderBy,
   Timestamp,
   limit,
+  onSnapshot,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { getEntranceCalendarDateKey } from './entranceCheckInDay';
+import { registrationSectorEligibleForMeal } from './mealEligibility';
+import { MealEntitlementCard } from './MealEntitlementCard';
 import { QrScanModal } from './QrScanModal';
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Types
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-type Tab = 'overview' | 'participants' | 'accommodations' | 'travel' | 'calendar' | 'profile';
+type Tab = 'overview' | 'participants' | 'accommodations' | 'travel' | 'calendar' | 'meals' | 'profile';
 
 type ParticipantReg = {
   id: string;
@@ -101,6 +105,32 @@ type AttendanceRecord = {
   createdAt: any;
 };
 
+type MealWindow = {
+  id: string;
+  type: string;
+  itemType?: 'food' | 'kit' | 'both';
+  name?: string;
+  location?: string;
+  foodLocationDetails?: string;
+  assignedBoothUid?: string;
+  eligibleSectors?: string[];
+  eligibleParticipantIds?: string[];
+  sessionDate: string;
+  startTime: string;
+  endTime: string;
+};
+
+type FoodClaim = { id: string; mealId: string; claimedAt: unknown };
+
+const MEAL_LABELS: Record<string, string> = {
+  breakfast: '🌅 Breakfast',
+  snacks: '🍪 Snacks (AM)',
+  lunch: '🍱 Lunch',
+  snacks_pm: '🥤 Snacks (PM)',
+  dinner: '🍽️ Dinner',
+  kit: 'Kit',
+};
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Helpers
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -137,6 +167,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const fullName   = (registration?.fullName as string) || user.email || 'Facilitator';
   const profilePicUrl = (registration?.profilePictureUrl as string | undefined) || null;
   const myInitials = initials(fullName);
+  const registrationId = registration?.id as string | undefined;
+  const facilitatorSector = (registration?.sector as string) || '';
 
   // â”€â”€ Nav â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [activeTab, setActiveTab] = React.useState<Tab>('overview');
@@ -148,6 +180,10 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const [reservations, setReservations]   = React.useState<Reservation[]>([]);
   const [attendance,   setAttendance]     = React.useState<AttendanceRecord[]>([]);
   const [loading,      setLoading]        = React.useState(true);
+  const [meals, setMeals] = React.useState<MealWindow[]>([]);
+  const [foodClaims, setFoodClaims] = React.useState<FoodClaim[]>([]);
+  const [boothRegs, setBoothRegs] = React.useState<{ id?: string; uid?: string; fullName?: string; boothLocationDetails?: string; status?: string }[]>([]);
+  const [claimClockTick, setClaimClockTick] = React.useState(() => Date.now());
 
   // â”€â”€ Participant table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [searchQuery,   setSearchQuery]   = React.useState('');
@@ -232,6 +268,44 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     return () => { cancelled = true; };
   }, []);
 
+  React.useEffect(() => {
+    const id = window.setInterval(() => setClaimClockTick(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  React.useEffect(() => {
+    const unsubMeals = onSnapshot(
+      query(collection(db, 'meals'), orderBy('createdAt', 'desc')),
+      (snap) => setMeals(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) }))),
+      () => setMeals([]),
+    );
+    const unsubClaims = onSnapshot(
+      query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid)),
+      (snap) =>
+        setFoodClaims(
+          snap.docs.map((d) => ({
+            id: d.id,
+            mealId: (d.data() as { mealId?: string }).mealId ?? '',
+            claimedAt: (d.data() as { claimedAt?: unknown }).claimedAt,
+          })),
+        ),
+      () => setFoodClaims([]),
+    );
+    const unsubBooths = onSnapshot(
+      query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)'])),
+      (snap) =>
+        setBoothRegs(
+          snap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })),
+        ),
+      () => setBoothRegs([]),
+    );
+    return () => {
+      unsubMeals();
+      unsubClaims();
+      unsubBooths();
+    };
+  }, [user.uid]);
+
   // â”€â”€ Derived stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const approvedCount   = participants.filter((p) => p.status === 'approved').length;
   const checkedInCount  = new Set(attendance.filter((a) => a.type === 'entrance').map((a) => a.uid)).size;
@@ -257,6 +331,13 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const totalPages    = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated     = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const uniqueSectors = Array.from(new Set(participants.map((p) => p.sector).filter(Boolean)));
+
+  const eligibleMeals = React.useMemo(
+    () => meals.filter((m) => registrationSectorEligibleForMeal(m, registrationId, facilitatorSector)),
+    [meals, registrationId, facilitatorSector],
+  );
+  const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
+  const mealsBadgeDisplay = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
 
   // â”€â”€ QR Scan result handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleScanResult = async (text: string) => {
@@ -349,6 +430,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     { id: 'participants'  as Tab, label: 'Participants',     icon: <Users size={19} /> },
     { id: 'accommodations'as Tab, label: 'Accommodations',  icon: <BedDouble size={19} /> },
     { id: 'travel'        as Tab, label: 'Travel Schedule',  icon: <Plane size={19} /> },
+    { id: 'meals'         as Tab, label: 'My entitlements', icon: <Utensils size={19} /> },
     { id: 'calendar'      as Tab, label: 'Event Calendar',   icon: <CalendarDays size={19} /> },
   ];
 
@@ -367,6 +449,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     participants:   'Participant Management',
     accommodations: 'Accommodations',
     travel:         'Travel Schedule',
+    meals:          'My Entitlements',
     calendar:       'Event Calendar',
     profile:        'My Profile',
   };
@@ -403,7 +486,13 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {NAV.map(({ id, label, icon }) => (
             <button key={id} type="button" onClick={() => { setActiveTab(id); setSidebarOpen(false); }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === id ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-600 hover:bg-slate-100'}`}>
-              {icon}<span>{label}</span>
+              {icon}
+              <span className="flex-1 text-left">{label}</span>
+              {id === 'meals' && mealsBadgeDisplay > 0 ? (
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center ${activeTab === id ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-800'}`}>
+                  {mealsBadgeDisplay > 99 ? '99+' : mealsBadgeDisplay}
+                </span>
+              ) : null}
             </button>
           ))}
           <div className="pt-6">
@@ -535,7 +624,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             <p className="text-sm font-bold">{p?.fullName || a.uid}</p>
                             <p className="text-[11px] text-slate-400">{p?.sector || 'â€”'}</p>
                           </div>
-                          <p className="text-xs text-slate-400 shrink-0">{date.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</p>
+                          <p className="text-xs text-slate-400 shrink-0">{date.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit', hour12: true })}</p>
                           <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
                         </div>
                       );
@@ -788,6 +877,39 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             </div>
           )}
 
+          {/* â•â• MY ENTITLEMENTS â•â• */}
+          {activeTab === 'meals' && (
+            <div className="max-w-6xl mx-auto w-full">
+              <div className="mb-6">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Entitlements</p>
+                <h2 className="text-2xl font-black tracking-tight">My Entitlements</h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  Food, kits, and giveaways — during the pickup window, open Digital ID so the food booth can scan your QR.
+                </p>
+              </div>
+              {eligibleMeals.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center text-slate-400 shadow-sm text-sm">
+                  No entitlements are configured for your registration sector yet. If you should receive meals, ask organizers to include{' '}
+                  <strong>Facilitators</strong> (or your sector) on the meal window, or add you under eligible participants.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {eligibleMeals.map((meal) => (
+                    <MealEntitlementCard
+                      key={meal.id}
+                      meal={meal}
+                      mealLabels={MEAL_LABELS}
+                      boothRegs={boothRegs}
+                      now={new Date(claimClockTick)}
+                      claimed={hasClaimedMeal(meal.id)}
+                      onClaim={() => setIdModal(true)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* â•â• CALENDAR (Rooms / Sessions) â•â• */}
           {activeTab === 'calendar' && (
             <div>
@@ -987,7 +1109,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                         <div key={a.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
                           <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
                           <span className="text-sm flex-1 capitalize">{a.type === 'entrance' ? 'Main Entrance' : (a as any).roomName || a.type}</span>
-                          <span className="text-xs text-slate-400">{date.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span className="text-xs text-slate-400">{date.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit', hour12: true })}</span>
                         </div>
                       );
                     })}

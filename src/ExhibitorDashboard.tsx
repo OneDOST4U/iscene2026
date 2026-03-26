@@ -14,24 +14,32 @@ import {
   FileText,
   Image as ImageIcon,
   Film,
-  MapPin,
-  Calendar,
   Info,
   Plus,
   Edit2,
   Mail,
   LogOut,
   ExternalLink,
-  Rocket,
   Menu,
   Copy,
   ClipboardList,
   Link2,
+  QrCode,
+  UtensilsCrossed,
+  Utensils,
+  Clock,
+  Home,
+  Bell,
+  Newspaper,
+  Zap,
+  AlertTriangle,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
   collection,
   getDocs,
+  getDoc,
+  setDoc,
   addDoc,
   deleteDoc,
   doc,
@@ -40,15 +48,51 @@ import {
   orderBy,
   Timestamp,
   updateDoc,
+  onSnapshot,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, auth, storage } from './firebase';
 import { EXHIBITOR_BOOTH_CATEGORIES, exhibitorCategoryLabel } from './exhibitorBoothCategory';
+import { QrScanModal } from './QrScanModal';
+import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey } from './entranceCheckInDay';
+import { registrationSectorEligibleForMeal } from './mealEligibility';
+import { MealEntitlementCard } from './MealEntitlementCard';
+import { ArticleBrowsePanel } from './ArticleBrowsePanel';
+import type { ArticleDoc } from './ArticlesManager';
+import { useArticleCategoryNames } from './useArticleCategoryNames';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
-type ExhibitorTab = 'my-booth' | 'materials' | 'digital-id' | 'profile';
+type ExhibitorTab = 'home' | 'my-booth' | 'materials' | 'meals' | 'main-hall' | 'articles' | 'digital-id' | 'profile';
+
+type MealWindow = {
+  id: string;
+  type: string;
+  itemType?: 'food' | 'kit' | 'both';
+  name?: string;
+  location?: string;
+  foodLocationDetails?: string;
+  assignedBoothUid?: string;
+  eligibleSectors?: string[];
+  eligibleParticipantIds?: string[];
+  sessionDate: string;
+  startTime: string;
+  endTime: string;
+};
+
+type FoodClaim = { id: string; mealId: string; claimedAt: unknown };
+
+const TRAVEL_ACCOMMODATION_REMINDER_MS = 3 * 60 * 60 * 1000;
+
+const MEAL_LABELS: Record<string, string> = {
+  breakfast: '🌅 Breakfast',
+  snacks: '🍪 Snacks (AM)',
+  lunch: '🍱 Lunch',
+  snacks_pm: '🥤 Snacks (PM)',
+  dinner: '🍽️ Dinner',
+  kit: 'Kit',
+};
 
 type BoothMaterial = {
   id: string;
@@ -95,6 +139,7 @@ type Props = { user: FirebaseUser; registration: any; onSignOut: () => Promise<v
 
 export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const fullName = (registration?.fullName as string) || user.email || 'Exhibitor';
+  const firstName = fullName.split(' ')[0] || 'Exhibitor';
   const orgName = (registration?.sectorOffice as string) || 'Technology Booth';
   const profilePicUrl = (registration?.profilePictureUrl as string | undefined) || null;
   const initials = fullName.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2);
@@ -102,8 +147,17 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const boothNumber = `#${registration?.id?.slice(0, 6).toUpperCase() || 'TBD'}`;
 
   // ── Tabs ──────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = React.useState<ExhibitorTab>('my-booth');
-  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState<ExhibitorTab>('home');
+  const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
+  const [bellPanelOpen, setBellPanelOpen] = React.useState(false);
+  const mobileBellRef = React.useRef<HTMLDivElement | null>(null);
+
+  // ── Articles ─────────────────────────────────────────────────────────
+  const [exhibitorArticles, setExhibitorArticles] = React.useState<ArticleDoc[]>([]);
+  const [articlesLoading, setArticlesLoading] = React.useState(true);
+  const [articleSearchQuery, setArticleSearchQuery] = React.useState('');
+  const [articleCategoryFilter, setArticleCategoryFilter] = React.useState<string>('all');
+  const articleCategoriesState = useArticleCategoryNames();
 
   // ── Materials ─────────────────────────────────────────────────────────
   const [materials, setMaterials] = React.useState<BoothMaterial[]>([]);
@@ -117,19 +171,49 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const [boothDesc, setBoothDesc] = React.useState((registration?.boothDescription as string) || '');
   const [boothWebsite, setBoothWebsite] = React.useState((registration?.boothWebsite as string) || '');
   const [boothProducts, setBoothProducts] = React.useState((registration?.boothProducts as string) || '');
-  const [boothImageUrl, setBoothImageUrl] = React.useState((registration?.boothImageUrl as string) || '');
   const [boothBackgroundUrl, setBoothBackgroundUrl] = React.useState((registration?.boothBackgroundUrl as string) || '');
   const [boothCategory, setBoothCategory] = React.useState((registration?.boothCategory as string) || '');
   const [boothCategoryOther, setBoothCategoryOther] = React.useState((registration?.boothCategoryOther as string) || '');
-  const [uploadingBoothImage, setUploadingBoothImage] = React.useState(false);
+  const [boothLocationDetails, setBoothLocationDetails] = React.useState((registration?.boothLocationDetails as string) || '');
   const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
   const [savingBooth, setSavingBooth] = React.useState(false);
 
   // ── ID modal ──────────────────────────────────────────────────────────
   const [idModal, setIdModal] = React.useState(false);
 
-  // ── Profile ───────────────────────────────────────────────────────────
+  // ── Profile / travel ──────────────────────────────────────────────────
   const [pwResetSent, setPwResetSent] = React.useState(false);
+  const [editingTravel, setEditingTravel] = React.useState(false);
+  const [travelDetails, setTravelDetails] = React.useState((registration?.travelDetails as string) || '');
+  const [accommodationDetails, setAccommodationDetails] = React.useState((registration?.accommodationDetails as string) || '');
+  const [travelSaving, setTravelSaving] = React.useState(false);
+
+  type InAppNotifyType = 'travel';
+  type InAppNotificationItem = { id: string; msg: string; type: InAppNotifyType; read: boolean; createdAt: number };
+  const [inAppNotifications, setInAppNotifications] = React.useState<InAppNotificationItem[]>([]);
+  const [contentNotify, setContentNotify] = React.useState<{ msg: string; type: 'travel' } | null>(null);
+
+  const pushInAppNotification = React.useCallback((msg: string, type: InAppNotifyType) => {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    setInAppNotifications((prev) => [{ id, msg, type, read: false, createdAt: Date.now() }, ...prev].slice(0, 40));
+  }, []);
+
+  const notifyCategoryLabel = (_t: InAppNotifyType) => 'Travel & accommodation';
+
+  const bellUnreadCount = inAppNotifications.filter((n) => !n.read).length;
+
+  const travelAccIncomplete =
+    !String(travelDetails || '').trim() || !String(accommodationDetails || '').trim();
+
+  // ── Meals & main hall ───────────────────────────────────────────────────
+  const [meals, setMeals] = React.useState<MealWindow[]>([]);
+  const [foodClaims, setFoodClaims] = React.useState<FoodClaim[]>([]);
+  const [boothRegs, setBoothRegs] = React.useState<{ id?: string; uid?: string; fullName?: string; boothLocationDetails?: string; status?: string }[]>([]);
+  const [claimClockTick, setClaimClockTick] = React.useState(() => Date.now());
+  const [scanModal, setScanModal] = React.useState(false);
+  const [scanToast, setScanToast] = React.useState<string | null>(null);
+  const [entranceAttendanceRaw, setEntranceAttendanceRaw] = React.useState<Record<string, unknown> | null>(null);
+  const [entranceTodayKey, setEntranceTodayKey] = React.useState(() => getEntranceCalendarDateKey());
 
   // ── Toast ─────────────────────────────────────────────────────────────
   const [toast, setToast] = React.useState<string | null>(null);
@@ -141,11 +225,23 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const idNumber = user.uid.slice(0, 8).toUpperCase();
   const sectorLabel = (registration?.sector as string) || 'Exhibitor (Booth)';
   const bgUrl = trimUrl(boothBackgroundUrl);
-  const logoUrl = trimUrl(boothImageUrl);
+  const registrationId = registration?.id as string | undefined;
+  const exhibitorSector = (registration?.sector as string) || '';
+
+  const hasEntryAttendance = React.useMemo(
+    () => isEntranceCheckedInForDateKey(entranceAttendanceRaw, entranceTodayKey),
+    [entranceAttendanceRaw, entranceTodayKey],
+  );
+
+  const eligibleMeals = React.useMemo(
+    () => meals.filter((m) => registrationSectorEligibleForMeal(m, registrationId, exhibitorSector)),
+    [meals, registrationId, exhibitorSector],
+  );
+  const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
+  const mealsBadgeDisplay = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
 
   const boothChecklist = [
     { done: !!bgUrl, label: 'Banner background', hint: 'Wide image participants see at the top' },
-    { done: !!logoUrl, label: 'Booth logo / image', hint: 'Shown with your profile in listings' },
     { done: !!boothDesc.trim(), label: 'Booth description', hint: 'Tell visitors what you offer' },
     { done: materials.length > 0, label: 'At least one material', hint: 'Brochures, PDFs, or media' },
     { done: !!boothWebsite.trim(), label: 'Website link', hint: 'Optional but recommended' },
@@ -161,30 +257,191 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
     }
   };
 
-  // ── Event milestones ──────────────────────────────────────────────────
-  const milestones = [
-    { label: 'Setup Period Starts', date: 'Apr 8, 2026 · 08:00 AM', icon: <Calendar size={20} className="text-amber-600" />, iconBg: 'bg-amber-100', locked: false },
-    { label: 'Event Opening Day', date: 'Apr 9, 2026 · 09:00 AM', icon: <Rocket size={20} className="text-blue-600" />, iconBg: 'bg-blue-100', locked: false },
-    { label: 'Networking Night', date: 'Apr 10, 2026 · 06:00 PM', icon: <Store size={20} className="text-slate-400" />, iconBg: 'bg-slate-100', locked: true },
-    { label: 'Closing Ceremony', date: 'Apr 11, 2026 · 05:00 PM', icon: <CheckCircle2 size={20} className="text-slate-400" />, iconBg: 'bg-slate-100', locked: true },
-  ];
-
   // ── Load data ─────────────────────────────────────────────────────────
   React.useEffect(() => {
     setBoothCategory((registration?.boothCategory as string) || '');
     setBoothCategoryOther((registration?.boothCategoryOther as string) || '');
-  }, [registration?.id, registration?.boothCategory, registration?.boothCategoryOther]);
+    setBoothLocationDetails((registration?.boothLocationDetails as string) || '');
+  }, [registration?.id, registration?.boothCategory, registration?.boothCategoryOther, registration?.boothLocationDetails]);
+
+  React.useEffect(() => {
+    setTravelDetails((registration?.travelDetails as string) || '');
+    setAccommodationDetails((registration?.accommodationDetails as string) || '');
+  }, [registration?.id, registration?.travelDetails, registration?.accommodationDetails]);
+
+  React.useEffect(() => {
+    const tick = () => setEntranceTodayKey(getEntranceCalendarDateKey());
+    const id = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
-    getDocs(query(collection(db, 'presenterMaterials'), where('uid', '==', user.uid), orderBy('createdAt', 'desc')))
+    setArticlesLoading(true);
+    getDocs(query(collection(db, 'articles'), orderBy('createdAt', 'desc')))
       .then((snap) => {
-        if (!cancelled) setMaterials(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<BoothMaterial, 'id'>) })));
+        if (cancelled) return;
+        const list: ArticleDoc[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ArticleDoc, 'id'>) }));
+        setExhibitorArticles(list);
       })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .catch(() => {
+        if (!cancelled) setExhibitorArticles([]);
+      })
+      .finally(() => {
+        if (!cancelled) setArticlesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!bellPanelOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (mobileBellRef.current?.contains(t)) return;
+      setBellPanelOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [bellPanelOpen]);
+
+  React.useEffect(() => {
+    const refAtt = doc(db, 'attendance', `${user.uid}_entrance`);
+    const unsub = onSnapshot(
+      refAtt,
+      (snap) => setEntranceAttendanceRaw(snap.exists() ? (snap.data() as Record<string, unknown>) : null),
+      () => setEntranceAttendanceRaw(null),
+    );
+    return () => unsub();
+  }, [user.uid]);
+
+  React.useEffect(() => {
+    const id = window.setInterval(() => setClaimClockTick(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  React.useEffect(() => {
+    const unsubBooths = onSnapshot(
+      query(collection(db, 'registrations'), where('sector', 'in', ['Exhibitor (Booth)', 'Exhibitor', 'Food (Booth)'])),
+      (snap) =>
+        setBoothRegs(
+          snap.docs.filter((d) => d.data().status === 'approved').map((d) => ({ id: d.id, ...d.data() })),
+        ),
+      () => setBoothRegs([]),
+    );
+    return () => unsubBooths();
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const [matSnap, mealsSnap, claimsSnap] = await Promise.all([
+          getDocs(query(collection(db, 'presenterMaterials'), where('uid', '==', user.uid), orderBy('createdAt', 'desc'))),
+          getDocs(query(collection(db, 'meals'), orderBy('createdAt', 'desc'))),
+          getDocs(query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid))),
+        ]);
+        if (!cancelled) {
+          setMaterials(matSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<BoothMaterial, 'id'>) })));
+          setMeals(mealsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) })));
+          setFoodClaims(
+            claimsSnap.docs.map((d) => ({
+              id: d.id,
+              mealId: (d.data() as { mealId?: string }).mealId ?? '',
+              claimedAt: (d.data() as { claimedAt?: unknown }).claimedAt,
+            })),
+          );
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => { cancelled = true; };
   }, [user.uid]);
+
+  React.useEffect(() => {
+    const unsubMeals = onSnapshot(
+      query(collection(db, 'meals'), orderBy('createdAt', 'desc')),
+      (snap) => setMeals(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<MealWindow, 'id'>) }))),
+      () => {},
+    );
+    const unsubClaims = onSnapshot(
+      query(collection(db, 'foodClaims'), where('participantUid', '==', user.uid)),
+      (snap) =>
+        setFoodClaims(
+          snap.docs.map((d) => ({
+            id: d.id,
+            mealId: (d.data() as { mealId?: string }).mealId ?? '',
+            claimedAt: (d.data() as { claimedAt?: unknown }).claimedAt,
+          })),
+        ),
+      () => {},
+    );
+    return () => {
+      unsubMeals();
+      unsubClaims();
+    };
+  }, [user.uid]);
+
+  React.useEffect(() => {
+    if (loading) return;
+    const t = String(travelDetails || '').trim();
+    const a = String(accommodationDetails || '').trim();
+    const storageKey = `iscene_${user.uid}_exhibitor_lastTravelAccReminder`;
+    if (t && a) {
+      try {
+        localStorage.removeItem(storageKey);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    let last = 0;
+    try {
+      last = Number(localStorage.getItem(storageKey) || '0');
+    } catch {
+      last = 0;
+    }
+    const now = Date.now();
+    if (last && now - last < TRAVEL_ACCOMMODATION_REMINDER_MS) return;
+    try {
+      localStorage.setItem(storageKey, String(now));
+    } catch {
+      /* still show in-session */
+    }
+    const travelMsg =
+      'Please complete your flight and accommodation in Profile (both are required for organizers).';
+    setContentNotify({ msg: travelMsg, type: 'travel' });
+    pushInAppNotification(travelMsg, 'travel');
+    const tid = window.setTimeout(() => setContentNotify(null), 8000);
+    return () => window.clearTimeout(tid);
+  }, [loading, user.uid, travelDetails, accommodationDetails, pushInAppNotification]);
+
+  const handleBellToggle = React.useCallback(() => {
+    setBellPanelOpen((open) => {
+      if (open) return false;
+      setInAppNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      return true;
+    });
+  }, []);
+
+  const handleSaveTravel = async () => {
+    if (!registration?.id) return;
+    setTravelSaving(true);
+    try {
+      await updateDoc(doc(db, 'registrations', registration.id), { travelDetails, accommodationDetails });
+      setEditingTravel(false);
+      showToast('✅ Travel details saved.');
+    } catch {
+      showToast('❌ Could not save. Try again.');
+    } finally {
+      setTravelSaving(false);
+    }
+  };
 
   // ── Upload ────────────────────────────────────────────────────────────
   const handleUpload = async (files: File[]) => {
@@ -241,31 +498,18 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
     }
     setSavingBooth(true);
     try {
+      const boothImageUrlCleared = '';
       await updateDoc(doc(db, 'registrations', registration.id), {
         boothDescription: boothDesc, boothWebsite, boothProducts,
-        boothImageUrl: boothImageUrl.trim() || '', boothBackgroundUrl: boothBackgroundUrl.trim() || '',
+        boothImageUrl: boothImageUrlCleared, boothBackgroundUrl: boothBackgroundUrl.trim() || '',
         boothCategory: boothCategory.trim() || '',
         boothCategoryOther: boothCategory === 'Other' ? boothCategoryOther.trim() : '',
+        boothLocationDetails: boothLocationDetails.trim() || '',
       });
       setEditing(false);
       showToast('✅ Booth profile updated.');
     } catch { showToast('❌ Failed to save. Try again.'); }
     finally { setSavingBooth(false); }
-  };
-
-  const handleBoothImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith('image/')) { showToast('Please select an image file.'); return; }
-    setUploadingBoothImage(true);
-    try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      const path = `boothImages/${user.uid}/${Date.now()}_${safeName}`;
-      const snap = await uploadBytes(ref(storage, path), file, { contentType: file.type || 'image/jpeg' });
-      const url = await getDownloadURL(snap.ref);
-      setBoothImageUrl(url);
-      showToast('✅ Booth image uploaded. Click Save to keep.');
-    } catch { showToast('❌ Upload failed. Try a smaller image (<5MB).'); }
-    finally { setUploadingBoothImage(false); e.target.value = ''; }
   };
 
   const handleBoothBackgroundUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -283,11 +527,110 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
     finally { setUploadingBoothBackground(false); e.target.value = ''; }
   };
 
+  const parseQrContent = (raw: string): { type: string | null; id: string | null } => {
+    const trimmed = (raw || '').trim();
+    if (!trimmed) return { type: null, id: null };
+    const lower = trimmed.toLowerCase();
+    if (lower === 'entrance' || lower === 'main' || lower === 'mainentrance' || lower.includes('main entrance')) {
+      return { type: 'entrance', id: null };
+    }
+    try {
+      let urlStr = trimmed;
+      if (!trimmed.startsWith('http')) {
+        urlStr = trimmed.startsWith('?') ? `https://iscene.app/scan${trimmed}` : `https://iscene.app/scan?${trimmed}`;
+      }
+      const url = new URL(urlStr);
+      const qType = url.searchParams.get('type') || url.searchParams.get('Type');
+      const qId = url.searchParams.get('id') || url.searchParams.get('roomId');
+      return { type: qType || null, id: qId || null };
+    } catch {
+      /* fall through */
+    }
+    const typeMatch = trimmed.match(/[?&]type=([^&\s#]+)/i) || trimmed.match(/\btype[=:]\s*([^\s&,#]+)/i);
+    const idMatch = trimmed.match(/[?&]id=([^&\s#]+)/i) || trimmed.match(/[?&]roomId=([^&\s#]+)/i);
+    return {
+      type: typeMatch ? typeMatch[1].trim() : null,
+      id: idMatch ? idMatch[1].trim() : null,
+    };
+  };
+
+  const handleScanResult = async (text: string) => {
+    try {
+      const { type, id } = parseQrContent(text);
+
+      if (type === 'entrance') {
+        const docRef = doc(db, 'attendance', `${user.uid}_entrance`);
+        const today = getEntranceCalendarDateKey();
+        const existing = await getDoc(docRef);
+        if (existing.exists() && isEntranceCheckedInForDateKey(existing.data() as Record<string, unknown>, today)) {
+          setScanToast("✅ You're already checked in for today.");
+          setScanModal(false);
+          setTimeout(() => setScanToast(null), 4000);
+          return;
+        }
+        await setDoc(
+          docRef,
+          {
+            uid: user.uid,
+            name: fullName,
+            type: 'entrance',
+            entranceDateKey: today,
+            scannedAt: Timestamp.now(),
+          },
+          { merge: true },
+        );
+        setScanToast('✅ Main Hall check-in recorded!');
+        setScanModal(false);
+      } else if (type === 'room' && id) {
+        setScanToast('❌ Exhibitors check in only at the Main Hall. Scan the entrance QR, not a breakout room.');
+        setScanModal(false);
+      } else {
+        setScanToast('❌ Unrecognized QR. Use the Main Hall / entrance QR.');
+        setScanModal(false);
+      }
+    } catch (err) {
+      console.error('Scan error:', err);
+      setScanToast('❌ Could not process scan. Try again.');
+      setScanModal(false);
+    }
+    setTimeout(() => setScanToast(null), 4000);
+  };
+
   // ── Sidebar nav item ──────────────────────────────────────────────────
-  const NavItem = ({ tab, icon, label }: { tab: ExhibitorTab; icon: React.ReactNode; label: string }) => (
-    <button type="button" onClick={() => { setActiveTab(tab); setSidebarOpen(false); if (tab === 'digital-id') setIdModal(true); }}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-full text-sm font-medium transition-all ${activeTab === tab && tab !== 'digital-id' ? 'bg-blue-600 text-white shadow-md shadow-blue-200' : 'text-slate-600 hover:bg-slate-100'}`}>
-      {icon}<span>{label}</span>
+  const NavItem = ({
+    tab,
+    icon,
+    label,
+    badge,
+  }: {
+    tab: ExhibitorTab;
+    icon: React.ReactNode;
+    label: string;
+    badge?: number;
+  }) => (
+    <button
+      type="button"
+      onClick={() => {
+        setActiveTab(tab);
+        if (tab === 'digital-id') setIdModal(true);
+      }}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-full text-sm font-medium transition-all ${
+        activeTab === tab && tab !== 'digital-id'
+          ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
+          : 'text-slate-600 hover:bg-slate-100'
+      }`}
+    >
+      {icon}
+      <span className="flex-1 text-left">{label}</span>
+      {badge != null && badge > 0 ? (
+        <span
+          className={`min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-black shrink-0 ${
+            activeTab === tab && tab !== 'digital-id' ? 'bg-white/25 text-white' : 'bg-orange-500 text-white'
+          }`}
+        >
+          {badge > 99 ? '99+' : badge}
+        </span>
+      ) : null}
     </button>
   );
 
@@ -299,95 +642,213 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
     );
   }
 
-  return (
-    <div className="flex min-h-screen overflow-hidden bg-slate-50 text-slate-900">
-
-      {/* ── Toast ─────────────────────────────────────────────────────── */}
-      {toast && (
-        <div className={`fixed left-4 right-4 top-5 z-50 px-5 py-3 rounded-2xl text-sm font-semibold shadow-lg sm:left-auto sm:right-5 ${toast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
-          {toast}
-        </div>
-      )}
-
-      {sidebarOpen && (
-        <button
-          type="button"
-          aria-label="Close sidebar"
-          onClick={() => setSidebarOpen(false)}
-          className="fixed inset-0 z-30 bg-slate-950/40 lg:hidden"
-        />
-      )}
-
-      {/* ── Sidebar ───────────────────────────────────────────────────── */}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col gap-8 border-r border-slate-200 bg-white p-6 transition-transform duration-200 lg:relative lg:translate-x-0 ${
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      }`}>
-        {/* Logo */}
-        <div className="flex items-center gap-3 px-2">
-          <div className="w-10 h-10 rounded-full overflow-hidden bg-white border border-slate-100 shadow-sm flex items-center justify-center">
-            <img src="/iscene.png" alt="iSCENE" className="w-full h-full object-contain" />
-          </div>
-          <div>
-            <h1 className="text-base font-black leading-none">Exhibitor Hub</h1>
-            <p className="text-[11px] text-slate-400 mt-0.5">iSCENE 2026</p>
-          </div>
-        </div>
-
-        {/* Nav */}
-        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto">
-          <NavItem tab="my-booth" icon={<Store size={18} />} label="My Booth" />
-          <NavItem tab="materials" icon={<FolderOpen size={18} />} label="My Materials" />
-          <button type="button" onClick={() => setIdModal(true)}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-full text-sm font-medium text-slate-600 hover:bg-slate-100 transition-all">
-            <CreditCard size={18} /><span>Digital ID</span>
-          </button>
-          <NavItem tab="profile" icon={<User size={18} />} label="Profile" />
-        </nav>
-
-        {/* User info */}
-        <div className="p-4 bg-slate-50 rounded-2xl">
-          <div className="flex items-center gap-3">
-            {profilePicUrl
-              ? <img src={profilePicUrl} alt={fullName} className="w-10 h-10 rounded-full object-cover shrink-0" />
-              : <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-black shrink-0">{initials}</div>}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold truncate">{fullName}</p>
-              <p className="text-[11px] text-slate-400 truncate">{orgName}</p>
-            </div>
-          </div>
+  const exhibitorBellPanel = bellPanelOpen ? (
+    <div
+      className="absolute right-0 top-full mt-2 z-[60] w-[min(calc(100vw-2rem),20rem)] rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden"
+      role="dialog"
+      aria-label="Notification list"
+    >
+      <div className="px-3 py-2.5 border-b border-slate-100 flex items-center justify-between gap-2 bg-slate-50/80">
+        <p className="text-sm font-black text-slate-800">Notifications</p>
+        {inAppNotifications.length > 0 ? (
           <button
             type="button"
-            onClick={onSignOut}
-            className="mt-3 w-full rounded-full border border-red-200 py-2 text-xs font-bold text-red-600 transition-colors hover:bg-red-50"
+            className="text-[11px] font-bold text-blue-600 hover:underline shrink-0"
+            onClick={() => setInAppNotifications([])}
           >
-            Sign out
+            Clear all
           </button>
-        </div>
-      </aside>
-
-      {/* ── Main ──────────────────────────────────────────────────────── */}
-      <main className="flex-1 min-w-0 overflow-y-auto min-h-screen">
-
-        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur lg:hidden">
-          <div className="flex items-center gap-3 px-4 py-4">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600"
+        ) : null}
+      </div>
+      <ul className="max-h-72 overflow-y-auto py-1">
+        {inAppNotifications.length === 0 ? (
+          <li className="px-3 py-8 text-center text-sm text-slate-500">No notifications yet.</li>
+        ) : (
+          inAppNotifications.map((n) => (
+            <li
+              key={n.id}
+              className="px-3 py-2.5 border-b border-slate-100 last:border-0 border-l-4 border-l-orange-500 bg-orange-50/30 pl-3 text-left"
             >
-              <Menu size={18} />
-            </button>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-black text-slate-900">Exhibitor Hub</p>
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">iSCENE 2026</p>
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">
+                {notifyCategoryLabel(n.type)}
+              </p>
+              <p className={`text-sm leading-snug ${n.read ? 'text-slate-600' : 'text-slate-900 font-semibold'}`}>
+                {n.msg}
+              </p>
+              <p className="text-[10px] text-slate-400 mt-1">
+                {new Date(n.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+              </p>
+            </li>
+          ))
+        )}
+      </ul>
+    </div>
+  ) : null;
+
+  const renderExhibitorTabPanels = () => (
+    <>
+        {/* ══════════════ HOME (mobile-first welcome) ══════════════ */}
+        {activeTab === 'home' && (
+          <>
+            <div className="px-4 pt-5 pb-2">
+              <h2 className="text-xl font-black tracking-tight">Welcome, {firstName}!</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                {hasEntryAttendance
+                  ? "You're checked in at the Main Hall · enjoy the event!"
+                  : 'Scan the Main Hall entrance QR when you arrive.'}
+              </p>
             </div>
-          </div>
-        </header>
+            <div className="flex gap-2 px-4 py-3 overflow-x-auto no-scrollbar">
+              {[
+                { label: 'Registered', done: true },
+                { label: 'Approved', done: approvalStatus === 'approved' },
+                { label: 'Checked In', done: hasEntryAttendance },
+              ].map(({ label, done }) => (
+                <div
+                  key={label}
+                  className={`shrink-0 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${
+                    done ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'
+                  }`}
+                >
+                  {done ? <CheckCircle2 size={12} /> : <Clock size={12} />}
+                  {label}
+                </div>
+              ))}
+            </div>
+            {travelAccIncomplete ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab('profile')}
+                className="mx-4 mb-3 flex w-[calc(100%-2rem)] items-start gap-2 rounded-2xl border-2 border-orange-300 bg-orange-50 px-4 py-3 text-left shadow-sm active:scale-[0.99] transition-transform"
+              >
+                <AlertTriangle className="shrink-0 text-orange-600 mt-0.5" size={18} aria-hidden />
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-orange-900">Flight &amp; accommodation needed</p>
+                  <p className="text-xs text-orange-800/90 mt-0.5 font-medium">
+                    Open Profile and complete both fields so organizers can plan your travel and stay.
+                  </p>
+                  <p className="text-[11px] font-bold text-blue-700 mt-1.5">Go to Profile →</p>
+                </div>
+              </button>
+            ) : null}
+            <div className="px-4 pb-4">
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1">
+                <Zap size={12} /> Quick Actions
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { icon: <QrCode size={20} className="text-blue-600" />, label: 'Scan QR', bg: 'bg-blue-50', action: () => setScanModal(true) },
+                  { icon: <CreditCard size={20} className="text-indigo-600" />, label: 'My ID', bg: 'bg-indigo-50', action: () => setIdModal(true) },
+                  {
+                    icon: <Store size={20} className="text-emerald-600" />,
+                    label: 'Booths',
+                    bg: 'bg-emerald-50',
+                    action: () => setActiveTab('my-booth'),
+                  },
+                  {
+                    icon: <Utensils size={20} className="text-orange-500" />,
+                    label: 'Meals',
+                    bg: 'bg-orange-50',
+                    action: () => setActiveTab('meals'),
+                    badge: mealsBadgeDisplay,
+                  },
+                  {
+                    icon: <Newspaper size={20} className="text-rose-500" />,
+                    label: 'Articles',
+                    bg: 'bg-rose-50',
+                    action: () => setActiveTab('articles'),
+                  },
+                  {
+                    icon: <FolderOpen size={20} className="text-violet-600" />,
+                    label: 'Materials',
+                    bg: 'bg-violet-50',
+                    action: () => setActiveTab('materials'),
+                  },
+                ].map(({ icon, label, bg, action, badge }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={action}
+                    className="relative bg-white rounded-2xl p-3 flex flex-col items-center gap-2 shadow-sm border border-slate-100 hover:shadow-md active:scale-95 transition-all"
+                    aria-label={badge != null && badge > 0 ? `${label}, ${badge} pending` : label}
+                  >
+                    {badge != null && badge > 0 ? (
+                      <span className="absolute top-1.5 right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-black leading-none z-10" aria-hidden>
+                        {badge > 99 ? '99+' : badge}
+                      </span>
+                    ) : null}
+                    <div className={`w-10 h-10 ${bg} rounded-full flex items-center justify-center`}>{icon}</div>
+                    <span className="text-[11px] font-medium text-slate-600 text-center leading-tight">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="px-4 pb-6">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-bold text-slate-800">Your booth</p>
+                <button type="button" onClick={() => setActiveTab('my-booth')} className="text-xs font-semibold text-blue-600">
+                  Manage →
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('my-booth')}
+                className="w-full text-left rounded-2xl border border-slate-200 bg-white shadow-sm hover:shadow-md active:scale-[0.99] transition-all flex items-center gap-3 p-3 sm:p-4"
+              >
+                <div
+                  className={`h-[4.5rem] w-[4.5rem] sm:h-24 sm:w-24 shrink-0 rounded-xl overflow-hidden flex items-center justify-center ${
+                    bgUrl ? 'bg-slate-50' : 'bg-gradient-to-br from-blue-100 via-blue-50 to-slate-100'
+                  }`}
+                >
+                  {bgUrl ? (
+                    <img
+                      src={bgUrl}
+                      alt=""
+                      className="max-h-full max-w-full h-full w-full object-contain object-center p-1.5"
+                    />
+                  ) : (
+                    <Store size={32} className="text-blue-300" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 flex items-center justify-between gap-3">
+                  <div className="min-w-0 py-0.5">
+                    <p className="text-sm font-bold text-slate-800 truncate">{orgName || fullName}</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Booth {boothNumber}</p>
+                    <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{boothDesc || 'Tap to edit your booth profile and uploads.'}</p>
+                  </div>
+                  <ChevronRight size={18} className="text-slate-300 shrink-0 self-center" aria-hidden />
+                </div>
+              </button>
+            </div>
+            {/* Desktop home: extra quick row */}
+            <div className="hidden md:block px-4 sm:px-6 lg:px-10 pb-10 max-w-5xl mx-auto w-full">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-sm font-bold text-slate-700 mb-3">Exhibitor tools</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('main-hall')}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50"
+                  >
+                    <QrCode size={16} className="text-blue-600" /> Main Hall check-in
+                  </button>
+                  <button
+                    type="button"
+                    onClick={copyVerifyLink}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Copy size={16} /> Copy verify link
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
 
         {/* ══════════════ MY BOOTH ══════════════ */}
         {activeTab === 'my-booth' && (
-          <div className="max-w-5xl p-4 sm:p-6 md:p-8 lg:p-12 space-y-8">
-            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+          <div className="max-w-5xl mx-auto w-full p-4 sm:p-6 md:p-8 lg:p-12 space-y-6 md:space-y-8">
+            <div className="grid grid-cols-1 gap-6 md:gap-8 xl:grid-cols-2">
               {/* LEFT: What participants see (matches participant app: background banner + profile avatar) */}
               <section>
                 <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">What Participants See</h3>
@@ -440,6 +901,9 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                   <div className="space-y-3 text-sm">
                     <div><span className="text-[11px] text-slate-400 block">Organization</span><p className="font-semibold">{orgName || '—'}</p></div>
                     <div><span className="text-[11px] text-slate-400 block">Booth Number</span><p className="font-bold text-blue-600">{boothNumber}</p></div>
+                    {boothLocationDetails?.trim() ? (
+                      <div><span className="text-[11px] text-slate-400 block">Booth location</span><p className="text-slate-700 text-xs whitespace-pre-wrap">{boothLocationDetails}</p></div>
+                    ) : null}
                     <div><span className="text-[11px] text-slate-400 block">Status</span><p className={`font-bold ${approvalStatus === 'approved' ? 'text-emerald-600' : 'text-amber-600'}`}>{approvalStatus === 'approved' ? 'Approved' : 'Pending'}</p></div>
                     {(boothDesc || boothProducts || boothWebsite) && (
                       <>
@@ -455,7 +919,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                       <div className="flex items-center gap-2">
                         <label className={`flex cursor-pointer items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 transition-colors ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
                           <input type="file" className="hidden" accept="image/*,video/*,.pdf" multiple
-                            onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { handleUpload(files); e.target.value = ''; } }} />
+                            onChange={(e) => { const files = Array.from(e.target.files || []) as File[]; if (files.length) { handleUpload(files); e.target.value = ''; } }} />
                           {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                           {uploading ? 'Uploading…' : 'Upload'}
                         </label>
@@ -478,6 +942,12 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 </button>
                 <button type="button" onClick={() => setIdModal(true)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 transition-colors">
                   <CreditCard size={16} /> Open digital ID
+                </button>
+                <button type="button" onClick={() => setActiveTab('meals')} className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-bold text-amber-900 hover:bg-amber-100 transition-colors">
+                  <UtensilsCrossed size={16} /> Meals & entitlements
+                </button>
+                <button type="button" onClick={() => setActiveTab('main-hall')} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 hover:bg-slate-50 transition-colors">
+                  <QrCode size={16} className="text-blue-600" /> Main Hall check-in
                 </button>
                 <button type="button" onClick={() => setActiveTab('materials')} className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100 transition-colors">
                   <FolderOpen size={16} /> Manage materials
@@ -511,28 +981,12 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 ))}
               </ul>
             </section>
-
-            {/* Key dates */}
-            <section className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-5 shadow-sm">
-              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Key dates · iSCENE 2026</h3>
-              <ul className="space-y-3">
-                {milestones.map((m) => (
-                  <li key={m.label} className={`flex items-start gap-3 rounded-xl border p-3 ${m.locked ? 'border-slate-100 bg-white/60 opacity-80' : 'border-slate-200 bg-white shadow-sm'}`}>
-                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${m.iconBg}`}>{m.icon}</div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-bold text-slate-800">{m.label}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">{m.date}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
           </div>
         )}
 
         {/* ══════════════ MATERIALS ══════════════ */}
         {activeTab === 'materials' && (
-          <div className="max-w-4xl p-4 sm:p-6 md:p-8 lg:p-12">
+          <div className="max-w-4xl mx-auto w-full p-4 sm:p-6 md:p-8 lg:p-12">
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <h2 className="text-2xl font-black">My Materials</h2>
@@ -540,7 +994,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
               </div>
               <label className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-700 sm:w-auto ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
                 <input type="file" className="hidden" accept="image/*,video/*,.pdf" multiple
-                  onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { handleUpload(files); e.target.value = ''; } }} />
+                  onChange={(e) => { const files = Array.from(e.target.files || []) as File[]; if (files.length) { handleUpload(files); e.target.value = ''; } }} />
                 {uploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
                 {uploading ? 'Uploading…' : 'Upload'}
               </label>
@@ -553,7 +1007,7 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 <p className="text-sm text-slate-400 mb-6">Upload your brochures, product demos, or brand assets.</p>
                 <label className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-full text-sm font-bold cursor-pointer hover:bg-blue-700">
                   <input type="file" className="hidden" accept="image/*,video/*,.pdf" multiple
-                    onChange={(e) => { const files = Array.from(e.target.files || []); if (files.length) { handleUpload(files); e.target.value = ''; } }} />
+                    onChange={(e) => { const files = Array.from(e.target.files || []) as File[]; if (files.length) { handleUpload(files); e.target.value = ''; } }} />
                   <Plus size={16} /> Upload Your First File
                 </label>
               </div>
@@ -644,9 +1098,97 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
           </div>
         )}
 
+        {/* ══════════════ MEALS (matches participant My Entitlements UX) ══════════════ */}
+        {activeTab === 'meals' && (
+          <div className="max-w-6xl mx-auto w-full px-4 pt-5 pb-4 sm:px-6 md:px-8 lg:px-12 md:py-8">
+            <div className="mb-4 md:mb-8">
+              <h2 className="text-2xl font-black tracking-tight">My Entitlements</h2>
+              <p className="text-sm text-slate-500 mt-1">
+                Food and kits — during the pickup window, open Digital ID so the food booth can scan your QR.
+              </p>
+            </div>
+            {eligibleMeals.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-100 p-10 md:p-12 text-center text-slate-400 text-sm shadow-sm">
+                No entitlements available for you yet.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3 md:grid md:grid-cols-2 xl:grid-cols-3 md:gap-4">
+                {eligibleMeals.map((meal) => (
+                  <MealEntitlementCard
+                    key={meal.id}
+                    meal={meal}
+                    mealLabels={MEAL_LABELS}
+                    boothRegs={boothRegs}
+                    now={new Date(claimClockTick)}
+                    claimed={hasClaimedMeal(meal.id)}
+                    onClaim={() => setIdModal(true)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══════════════ MAIN HALL (entrance only) ══════════════ */}
+        {activeTab === 'main-hall' && (
+          <div className="max-w-lg mx-auto w-full p-4 sm:p-6 md:p-8 lg:p-12">
+            <h2 className="text-xl sm:text-2xl font-black tracking-tight">Main Hall check-in</h2>
+            <p className="text-slate-500 text-sm mt-2 leading-relaxed max-w-prose">
+              Exhibitors time in only at the Main Hall. Scan the entrance QR when you arrive. Breakout room QRs will not count for your check-in.
+            </p>
+            <div
+              className={`mt-6 rounded-2xl border p-5 md:p-6 shadow-sm ${
+                hasEntryAttendance ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'
+              }`}
+            >
+              <p className="text-sm font-bold text-slate-800">
+                {hasEntryAttendance ? "You're checked in for today." : 'Not checked in yet for today.'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">Daily reset uses the Philippines calendar (Asia/Manila).</p>
+              <button
+                type="button"
+                onClick={() => setScanModal(true)}
+                className="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white hover:bg-blue-700 active:scale-[0.99] transition-transform min-h-11"
+              >
+                <QrCode size={18} /> Scan Main Hall QR
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ ARTICLES ══════════════ */}
+        {activeTab === 'articles' && (
+          <>
+            <div className="md:hidden">
+              <ArticleBrowsePanel
+                variant="mobile"
+                loading={articlesLoading}
+                articles={exhibitorArticles}
+                searchQuery={articleSearchQuery}
+                onSearchChange={setArticleSearchQuery}
+                categoryFilter={articleCategoryFilter}
+                onCategoryChange={setArticleCategoryFilter}
+                categoryChipNames={articleCategoriesState.names}
+              />
+            </div>
+            <div className="hidden md:block max-w-5xl mx-auto w-full">
+              <ArticleBrowsePanel
+                variant="desktop"
+                loading={articlesLoading}
+                articles={exhibitorArticles}
+                searchQuery={articleSearchQuery}
+                onSearchChange={setArticleSearchQuery}
+                categoryFilter={articleCategoryFilter}
+                onCategoryChange={setArticleCategoryFilter}
+                categoryChipNames={articleCategoriesState.names}
+              />
+            </div>
+          </>
+        )}
+
         {/* ══════════════ PROFILE ══════════════ */}
         {activeTab === 'profile' && (
-          <div className="max-w-2xl p-4 sm:p-6 md:p-8 lg:p-12">
+          <div className="max-w-2xl mx-auto w-full p-4 sm:p-6 md:p-8 lg:p-12">
             <h2 className="text-2xl font-black mb-6">My Profile</h2>
             <div className="space-y-4">
               {/* Avatar */}
@@ -693,6 +1235,87 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 </div>
               </div>
 
+              {/* Travel & accommodation */}
+              <div
+                className={`rounded-2xl shadow-sm p-5 border-2 transition-colors ${
+                  travelAccIncomplete
+                    ? 'bg-orange-50/80 border-orange-300 ring-1 ring-orange-200/80'
+                    : 'bg-white border-slate-100'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3 gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {travelAccIncomplete ? <AlertTriangle size={16} className="text-orange-600 shrink-0" aria-hidden /> : null}
+                    <p
+                      className={`text-[11px] font-bold uppercase tracking-wide ${
+                        travelAccIncomplete ? 'text-orange-800' : 'text-slate-400'
+                      }`}
+                    >
+                      Flight, travel &amp; accommodation
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingTravel(!editingTravel)}
+                    className="text-blue-600 text-xs font-bold flex items-center gap-1 shrink-0"
+                  >
+                    <Edit2 size={11} /> {editingTravel ? 'Cancel' : 'Edit'}
+                  </button>
+                </div>
+                {travelAccIncomplete && !editingTravel ? (
+                  <p className="text-xs font-semibold text-orange-800 mb-2">
+                    Please add flight or travel plans and where you are staying (both are required).
+                  </p>
+                ) : null}
+                {editingTravel ? (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">Flight / travel</label>
+                      <textarea
+                        value={travelDetails}
+                        onChange={(e) => setTravelDetails(e.target.value)}
+                        rows={3}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Airline, flight numbers, arrival & departure dates/times, airport"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">Accommodation</label>
+                      <textarea
+                        value={accommodationDetails}
+                        onChange={(e) => setAccommodationDetails(e.target.value)}
+                        rows={3}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Hotel name, check-in/out dates, booking confirmation"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSaveTravel}
+                      disabled={travelSaving}
+                      className="px-5 py-2 bg-blue-600 text-white font-bold rounded-xl text-sm hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {travelSaving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <p className="text-[11px] text-slate-400">Flight / travel</p>
+                      <p className={!String(travelDetails || '').trim() ? 'font-semibold text-orange-800' : 'text-slate-700'}>
+                        {travelDetails || 'Not provided'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-slate-400">Accommodation</p>
+                      <p className={!String(accommodationDetails || '').trim() ? 'font-semibold text-orange-800' : 'text-slate-700'}>
+                        {accommodationDetails || 'Not provided'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Account */}
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">Account</p>
@@ -713,12 +1336,344 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
             </div>
           </div>
         )}
-      </main>
+    </>
+  );
+
+  return (
+    <>
+      {toast && (
+        <div
+          className={`fixed left-4 right-4 top-5 z-50 px-5 py-3 rounded-2xl text-sm font-semibold shadow-lg sm:left-auto sm:right-5 ${
+            toast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'
+          }`}
+        >
+          {toast}
+        </div>
+      )}
+      {scanToast && (
+        <div
+          className={`hidden md:flex fixed left-4 right-4 top-[4.5rem] z-50 px-5 py-3 rounded-2xl text-sm font-semibold shadow-lg sm:left-auto sm:right-5 sm:max-w-md ${
+            scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-50 text-amber-900 border border-amber-200'
+          }`}
+        >
+          {scanToast}
+        </div>
+      )}
+
+      <div className="md:hidden flex flex-col min-h-screen max-w-md mx-auto border-x border-slate-200 shadow-xl bg-slate-50 text-slate-900 relative w-full">
+        <header className="sticky top-0 z-20 flex items-center justify-between bg-white/90 backdrop-blur-md p-4 border-b border-slate-200">
+          <button
+            type="button"
+            onClick={() => setMobileDrawerOpen(true)}
+            className="w-10 h-10 flex items-center justify-center rounded-full bg-blue-50 text-blue-600"
+          >
+            <Menu size={20} />
+          </button>
+          <div className="flex items-center gap-2">
+            <img src="/iscene.png" alt="iSCENE" className="w-8 h-8 rounded-full object-contain bg-white p-0.5 shadow-sm" />
+            <div className="flex flex-col">
+              <h1 className="text-base font-black leading-tight tracking-tight text-blue-600">iSCENE 2026</h1>
+              <p className="text-[9px] uppercase tracking-widest font-bold opacity-60">Global Summit</p>
+            </div>
+          </div>
+          <div ref={mobileBellRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={handleBellToggle}
+              className="relative w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-700"
+              aria-label={bellUnreadCount > 0 ? `Notifications, ${bellUnreadCount} unread` : 'Notifications'}
+              aria-expanded={bellPanelOpen}
+            >
+              <Bell size={18} />
+              {bellUnreadCount > 0 ? (
+                <span
+                  className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-orange-500 text-white text-[10px] font-black leading-none border-2 border-white shadow-sm"
+                  aria-hidden
+                >
+                  {bellUnreadCount > 99 ? '99+' : bellUnreadCount}
+                </span>
+              ) : null}
+            </button>
+            {exhibitorBellPanel}
+          </div>
+        </header>
+        {contentNotify ? (
+          <div className="mx-4 mt-2 flex items-start gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2.5 text-orange-900 shadow-sm">
+            <AlertTriangle size={16} className="shrink-0 mt-0.5 text-orange-600" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <p className="font-bold text-[10px] uppercase tracking-wide text-orange-800">Action needed</p>
+              <p className="text-sm font-semibold leading-snug mt-0.5">{contentNotify.msg}</p>
+              <button
+                type="button"
+                className="mt-1.5 text-xs font-bold text-blue-700 hover:underline"
+                onClick={() => {
+                  setActiveTab('profile');
+                  setContentNotify(null);
+                }}
+              >
+                Open Profile
+              </button>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 p-0.5 rounded-lg text-orange-700 hover:bg-orange-100"
+              onClick={() => setContentNotify(null)}
+              aria-label="Dismiss notification"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        ) : null}
+        {scanToast && (
+          <div
+            className={`mx-4 mt-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-center ${
+              scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-50 text-amber-900 border border-amber-200'
+            }`}
+          >
+            {scanToast}
+          </div>
+        )}
+        <main className="flex-1 pb-28 overflow-y-auto">{renderExhibitorTabPanels()}</main>
+        <nav className="fixed bottom-0 z-30 flex w-full max-w-md items-center justify-between gap-1 border-t border-slate-200 bg-white/95 backdrop-blur-md px-2 pb-5 pt-3 sm:px-4 left-1/2 -translate-x-1/2">
+          <div className="flex flex-1 justify-around min-w-0">
+            {([
+              { id: 'home' as const, label: 'HOME', icon: <Home size={22} /> },
+              { id: 'my-booth' as const, label: 'BOOTHS', icon: <Store size={22} /> },
+            ] as const).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`flex min-w-0 flex-1 flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}
+              >
+                {item.icon}
+                <span className="text-[8px] font-black uppercase leading-tight text-center">{item.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="relative -top-6 shrink-0">
+            <button
+              type="button"
+              onClick={() => setScanModal(true)}
+              className="w-14 h-14 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-400/50 active:scale-90 transition-transform hover:bg-blue-700"
+            >
+              <QrCode size={26} />
+            </button>
+          </div>
+          <div className="flex flex-1 justify-around min-w-0">
+            {([
+              { id: 'meals' as const, label: 'MEALS', icon: <Utensils size={20} />, badge: mealsBadgeDisplay },
+              { id: 'profile' as const, label: 'PROFILE', icon: <User size={20} /> },
+            ] as const).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`relative flex min-w-0 flex-1 flex-col items-center gap-0.5 ${activeTab === item.id ? 'text-blue-600' : 'text-slate-400'}`}
+                aria-label={
+                  item.id === 'profile' && travelAccIncomplete
+                    ? `${item.label}, flight and accommodation needed`
+                    : 'badge' in item && item.badge != null && item.badge > 0
+                      ? `${item.label}, ${item.badge} unclaimed`
+                      : item.label
+                }
+              >
+                {'badge' in item && item.badge != null && item.badge > 0 ? (
+                  <span className="absolute top-0 right-2 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-blue-600 text-white text-[9px] font-black leading-none z-10" aria-hidden>
+                    {item.badge > 99 ? '99+' : item.badge}
+                  </span>
+                ) : null}
+                {item.id === 'profile' && travelAccIncomplete ? (
+                  <span
+                    className="absolute top-0 right-2 w-2.5 h-2.5 rounded-full bg-orange-500 border-2 border-white z-10 shadow-sm"
+                    aria-hidden
+                  />
+                ) : null}
+                {item.icon}
+                <span className="text-[8px] font-black uppercase leading-tight text-center">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+
+        {mobileDrawerOpen && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+              onClick={() => setMobileDrawerOpen(false)}
+              aria-hidden
+            />
+            <div className="fixed top-0 left-0 z-50 h-full w-72 max-w-[85vw] bg-white shadow-2xl flex flex-col">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <img src="/iscene.png" alt="iSCENE" className="w-9 h-9 rounded-full object-contain bg-white p-0.5 shadow-sm" />
+                  <div>
+                    <p className="text-sm font-black leading-tight text-blue-600">Exhibitor Hub</p>
+                    <p className="text-[10px] text-slate-400">iSCENE 2026</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMobileDrawerOpen(false)}
+                  className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+                {(
+                  [
+                    { id: 'home' as ExhibitorTab, label: 'Home', icon: <Home size={18} /> },
+                    { id: 'my-booth' as ExhibitorTab, label: 'Manage booth', icon: <Store size={18} /> },
+                    { id: 'materials' as ExhibitorTab, label: 'Materials', icon: <FolderOpen size={18} /> },
+                    { id: 'meals' as ExhibitorTab, label: 'Meals', icon: <UtensilsCrossed size={18} /> },
+                    { id: 'main-hall' as ExhibitorTab, label: 'Main Hall check-in', icon: <QrCode size={18} /> },
+                    { id: 'articles' as ExhibitorTab, label: 'Articles', icon: <Newspaper size={18} /> },
+                    { id: 'profile' as ExhibitorTab, label: 'Profile', icon: <User size={18} /> },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setMobileDrawerOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                      activeTab === item.id ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {item.icon}
+                    <span className="flex-1 text-left">{item.label}</span>
+                    {item.id === 'profile' && travelAccIncomplete ? (
+                      <span
+                        className={`shrink-0 text-[10px] font-black uppercase ${
+                          activeTab === item.id ? 'text-orange-200' : 'text-orange-600'
+                        }`}
+                      >
+                        !
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </nav>
+              <div className="px-3 pb-3 space-y-1 border-t border-slate-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIdModal(true);
+                    setMobileDrawerOpen(false);
+                  }}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100"
+                >
+                  <CreditCard size={18} />
+                  <span>Digital ID</span>
+                </button>
+              </div>
+              <div className="mt-auto border-t border-slate-100 p-4">
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  className="w-full rounded-full border border-red-200 py-2 text-xs font-bold text-red-600 hover:bg-red-50"
+                >
+                  Sign out
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="hidden md:flex min-h-screen w-full overflow-hidden bg-slate-50 text-slate-900">
+        <aside className="w-56 shrink-0 border-r border-slate-200 bg-white flex flex-col min-h-screen sticky top-0 self-start h-screen overflow-y-auto">
+          <div className="flex items-center gap-3 px-4 py-5 border-b border-slate-100">
+            <img src="/iscene.png" alt="iSCENE" className="w-10 h-10 rounded-full object-contain bg-white p-0.5 shadow-sm shrink-0" />
+            <div>
+              <p className="text-sm font-black leading-tight">Exhibitor Hub</p>
+              <p className="text-[11px] text-slate-400">iSCENE 2026</p>
+            </div>
+          </div>
+          <nav className="flex-1 px-3 py-4 space-y-1">
+            <NavItem tab="home" icon={<Home size={17} />} label="Home" />
+            <NavItem tab="my-booth" icon={<Store size={17} />} label="My Booth" />
+            <NavItem tab="materials" icon={<FolderOpen size={17} />} label="Materials" />
+            <NavItem tab="meals" icon={<UtensilsCrossed size={17} />} label="Meals" />
+            <NavItem tab="main-hall" icon={<QrCode size={17} />} label="Main Hall" />
+            <NavItem tab="articles" icon={<Newspaper size={17} />} label="Articles" />
+            <button
+              type="button"
+              onClick={() => setIdModal(true)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-full text-sm font-medium text-slate-600 hover:bg-slate-100 transition-all"
+            >
+              <CreditCard size={17} />
+              <span>Digital ID</span>
+            </button>
+            <NavItem
+              tab="profile"
+              icon={<User size={17} />}
+              label="Profile"
+              badge={travelAccIncomplete ? 1 : undefined}
+            />
+          </nav>
+          <div className="border-t border-slate-100 p-4">
+            <div className="mb-3 flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
+              {profilePicUrl ? (
+                <img src={profilePicUrl} alt={fullName} className="w-10 h-10 rounded-full object-cover shrink-0" />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-black shrink-0">
+                  {initials}
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-bold text-slate-800">{fullName}</p>
+                <p className="truncate text-[11px] text-slate-500">{orgName}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="w-full rounded-full border border-red-200 py-2 text-xs font-bold text-red-600 hover:bg-red-50"
+            >
+              Sign out
+            </button>
+          </div>
+        </aside>
+        <main className="flex-1 min-w-0 overflow-y-auto min-h-screen">
+          {contentNotify ? (
+            <div className="sticky top-0 z-10 mx-4 mt-4 mb-2 flex items-start gap-2 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-orange-900 shadow-sm">
+              <AlertTriangle size={18} className="shrink-0 mt-0.5 text-orange-600" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="font-bold text-[10px] uppercase tracking-wide text-orange-800">Action needed</p>
+                <p className="text-sm font-semibold leading-snug mt-0.5">{contentNotify.msg}</p>
+                <button
+                  type="button"
+                  className="mt-1.5 text-xs font-bold text-blue-700 hover:underline"
+                  onClick={() => {
+                    setActiveTab('profile');
+                    setContentNotify(null);
+                  }}
+                >
+                  Open Profile
+                </button>
+              </div>
+              <button
+                type="button"
+                className="shrink-0 p-1 rounded-lg text-orange-700 hover:bg-orange-100"
+                onClick={() => setContentNotify(null)}
+                aria-label="Dismiss notification"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          ) : null}
+          {renderExhibitorTabPanels()}
+        </main>
+      </div>
 
       {/* ── Edit Booth Modal ───────────────────────────────────────────── */}
       {editing && (
-        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-3xl p-6 shadow-2xl">
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-md max-h-[min(90vh,44rem)] overflow-y-auto bg-white rounded-3xl p-6 shadow-2xl my-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-black text-base">Edit Booth Profile</h3>
               <button type="button" onClick={() => setEditing(false)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center"><X size={15} /></button>
@@ -755,6 +1710,17 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                 </div>
               )}
               <div>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth location details</label>
+                <p className="text-[10px] text-slate-400 mb-1">Where visitors find you on the expo floor (you or admin can edit).</p>
+                <textarea
+                  value={boothLocationDetails}
+                  onChange={(e) => setBoothLocationDetails(e.target.value)}
+                  rows={2}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g. Exhibition Hall — booth A12, near the main aisle"
+                />
+              </div>
+              <div>
                 <label className="text-xs font-bold text-slate-500 mb-1 block">Booth Description</label>
                 <textarea value={boothDesc} onChange={(e) => setBoothDesc(e.target.value)} rows={3}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500"
@@ -773,25 +1739,18 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
                   placeholder="https://your-company.com" />
               </div>
               <div>
-                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth Image (optional)</label>
-                <div className="flex items-center gap-3">
-                  {boothImageUrl && <img src={boothImageUrl} alt="Booth" className="h-14 w-14 rounded-lg object-cover border border-slate-200" />}
-                  <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothImage ? 'opacity-60' : ''}`}>
-                    <input type="file" accept="image/*" className="hidden" onChange={handleBoothImageUpload} />
-                    {uploadingBoothImage ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
-                    {uploadingBoothImage ? 'Uploading…' : 'Upload'}
-                  </label>
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth Background (optional)</label>
-                <div className="flex items-center gap-3">
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Booth background</label>
+                <p className="text-[10px] text-slate-400 mb-1">Wide banner image participants see at the top of your booth card.</p>
+                <div className="flex items-center gap-3 flex-wrap">
                   {boothBackgroundUrl && <img src={boothBackgroundUrl} alt="Background" className="h-10 w-16 rounded-lg object-cover border border-slate-200" />}
                   <label className={`flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold cursor-pointer hover:bg-slate-50 ${uploadingBoothBackground ? 'opacity-60' : ''}`}>
                     <input type="file" accept="image/*" className="hidden" onChange={handleBoothBackgroundUpload} />
                     {uploadingBoothBackground ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
                     {uploadingBoothBackground ? 'Uploading…' : 'Upload'}
                   </label>
+                  {boothBackgroundUrl ? (
+                    <button type="button" onClick={() => setBoothBackgroundUrl('')} className="text-xs font-bold text-red-600 hover:underline">Clear</button>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -839,6 +1798,14 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
           </div>
         </div>
       )}
-    </div>
+
+      {scanModal && (
+        <QrScanModal
+          subtitle="Scan the Main Hall / entrance QR only"
+          onClose={() => setScanModal(false)}
+          onResult={handleScanResult}
+        />
+      )}
+    </>
   );
 }

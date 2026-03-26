@@ -39,6 +39,7 @@ import {
   orderBy,
   updateDoc,
   deleteDoc,
+  setDoc,
   doc,
   where,
 } from 'firebase/firestore';
@@ -49,6 +50,7 @@ import { SpeakerDashboard } from './SpeakerDashboard';
 import { FacilitatorDashboard } from './FacilitatorDashboard';
 import { FoodBoothDashboard } from './FoodBoothDashboard';
 import { ExhibitorDashboard } from './ExhibitorDashboard';
+import { ArticleAuthorDashboard } from './ArticleAuthorDashboard';
 import { EXHIBITOR_BOOTH_CATEGORIES } from './exhibitorBoothCategory';
 import { AdminDashboard } from './AdminDashboard';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -68,6 +70,50 @@ const colors = {
   green: '#43A047',
   blue: '#1E88E5',
 };
+
+/** Participant emails allowed to sign in without a Firestore `registrations` doc (Firebase Auth only). */
+const ARTICLE_AUTHOR_LOGIN_BYPASS_EMAILS = ['article@gmail.com'];
+
+function isArticleAuthorLoginBypass(email: string | null | undefined): boolean {
+  const e = (email || '').trim().toLowerCase();
+  return e.length > 0 && ARTICLE_AUTHOR_LOGIN_BYPASS_EMAILS.includes(e);
+}
+
+/** Minimal registration shape for article-only dashboard when bypassing Firestore. */
+function syntheticArticleRegistration(user: User): Record<string, unknown> {
+  return {
+    id: 'article-author-bypass',
+    uid: user.uid,
+    email: user.email || '',
+    fullName: user.displayName || user.email?.split('@')[0] || 'Article author',
+    sector: 'Articles',
+    status: 'approved',
+    sectorOffice: '',
+    positionTitle: 'Article author',
+  };
+}
+
+function registrationAllowsRoleDashboard(reg: Record<string, unknown> | null): boolean {
+  if (!reg) return false;
+  if ((reg.status as string) === 'approved') return true;
+  if ((reg.sector as string) === 'Articles') return true;
+  return false;
+}
+
+/** Blob download works more reliably on mobile Safari / iOS than triggering save on some PDF paths. */
+function downloadBlobAsFile(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  window.setTimeout(() => {
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, 500);
+}
 
 /** Queues the decline / not-approved email (Firebase Trigger Email reads the `mail` collection). */
 async function enqueueDeclineRegistrationEmail(to: string, fullName: string) {
@@ -171,7 +217,7 @@ export default function App() {
 
   // Sectors that do NOT require payment or proof of payment
   const noFeeSectors = React.useMemo(
-    () => ['Speakers', 'Facilitators', 'Food (Booth)', 'Exhibitor', 'Exhibitor (Booth)', 'DOST'],
+    () => ['Speakers', 'Facilitators', 'Food (Booth)', 'Exhibitor', 'Exhibitor (Booth)', 'DOST', 'Articles'],
     [],
   );
 
@@ -291,6 +337,11 @@ export default function App() {
       setParticipantRegistration(null);
       return;
     }
+    if (isArticleAuthorLoginBypass(adminUser.email)) {
+      setParticipantRegistration(syntheticArticleRegistration(adminUser) as any);
+      setParticipantRegistrationLoading(false);
+      return;
+    }
     let cancelled = false;
     setParticipantRegistrationLoading(true);
     const q = query(
@@ -306,7 +357,12 @@ export default function App() {
         }
         const reg = { id: snap.docs[0].id, ...snap.docs[0].data() } as any;
         const status = (reg.status as string | undefined) || 'pending';
-        setParticipantRegistration(status === 'approved' ? reg : null);
+        const sector = (reg.sector as string) || '';
+        if (status === 'approved' || sector === 'Articles') {
+          setParticipantRegistration(reg);
+        } else {
+          setParticipantRegistration(null);
+        }
       })
       .catch(() => {
         if (!cancelled) setParticipantRegistration(null);
@@ -317,7 +373,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [adminUser?.uid]);
+  }, [adminUser?.uid, adminUser?.email]);
 
   // Secret URL trigger for admin panel, e.g. https://site.com/?admin=1
   React.useEffect(() => {
@@ -410,7 +466,18 @@ export default function App() {
         participantEmail.trim(),
         participantPassword,
       );
-      const uid = credential.user.uid;
+      const signedInUser = credential.user;
+      const uid = signedInUser.uid;
+
+      if (isArticleAuthorLoginBypass(signedInUser.email)) {
+        setParticipantRegistration(syntheticArticleRegistration(signedInUser) as any);
+        setIsParticipantLoginOpen(false);
+        setIsAdminPanelOpen(false);
+        setIsAdminVerified(false);
+        setParticipantEmail('');
+        setParticipantPassword('');
+        return;
+      }
 
       const q = query(
         collection(db, 'registrations'),
@@ -428,8 +495,9 @@ export default function App() {
 
       const reg = { id: snap.docs[0].id, ...snap.docs[0].data() } as any;
       const status = (reg.status as string | undefined) || 'pending';
+      const sector = (reg.sector as string) || '';
 
-      if (status !== 'approved') {
+      if (status !== 'approved' && sector !== 'Articles') {
         await signOut(auth);
         setParticipantRegistration(null);
         setParticipantAuthError(
@@ -473,7 +541,7 @@ export default function App() {
     const formatDt = (value: any) => {
       const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
       if (!date || Number.isNaN(date.getTime())) return '—';
-      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
     };
 
     const body: RowInput[] = filteredRegistrations.map((r, index) => {
@@ -521,7 +589,8 @@ export default function App() {
       startY: 15,
     });
 
-    doc.save('iscene-registrations.pdf');
+    const pdfBlob = doc.output('blob');
+    downloadBlobAsFile(pdfBlob, 'iscene-registrations.pdf');
   };
 
   const handleExportCsv = () => {
@@ -548,7 +617,7 @@ export default function App() {
     const formatDt = (value: any) => {
       const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
       if (!date || Number.isNaN(date.getTime())) return '—';
-      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
     };
 
     const rows = filteredRegistrations.map((r, index) => [
@@ -583,14 +652,7 @@ export default function App() {
     const blob = new Blob([csvContent], {
       type: 'text/csv;charset=utf-8;',
     });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'iscene-registrations.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadBlobAsFile(blob, 'iscene-registrations.csv');
   };
 
   const loadRegistrations = async () => {
@@ -629,6 +691,24 @@ export default function App() {
       setRegistrations((prev) =>
         prev.map((r) => (r.id === id ? { ...r, ...updatePayload } : r)),
       );
+
+      const regUid = registration.uid as string | undefined;
+      const regSector = registration.sector as string | undefined;
+      if (regUid && regSector === 'Articles') {
+        try {
+          if (status === 'approved') {
+            await setDoc(doc(db, 'articleCategoryEditors', regUid), { updatedAt: Timestamp.now() }, { merge: true });
+          } else if (status === 'declined') {
+            try {
+              await deleteDoc(doc(db, 'articleCategoryEditors', regUid));
+            } catch {
+              /* doc may not exist */
+            }
+          }
+        } catch (syncErr) {
+          console.error('articleCategoryEditors sync (status)', syncErr);
+        }
+      }
 
       // When a registration is approved, enqueue an email for the participant
       if (status === 'approved') {
@@ -715,6 +795,9 @@ iSCENE 2026 Organizing Team</p>`,
       if (updates.boothBackgroundUrl !== undefined) payload.boothBackgroundUrl = (updates.boothBackgroundUrl as string)?.trim() || '';
       if (updates.boothCategory !== undefined) payload.boothCategory = (updates.boothCategory as string)?.trim() || '';
       if (updates.boothCategoryOther !== undefined) payload.boothCategoryOther = (updates.boothCategoryOther as string)?.trim() || '';
+      if (updates.boothLocationDetails !== undefined) {
+        payload.boothLocationDetails = (updates.boothLocationDetails as string)?.trim() || '';
+      }
       const newStatus = (payload.status as string) || 'pending';
       await updateDoc(doc(db, 'registrations', registrationId), payload);
       setRegistrations((prev) =>
@@ -758,6 +841,11 @@ iSCENE 2026 Organizing Team</p>`,
         const functions = getFunctions(app);
         const deleteAuthUser = httpsCallable<{ uid: string }, { success: boolean }>(functions, 'deleteAuthUser');
         tasks.push(deleteAuthUser({ uid }));
+        try {
+          await deleteDoc(doc(db, 'articleCategoryEditors', uid));
+        } catch {
+          /* may not exist */
+        }
       }
       tasks.push(deleteDoc(doc(db, 'registrations', registrationId)));
 
@@ -959,10 +1047,10 @@ iSCENE 2026 Organizing Team</p>`,
 
   const showRoleDashboard =
     !isAdminPanelOpen &&
-    !isAdminVerified &&          // verified admins never fall through to a role dashboard
+    !isAdminVerified && // verified admins never fall through to a role dashboard
     !!adminUser &&
     !!participantRegistration &&
-    (participantRegistration.status as string) === 'approved';
+    registrationAllowsRoleDashboard(participantRegistration);
   const participantSector = (participantRegistration?.sector as string) || '';
 
   // While auth state is being restored (e.g. new tab, page refresh), show a
@@ -1000,6 +1088,8 @@ iSCENE 2026 Organizing Team</p>`,
           <FoodBoothDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         ) : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)' ? (
           <ExhibitorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+        ) : participantSector === 'Articles' ? (
+          <ArticleAuthorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         ) : (
           <ParticipantDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
         )

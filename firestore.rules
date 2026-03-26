@@ -26,6 +26,12 @@ service cloud.firestore {
         && !(request.auth.token.admin == true);
     }
 
+    // Article authors (sector Articles) get a doc here when admin saves their registration — see AdminDashboard.
+    function canManageArticleCategories() {
+      return isAdmin()
+        || exists(/databases/$(database)/documents/articleCategoryEditors/$(request.auth.uid));
+    }
+
     // True when the signed-in user is listed on the room as a presenter (presenterUids).
     function roomPresentersIncludeAuthUid(roomId) {
       return exists(/databases/$(database)/documents/rooms/$(roomId))
@@ -230,6 +236,57 @@ service cloud.firestore {
     match /mail/{docId} {
       allow create: if isAdmin();
       allow read, update, delete: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ARTICLE CATEGORY EDITORS  /articleCategoryEditors/{uid}
+    // Admins create/delete; the user may read their own doc (optional UI).
+    // ─────────────────────────────────────────────────────────────
+    match /articleCategoryEditors/{userId} {
+      allow read: if signedIn() && (isAdmin() || isOwner(userId));
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ARTICLE CATEGORIES  /articleCategories/{docId}
+    // Global labels for article posts; participants read for filters; admin + article authors manage.
+    // ─────────────────────────────────────────────────────────────
+    match /articleCategories/{categoryId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && canManageArticleCategories()
+        && request.resource.data.keys().hasAll(['name', 'sortOrder', 'createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.sortOrder is int
+        && request.resource.data.createdAt is timestamp;
+      allow update: if signedIn()
+        && canManageArticleCategories()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.sortOrder is int;
+      allow delete: if signedIn() && canManageArticleCategories();
+    }
+
+    // ARTICLES  /articles/{docId}
+    // Listeners (onSnapshot) need get + list. Any signed-in user may read.
+    // Create: authorUid must match caller; core fields required (extras OK).
+    // ─────────────────────────────────────────────────────────────
+    match /articles/{articleId} {
+      allow get: if request.auth != null;
+      allow list: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.description is string
+        && request.resource.data.keys().hasAll(['authorUid', 'title', 'description', 'createdAt', 'updatedAt']);
+      allow update: if isAdmin()
+        || (request.auth != null
+          && resource.data.authorUid == request.auth.uid
+          && request.resource.data.authorUid == resource.data.authorUid);
+      allow delete: if isAdmin()
+        || (request.auth != null && resource.data.authorUid == request.auth.uid);
     }
   }
 }

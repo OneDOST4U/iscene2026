@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "deploy": "npm run build && npx firebase-tools deploy --only hosting"
+    "deploy": "npm run build && npx firebase-tools deploy --only hosting",
+    "deploy:firestore": "npx firebase-tools deploy --only firestore:rules,firestore:indexes",
+    "deploy:storage": "npx firebase-tools deploy --only storage",
+    "deploy:rules": "npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
