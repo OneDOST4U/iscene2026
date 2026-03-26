@@ -62,7 +62,7 @@ import { useArticleCategoryNames } from './useArticleCategoryNames';
 import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey, mealSessionDateKeyManila } from './entranceCheckInDay';
 import { registrationSectorEligibleForMeal } from './mealEligibility';
 import { MealEntitlementCard } from './MealEntitlementCard';
-import { formatSessionDateTime, roomsOverlap } from './sessionRoomUtils';
+import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, roomsOverlap } from './sessionRoomUtils';
 import { QrScanModal } from './QrScanModal';
 import { jsPDF } from 'jspdf';
 
@@ -924,6 +924,15 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         const resDocRef = doc(db, 'reservations', resId);
         const existing = await getDoc(resDocRef);
         const room = rooms.find((r) => r.id === id);
+        if (room) {
+          const scheduleBlock = getBreakoutRoomScheduleBlockReason(room, new Date());
+          if (scheduleBlock) {
+            setScanToast(`❌ ${scheduleBlock}`);
+            setScanModal(false);
+            setTimeout(() => setScanToast(null), 5000);
+            return;
+          }
+        }
         const alreadyAttended = existing.exists() && (existing.data() as { attended?: boolean })?.attended;
         if (alreadyAttended) {
           setScanToast('✅ Already timed in.');
@@ -950,6 +959,12 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   };
 
   const handleReserve = async (room: Room) => {
+    const blockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
+    if (blockReason) {
+      setScanToast(`❌ ${blockReason}`);
+      setTimeout(() => setScanToast(null), 5000);
+      return;
+    }
     setOverlapModal(null);
     const reservedRoomIds = (Object.values(reservations) as Reservation[]).map((r) => r.roomId);
     for (const rid of reservedRoomIds) {
@@ -1305,6 +1320,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     const res = reservations[room.id];
     const rev = reviews[room.id];
     const grad = CARD_GRADIENTS[idx % CARD_GRADIENTS.length];
+    const breakoutBlockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
     return (
       <div
         role="button"
@@ -1325,7 +1341,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
           </div>
           <div className="flex flex-col items-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
           {!res ? (
-            <button type="button" className="text-slate-300 hover:text-blue-500 transition-colors" onClick={() => handleReserve(room)} title="Reserve slot">
+            <button
+              type="button"
+              disabled={!!breakoutBlockReason}
+              className={`transition-colors ${breakoutBlockReason ? 'text-slate-200 cursor-not-allowed' : 'text-slate-300 hover:text-blue-500'}`}
+              onClick={() => handleReserve(room)}
+              title={breakoutBlockReason || 'Reserve slot'}
+            >
               <Bookmark size={16} fill="none" />
             </button>
           ) : res.attended ? (
@@ -1631,6 +1653,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   const res = reservations[room.id];
                   const rev = reviews[room.id];
                   const grad = CARD_GRADIENTS[i % CARD_GRADIENTS.length];
+                  const breakoutBlockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
                   return (
                     <div
                       key={room.id}
@@ -1651,7 +1674,15 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                         {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{room.description}</p>}
                         <div className="flex items-center gap-2 mt-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
                           {!res ? (
-                            <button type="button" onClick={() => handleReserve(room)} className="px-3 py-1.5 rounded-full bg-blue-600 text-white text-xs font-bold">Reserve</button>
+                            <button
+                              type="button"
+                              disabled={!!breakoutBlockReason}
+                              onClick={() => handleReserve(room)}
+                              className={`px-3 py-1.5 rounded-full text-xs font-bold ${breakoutBlockReason ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-blue-600 text-white'}`}
+                              title={breakoutBlockReason || undefined}
+                            >
+                              Reserve
+                            </button>
                           ) : res.attended ? (
                             null
                           ) : (
@@ -2304,6 +2335,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                   const res = reservations[room.id];
                   const rev = reviews[room.id];
                   const grad = CARD_GRADIENTS[i % CARD_GRADIENTS.length];
+                  const breakoutBlockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
                   return (
                     <div
                       key={room.id}
@@ -2327,7 +2359,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                           {room.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-slate-400">{room.description}</p>}
                           <div className="mt-2 flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
                             {!res ? (
-                              <button type="button" onClick={() => handleReserve(room)} className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700">
+                              <button
+                                type="button"
+                                disabled={!!breakoutBlockReason}
+                                onClick={() => handleReserve(room)}
+                                className={`rounded-full px-3 py-1.5 text-xs font-bold ${breakoutBlockReason ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                                title={breakoutBlockReason || undefined}
+                              >
                                 Reserve
                               </button>
                             ) : res.attended ? (
@@ -2859,6 +2897,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         const rev = reviews[detailRoom.id];
         const reviewDone = !!(rev || res?.reviewSubmitted);
         const roomMats = presenterMaterials.filter((m) => m.roomId === detailRoom.id);
+        const breakoutScheduleBlock = getBreakoutRoomScheduleBlockReason(detailRoom, new Date());
         const currentStep = !res ? 1 : !res.attended ? 2 : !reviewDone ? 3 : 4;
         const steps = [
           { id: 'reserve', label: 'RESERVE', done: !!res, current: currentStep === 1 },
@@ -2977,21 +3016,45 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             {/* Not reserved: brief prompt */}
             {!res && (
               <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center">
-                <p className="text-slate-700 font-medium">Reserve a slot to get started. After reserving, scan the QR code at the breakout room entrance to check in and unlock full session details.</p>
+                <p className="text-slate-700 font-medium">
+                  {breakoutScheduleBlock
+                    ? breakoutScheduleBlock
+                    : 'Reserve a slot to get started. After reserving, scan the QR code at the breakout room entrance to check in and unlock full session details.'}
+                </p>
               </div>
             )}
 
-            {/* Reserved but NOT timed in: Show Scan QR prompt */}
+            {/* Reserved but NOT timed in: Show Scan QR prompt (only during scheduled window) */}
             {res && !res.attended && (
-              <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-6 sm:p-8 text-center">
-                <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center mx-auto mb-4">
-                  <QrCode size={32} className="text-white" />
-                </div>
-                <h3 className="text-xl font-bold text-slate-800 mb-2">Scan QR at Breakout Room Entrance</h3>
-                <p className="text-slate-600 text-sm mb-4 max-w-md mx-auto">Go to the entrance of this breakout room and scan the QR code to check in. Once you&apos;ve timed in, the full session details will appear here.</p>
-                <button type="button" onClick={() => { setScanModalRoom(detailRoom); setScanModal(true); }} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center justify-center gap-2 mx-auto">
-                  <QrCode size={20} /> Open QR Scanner
-                </button>
+              <div
+                className={`rounded-2xl p-6 sm:p-8 text-center border-2 ${
+                  breakoutScheduleBlock ? 'bg-slate-50 border-slate-200' : 'bg-blue-50 border-blue-200'
+                }`}
+              >
+                {breakoutScheduleBlock ? (
+                  <>
+                    <h3 className="text-xl font-bold text-slate-800 mb-2">Check-in not available</h3>
+                    <p className="text-slate-600 text-sm max-w-md mx-auto">{breakoutScheduleBlock}</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center mx-auto mb-4">
+                      <QrCode size={32} className="text-white" />
+                    </div>
+                    <h3 className="text-xl font-bold text-slate-800 mb-2">Scan QR at Breakout Room Entrance</h3>
+                    <p className="text-slate-600 text-sm mb-4 max-w-md mx-auto">Go to the entrance of this breakout room and scan the QR code to check in. Once you&apos;ve timed in, the full session details will appear here.</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScanModalRoom(detailRoom);
+                        setScanModal(true);
+                      }}
+                      className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center justify-center gap-2 mx-auto"
+                    >
+                      <QrCode size={20} /> Open QR Scanner
+                    </button>
+                  </>
+                )}
               </div>
             )}
 
@@ -3036,8 +3099,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                     ))}
                   </div>
                   <div className="flex gap-2">
-                    <input value={roomChatInput} onChange={(e) => setRoomChatInput(e.target.value)} placeholder="Ask a question..." className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendRoomChat()} />
-                    <button type="button" onClick={handleSendRoomChat} disabled={roomChatSending || !roomChatInput.trim()} className="rounded-xl bg-blue-600 px-4 py-2 text-white text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"><MessageCircle size={16} /> Send</button>
+                    <input
+                      value={roomChatInput}
+                      onChange={(e) => setRoomChatInput(e.target.value)}
+                      placeholder="Ask a question..."
+                      className="flex-1 min-h-[44px] rounded-xl border border-slate-200 px-3 py-2 text-base md:text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendRoomChat()}
+                    />
+                    <button type="button" onClick={handleSendRoomChat} disabled={roomChatSending || !roomChatInput.trim()} className="min-h-[44px] shrink-0 rounded-xl bg-blue-600 px-4 py-2 text-white text-base md:text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"><MessageCircle size={16} /> Send</button>
                   </div>
                 </div>
               </div>
@@ -3048,10 +3117,33 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             <div id="detail-actions-bar" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3 sm:justify-between">
               <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 flex-1 sm:flex-initial min-w-0 w-full sm:w-auto">
                 {!res
-                  ? <button type="button" onClick={async () => { await handleReserve(detailRoom); }} className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Reserve Slot</button>
+                  ? (
+                    <button
+                      type="button"
+                      disabled={!!breakoutScheduleBlock}
+                      onClick={async () => {
+                        await handleReserve(detailRoom);
+                      }}
+                      className={`w-full sm:w-auto px-6 py-3 font-bold rounded-xl ${breakoutScheduleBlock ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                      title={breakoutScheduleBlock || undefined}
+                    >
+                      Reserve Slot
+                    </button>
+                  )
                   : !res.attended
                     ? <>
-                        <button type="button" onClick={() => { setScanModalRoom(detailRoom); setScanModal(true); }} className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 flex items-center justify-center gap-2"><QrCode size={18} /> Scan QR at Breakout Room Entrance</button>
+                        <button
+                          type="button"
+                          disabled={!!breakoutScheduleBlock}
+                          onClick={() => {
+                            setScanModalRoom(detailRoom);
+                            setScanModal(true);
+                          }}
+                          className={`w-full sm:w-auto px-6 py-3 font-bold rounded-xl flex items-center justify-center gap-2 ${breakoutScheduleBlock ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          title={breakoutScheduleBlock || undefined}
+                        >
+                          <QrCode size={18} /> Scan QR at Breakout Room Entrance
+                        </button>
                         <button type="button" onClick={async () => { await handleCancelReservation(detailRoom); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600">Cancel reservation</button>
                       </>
                     : <span className="w-full sm:w-auto px-6 py-3 bg-emerald-100 text-emerald-700 font-bold rounded-xl flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}

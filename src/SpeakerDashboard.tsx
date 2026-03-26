@@ -63,7 +63,7 @@ import { QrScanModal } from './QrScanModal';
 import { ArticleBrowsePanel } from './ArticleBrowsePanel';
 import type { ArticleDoc } from './ArticlesManager';
 import { useArticleCategoryNames } from './useArticleCategoryNames';
-import { formatSessionDateTime, roomsOverlap } from './sessionRoomUtils';
+import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, roomsOverlap } from './sessionRoomUtils';
 import { registrationSectorEligibleForMeal } from './mealEligibility';
 import { MealEntitlementCard } from './MealEntitlementCard';
 
@@ -767,6 +767,14 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         const resDocRef = doc(db, 'reservations', resId);
         const existing = await getDoc(resDocRef);
         const room = allRooms.find((r) => r.id === id);
+        if (room) {
+          const scheduleBlock = getBreakoutRoomScheduleBlockReason(room, new Date());
+          if (scheduleBlock) {
+            setScanToast(`❌ ${scheduleBlock}`);
+            setTimeout(() => setScanToast(null), 5000);
+            return;
+          }
+        }
         const alreadyAttended = existing.exists() && (existing.data() as { attended?: boolean })?.attended;
         if (alreadyAttended) {
           setScanToast('✅ Already timed in.');
@@ -815,6 +823,12 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   };
 
   const handleAttendeeReserve = async (room: Room) => {
+    const blockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
+    if (blockReason) {
+      setScanToast(`❌ ${blockReason}`);
+      setTimeout(() => setScanToast(null), 5000);
+      return;
+    }
     setOverlapModal(null);
     const reservedRoomIds = (Object.values(attendeeReservations) as AttendeeReservation[]).map((r) => r.roomId);
     for (const rid of reservedRoomIds) {
@@ -1488,6 +1502,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   const res = attendeeReservations[room.id];
                   const presenting = isPresentingRoom(room.id);
                   const grad = BREAKOUT_CARD_GRADIENTS[i % BREAKOUT_CARD_GRADIENTS.length];
+                  const breakoutBlockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
                   return (
                     <div
                       key={room.id}
@@ -1529,8 +1544,10 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                           ) : !res ? (
                             <button
                               type="button"
+                              disabled={!!breakoutBlockReason}
                               onClick={() => void handleAttendeeReserve(room)}
-                              className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700"
+                              className={`rounded-full px-3 py-1.5 text-xs font-bold ${breakoutBlockReason ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                              title={breakoutBlockReason || undefined}
                             >
                               Reserve
                             </button>

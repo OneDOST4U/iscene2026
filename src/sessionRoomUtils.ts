@@ -1,3 +1,69 @@
+import { ENTRANCE_CHECKIN_TIMEZONE, getEntranceCalendarDateKey, mealSessionDateKeyManila } from './entranceCheckInDay';
+
+/** Minutes since midnight in Manila (event clock) for `now`. */
+export function getManilaClockMinutesSinceMidnight(now: Date): number {
+  const dtf = new Intl.DateTimeFormat('en-GB', {
+    timeZone: ENTRANCE_CHECKIN_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = dtf.formatToParts(now);
+  const hour = parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10);
+  const minute = parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
+  return hour * 60 + minute;
+}
+
+/** Whether the current time is before, during, or after the session’s scheduled window (Manila date + timeline). */
+export type BreakoutSchedulePhase = 'during' | 'before' | 'after' | 'unknown';
+
+export function getBreakoutRoomSchedulePhase(
+  room: { sessionDate?: string; timeline?: string },
+  now: Date = new Date(),
+): BreakoutSchedulePhase {
+  const sessionKey = mealSessionDateKeyManila(room.sessionDate ?? '');
+  const range = parseTimelineToMinutes(String(room.timeline ?? '').trim());
+  if (!sessionKey || !range) return 'unknown';
+
+  const todayKey = getEntranceCalendarDateKey(now);
+  if (sessionKey < todayKey) return 'after';
+  if (sessionKey > todayKey) return 'before';
+
+  const mins = getManilaClockMinutesSinceMidnight(now);
+  if (mins < range.start) return 'before';
+  if (mins >= range.end) return 'after';
+  return 'during';
+}
+
+/** Non-null = reservations and breakout QR time-in are not allowed. Null = within window or schedule unknown. */
+export function getBreakoutRoomScheduleBlockReason(
+  room: { sessionDate?: string; timeline?: string },
+  now: Date = new Date(),
+): string | null {
+  const phase = getBreakoutRoomSchedulePhase(room, now);
+  if (phase === 'during' || phase === 'unknown') return null;
+
+  if (phase === 'before') {
+    const sessionKey = mealSessionDateKeyManila(room.sessionDate ?? '');
+    const todayKey = getEntranceCalendarDateKey(now);
+    if (sessionKey && todayKey && sessionKey > todayKey) {
+      return 'This session is not available yet. You can reserve and check in on the session date during the scheduled time.';
+    }
+    return 'This session has not started yet. Reservations and check-in are only available during the scheduled time.';
+  }
+
+  if (phase === 'after') {
+    const sessionKey = mealSessionDateKeyManila(room.sessionDate ?? '');
+    const todayKey = getEntranceCalendarDateKey(now);
+    if (sessionKey && todayKey && sessionKey < todayKey) {
+      return 'This session date has passed. Reservations and check-in are closed.';
+    }
+    return 'The scheduled time for this session has ended. Reservations and check-in are closed.';
+  }
+
+  return null;
+}
+
 /** Parse timeline (e.g. "8:00 AM - 9:00 AM") to minutes from midnight. Returns null if unparseable. */
 export function parseTimelineToMinutes(timeline: string): { start: number; end: number } | null {
   const parts = timeline.split(/[–-]/).map((s) => s.trim());
