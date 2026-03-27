@@ -1033,6 +1033,27 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       const blob = pdf.output('blob');
       const url = URL.createObjectURL(blob);
       const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(navigator.userAgent.toLowerCase());
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'participant-profile-certificate-debug',
+          hypothesisId: 'H3_H4',
+          location: 'src/ParticipantDashboard.tsx:handleDownloadCertificate',
+          message: 'Certificate download branch chosen',
+          data: {
+            isMobile,
+            filename,
+            roomId: session.roomId,
+            roomName: session.roomName,
+            userAgent: navigator.userAgent,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       if (isMobile) {
         window.open(url, '_blank', 'noopener');
         setTimeout(() => URL.revokeObjectURL(url), 2000);
@@ -1312,6 +1333,32 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       </div>
     </div>
   );
+
+  React.useEffect(() => {
+    if (activeTab !== 'profile') return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'participant-profile-certificate-debug',
+        hypothesisId: 'H1_H2',
+        location: 'src/ParticipantDashboard.tsx:profileTabEffect',
+        message: 'Profile tab render state',
+        data: {
+          activeTab,
+          editingTravel,
+          travelLength: String(travelDetails || '').length,
+          accommodationLength: String(accommodationDetails || '').length,
+          activeElementTag: document.activeElement?.tagName || null,
+          activeElementId: (document.activeElement as HTMLElement | null)?.id || null,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [activeTab, editingTravel, travelDetails, accommodationDetails]);
 
   // ──────────────────────────────────────────────────────────────────────────
   // SHARED: Session card component
