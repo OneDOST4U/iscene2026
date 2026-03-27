@@ -805,6 +805,11 @@ export function AdminDashboard({
   );
   const [boothExhibitorPage, setBoothExhibitorPage] = React.useState(0);
   const [boothFoodPage, setBoothFoodPage] = React.useState(0);
+  const [analyticsDayFilter, setAnalyticsDayFilter] = React.useState<'all' | 'today' | 'last7' | 'last30' | 'custom'>('all');
+  const [analyticsRoleFilter, setAnalyticsRoleFilter] = React.useState<string>('all');
+  const [analyticsEventFilter, setAnalyticsEventFilter] = React.useState<'all' | 'registrations' | 'breakouts' | 'meals'>('all');
+  const [analyticsDateFrom, setAnalyticsDateFrom] = React.useState('');
+  const [analyticsDateTo, setAnalyticsDateTo] = React.useState('');
 
   const [rooms, setRooms] = React.useState<Room[]>([]);
   const [roomsLoading, setRoomsLoading] = React.useState(false);
@@ -998,6 +1003,10 @@ export function AdminDashboard({
     () => Array.from(new Set([...ROLE_OPTIONS, ...sectorFilterOptions])).filter(Boolean).sort(),
     [sectorFilterOptions],
   );
+  const analyticsRoleOptions = React.useMemo(
+    () => ['all', ...Array.from(new Set(registrations.map((r) => String(r.sector || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))],
+    [registrations],
+  );
 
   const registrationsView = React.useMemo(() => {
     const q = searchText.trim().toLowerCase();
@@ -1015,6 +1024,160 @@ export function AdminDashboard({
         .some((value) => String(value).toLowerCase().includes(q)),
     );
   }, [filteredRegistrations, searchText]);
+
+  const analyticsWindow = React.useMemo(() => {
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const endOfToday = new Date(startOfToday);
+    endOfToday.setDate(endOfToday.getDate() + 1);
+    if (analyticsDayFilter === 'today') {
+      return { start: startOfToday, end: endOfToday };
+    }
+    if (analyticsDayFilter === 'last7') {
+      const start = new Date(startOfToday);
+      start.setDate(start.getDate() - 6);
+      return { start, end: endOfToday };
+    }
+    if (analyticsDayFilter === 'last30') {
+      const start = new Date(startOfToday);
+      start.setDate(start.getDate() - 29);
+      return { start, end: endOfToday };
+    }
+    if (analyticsDayFilter === 'custom') {
+      const start = analyticsDateFrom ? new Date(`${analyticsDateFrom}T00:00:00`) : null;
+      const end = analyticsDateTo ? new Date(`${analyticsDateTo}T23:59:59`) : null;
+      return { start, end };
+    }
+    return { start: null as Date | null, end: null as Date | null };
+  }, [analyticsDayFilter, analyticsDateFrom, analyticsDateTo]);
+
+  const withinAnalyticsWindow = React.useCallback(
+    (value: any) => {
+      const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return false;
+      const { start, end } = analyticsWindow;
+      if (start && date < start) return false;
+      if (end && date > end) return false;
+      return true;
+    },
+    [analyticsWindow],
+  );
+
+  const analyticsRegs = React.useMemo(() => {
+    return registrations.filter((r) => {
+      if (analyticsRoleFilter !== 'all' && String(r.sector || '') !== analyticsRoleFilter) return false;
+      if (!withinAnalyticsWindow(r.createdAt)) return false;
+      return true;
+    });
+  }, [registrations, analyticsRoleFilter, withinAnalyticsWindow]);
+
+  const analyticsRooms = React.useMemo(() => {
+    return rooms.filter((room) => {
+      if (analyticsEventFilter !== 'all' && analyticsEventFilter !== 'breakouts') return false;
+      if (analyticsRoleFilter !== 'all') {
+        const presenterMatches = registrations.some(
+          (reg) =>
+            String(reg.sector || '') === analyticsRoleFilter &&
+            ((room.presenterUids || []).includes(reg.uid) || (room.presenterNames || []).includes(String(reg.fullName || ''))),
+        );
+        if (!presenterMatches) return false;
+      }
+      if (analyticsDayFilter === 'all') return true;
+      if (!room.sessionDate) return false;
+      return withinAnalyticsWindow(new Date(`${room.sessionDate}T12:00:00`));
+    });
+  }, [rooms, analyticsEventFilter, analyticsRoleFilter, registrations, analyticsDayFilter, withinAnalyticsWindow]);
+
+  const analyticsMeals = React.useMemo(() => {
+    return meals.filter((meal) => {
+      if (analyticsEventFilter !== 'all' && analyticsEventFilter !== 'meals') return false;
+      if (analyticsDayFilter === 'all') return true;
+      if (!meal.sessionDate) return false;
+      return withinAnalyticsWindow(new Date(`${meal.sessionDate}T12:00:00`));
+    });
+  }, [meals, analyticsEventFilter, analyticsDayFilter, withinAnalyticsWindow]);
+
+  const analyticsTotals = React.useMemo(() => {
+    const approved = analyticsRegs.filter((r) => String(r.status || '') === 'approved').length;
+    const pending = analyticsRegs.filter((r) => String(r.status || 'pending') === 'pending').length;
+    const declined = analyticsRegs.filter((r) => String(r.status || '') === 'declined').length;
+    return {
+      registrations: analyticsRegs.length,
+      approved,
+      pending,
+      declined,
+      rooms: analyticsRooms.length,
+      meals: analyticsMeals.length,
+    };
+  }, [analyticsRegs, analyticsRooms.length, analyticsMeals.length]);
+
+  const analyticsSectorBars = React.useMemo(() => {
+    const total = analyticsTotals.registrations || 1;
+    return analyticsRoleOptions
+      .filter((sector) => sector !== 'all')
+      .map((sector) => {
+        const count = analyticsRegs.filter((r) => String(r.sector || '') === sector).length;
+        return { sector, count, pct: Math.round((count / total) * 100) };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+  }, [analyticsRoleOptions, analyticsRegs, analyticsTotals.registrations]);
+
+  const analyticsDailySeries = React.useMemo(() => {
+    const buckets = new Map<string, number>();
+    analyticsRegs.forEach((r) => {
+      const d = r.createdAt?.toDate ? r.createdAt.toDate() : r.createdAt ? new Date(r.createdAt) : null;
+      if (!d || Number.isNaN(d.getTime())) return;
+      const key = d.toISOString().slice(0, 10);
+      buckets.set(key, (buckets.get(key) || 0) + 1);
+    });
+    return Array.from(buckets.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .slice(-10)
+      .map(([date, count]) => ({ date, count }));
+  }, [analyticsRegs]);
+
+  React.useEffect(() => {
+    if (activeTab !== 'analytics') return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'admin-analytics-filters-charts',
+        hypothesisId: 'A1_A2_A3',
+        location: 'src/AdminDashboard.tsx:analyticsFiltersEffect',
+        message: 'Analytics filters and chart data snapshot',
+        data: {
+          analyticsDayFilter,
+          analyticsRoleFilter,
+          analyticsEventFilter,
+          analyticsDateFrom,
+          analyticsDateTo,
+          registrationCount: analyticsTotals.registrations,
+          sectorBars: analyticsSectorBars.length,
+          dailyPoints: analyticsDailySeries.length,
+          roomsCount: analyticsTotals.rooms,
+          mealsCount: analyticsTotals.meals,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [
+    activeTab,
+    analyticsDayFilter,
+    analyticsRoleFilter,
+    analyticsEventFilter,
+    analyticsDateFrom,
+    analyticsDateTo,
+    analyticsTotals.registrations,
+    analyticsTotals.rooms,
+    analyticsTotals.meals,
+    analyticsSectorBars.length,
+    analyticsDailySeries.length,
+  ]);
 
   React.useEffect(() => {
     if (activeTab !== 'registrations') return;
@@ -3623,32 +3786,86 @@ export function AdminDashboard({
 
           {activeTab === 'analytics' && (
             <section>
+              <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <select
+                    value={analyticsDayFilter}
+                    onChange={(e) => setAnalyticsDayFilter(e.target.value as 'all' | 'today' | 'last7' | 'last30' | 'custom')}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">All days</option>
+                    <option value="today">Today</option>
+                    <option value="last7">Last 7 days</option>
+                    <option value="last30">Last 30 days</option>
+                    <option value="custom">Custom range</option>
+                  </select>
+                  <select
+                    value={analyticsRoleFilter}
+                    onChange={(e) => setAnalyticsRoleFilter(e.target.value)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {analyticsRoleOptions.map((role) => (
+                      <option key={role} value={role}>
+                        {role === 'all' ? 'All roles' : role}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={analyticsEventFilter}
+                    onChange={(e) => setAnalyticsEventFilter(e.target.value as 'all' | 'registrations' | 'breakouts' | 'meals')}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">All events</option>
+                    <option value="registrations">Registration event</option>
+                    <option value="breakouts">Breakout sessions</option>
+                    <option value="meals">Meal events</option>
+                  </select>
+                  {analyticsDayFilter === 'custom' ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        value={analyticsDateFrom}
+                        onChange={(e) => setAnalyticsDateFrom(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <input
+                        type="date"
+                        value={analyticsDateTo}
+                        onChange={(e) => setAnalyticsDateTo(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  ) : (
+                    <div className="rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
+                      Filter by day, role, and event source
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard label="Total Registered" value={totalRegistrations} sub="All sectors" tone="blue" />
+                <StatCard label="Total Registered" value={analyticsTotals.registrations} sub="Filtered registrations" tone="blue" />
                 <StatCard
                   label="Approved"
-                  value={approvedRegistrations}
-                  sub={`${totalRegistrations ? Math.round((approvedRegistrations / totalRegistrations) * 100) : 0}% approval`}
+                  value={analyticsTotals.approved}
+                  sub={`${analyticsTotals.registrations ? Math.round((analyticsTotals.approved / analyticsTotals.registrations) * 100) : 0}% approval`}
                   tone="green"
                 />
-                <StatCard label="Pending" value={pendingRegistrations} sub="Awaiting review" tone="amber" />
-                <StatCard label="Declined" value={declinedCount} sub="Not approved" tone="purple" />
+                <StatCard label="Pending" value={analyticsTotals.pending} sub="Awaiting review" tone="amber" />
+                <StatCard label="Declined" value={analyticsTotals.declined} sub="Not approved" tone="purple" />
               </div>
 
               <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h4 className="text-lg font-black">Registrations by Sector</h4>
+                  <h4 className="text-lg font-black">Bar Chart: Registrations by Role</h4>
                   <div className="mt-4 space-y-4">
-                    {sectorFilterOptions.map((sector) => {
-                      const total = registrations.filter((r) => r.sector === sector).length;
-                      const approved = registrations.filter((r) => r.sector === sector && r.status === 'approved').length;
-                      const pct = totalRegistrations ? Math.round((total / totalRegistrations) * 100) : 0;
+                    {analyticsSectorBars.map(({ sector, count, pct }) => {
+                      const approved = analyticsRegs.filter((r) => String(r.sector || '') === sector && String(r.status || '') === 'approved').length;
                       return (
                         <div key={sector}>
                           <div className="mb-1 flex justify-between gap-3 text-sm">
                             <span className="truncate font-medium text-slate-700">{sector}</span>
                             <span className="text-xs font-bold text-slate-500">
-                              {approved}/{total} approved
+                              {approved}/{count} approved
                             </span>
                           </div>
                           <div className="h-2 overflow-hidden rounded-full bg-slate-100">
@@ -3661,21 +3878,56 @@ export function AdminDashboard({
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h4 className="text-lg font-black">Operational Snapshot</h4>
-                  <div className="mt-4 space-y-3">
-                    {[
-                      { label: 'Participant records visible to admin', value: totalRegistrations },
-                      { label: 'Rooms configured', value: rooms.length },
-                      { label: 'Meal windows configured', value: meals.length },
-                      { label: 'Booth operators', value: boothRegs.length },
-                    ].map((row) => (
-                      <div key={row.label} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
-                        <span className="text-sm text-slate-600">{row.label}</span>
-                        <span className="text-sm font-black text-slate-900">{row.value}</span>
+                  <h4 className="text-lg font-black">Chart: Daily Registration Trend</h4>
+                  <div className="mt-4">
+                    {analyticsDailySeries.length === 0 ? (
+                      <div className="rounded-2xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
+                        No registration points for current filters.
                       </div>
-                    ))}
+                    ) : (
+                      <div className="space-y-2">
+                        {analyticsDailySeries.map((point) => {
+                          const max = Math.max(...analyticsDailySeries.map((p) => p.count), 1);
+                          const pct = Math.max(6, Math.round((point.count / max) * 100));
+                          return (
+                            <div key={point.date}>
+                              <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
+                                <span>{point.date}</span>
+                                <span className="font-bold text-slate-700">{point.count}</span>
+                              </div>
+                              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h4 className="text-lg font-black">Operational Snapshot (Filtered)</h4>
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  {[
+                    { label: 'Filtered registrations', value: analyticsTotals.registrations },
+                    { label: 'Breakout sessions (event filter)', value: analyticsTotals.rooms },
+                    { label: 'Meal events (event filter)', value: analyticsTotals.meals },
+                    { label: 'Booth operators', value: boothRegs.length },
+                    { label: 'Pending approvals', value: analyticsTotals.pending },
+                    { label: 'Declined', value: analyticsTotals.declined },
+                  ].map((row) => (
+                    <div key={row.label} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
+                      <span className="text-sm text-slate-600">{row.label}</span>
+                      <span className="text-sm font-black text-slate-900">{row.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3 text-xs text-blue-700">
+                Filters apply to registration-based charts and stats; event filter also controls breakout/meal event counters.
               </div>
             </section>
           )}

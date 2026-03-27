@@ -185,6 +185,50 @@ const Card = ({ title, description, icon: Icon, color }: { title: string, descri
   </motion.div>
 );
 
+type RuntimeErrorBoundaryProps = { children: React.ReactNode };
+type RuntimeErrorBoundaryState = { hasError: boolean; message: string };
+
+class RuntimeErrorBoundary extends React.Component<RuntimeErrorBoundaryProps, RuntimeErrorBoundaryState> {
+  state: RuntimeErrorBoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): RuntimeErrorBoundaryState {
+    return { hasError: true, message: error?.message || 'Unknown runtime error' };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'white-screen-triage',
+        hypothesisId: 'W6',
+        location: 'src/App.tsx:RuntimeErrorBoundary',
+        message: 'React render error boundary caught',
+        data: { error: error?.message || 'unknown', componentStack: info?.componentStack || '' },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-dvh bg-slate-50 flex items-center justify-center px-4">
+          <div className="w-full max-w-xl rounded-2xl border border-red-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-black text-red-600">Runtime error detected</p>
+            <p className="mt-2 break-words text-sm text-slate-700">{this.state.message}</p>
+            <p className="mt-2 text-xs text-slate-500">Share this error message so we can apply the exact fix.</p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
   const [isAuthChoiceOpen, setIsAuthChoiceOpen] = React.useState(false);
@@ -1052,6 +1096,18 @@ iSCENE 2026 Organizing Team</p>`,
     !!participantRegistration &&
     registrationAllowsRoleDashboard(participantRegistration);
   const participantSector = (participantRegistration?.sector as string) || '';
+  const selectedDashboard =
+    participantSector === 'Speakers'
+      ? 'SpeakerDashboard'
+      : participantSector === 'Facilitators'
+      ? 'FacilitatorDashboard'
+      : participantSector === 'Food (Booth)'
+      ? 'FoodBoothDashboard'
+      : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)'
+      ? 'ExhibitorDashboard'
+      : participantSector === 'Articles'
+      ? 'ArticleAuthorDashboard'
+      : 'ParticipantDashboard';
 
   // While auth state is being restored (e.g. new tab, page refresh), show a
   // loading screen instead of the landing page. This prevents the user from
@@ -1066,6 +1122,40 @@ iSCENE 2026 Organizing Team</p>`,
     fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'white-screen-triage',hypothesisId:'W1',location:'src/App.tsx:sessionGate',message:'Session gate state changed',data:{authInitialized,isAdminPanelOpen,isAdminVerified,hasAdminUser:!!adminUser,participantRegistrationLoading,registerStatus,hasParticipantRegistration:!!participantRegistration,isRestoringSession},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
   }, [authInitialized, isAdminPanelOpen, isAdminVerified, adminUser, participantRegistrationLoading, registerStatus, participantRegistration, isRestoringSession]);
+
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'white-screen-triage',
+        hypothesisId: 'W4',
+        location: 'src/App.tsx:dashboardSelection',
+        message: 'Dashboard selection state',
+        data: {
+          showRoleDashboard,
+          participantSector,
+          selectedDashboard,
+          isAdminPanelOpen,
+          isAdminVerified,
+          hasAdminUser: !!adminUser,
+          hasParticipantRegistration: !!participantRegistration,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [
+    showRoleDashboard,
+    participantSector,
+    selectedDashboard,
+    isAdminPanelOpen,
+    isAdminVerified,
+    adminUser,
+    participantRegistration,
+  ]);
 
   React.useEffect(() => {
     const onError = (event: ErrorEvent) => {
@@ -1106,19 +1196,21 @@ iSCENE 2026 Organizing Team</p>`,
   return (
     <div className="min-h-dvh w-full max-w-[100vw] overflow-x-hidden bg-slate-50 font-sans text-slate-900 selection:bg-blue-100 selection:text-blue-900">
       {showRoleDashboard && adminUser && participantRegistration && (
-        participantSector === 'Speakers' ? (
-          <SpeakerDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Facilitators' ? (
-          <FacilitatorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Food (Booth)' ? (
-          <FoodBoothDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)' ? (
-          <ExhibitorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : participantSector === 'Articles' ? (
-          <ArticleAuthorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        ) : (
-          <ParticipantDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
-        )
+        <RuntimeErrorBoundary>
+          {participantSector === 'Speakers' ? (
+            <SpeakerDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+          ) : participantSector === 'Facilitators' ? (
+            <FacilitatorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+          ) : participantSector === 'Food (Booth)' ? (
+            <FoodBoothDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+          ) : participantSector === 'Exhibitor' || participantSector === 'Exhibitor (Booth)' ? (
+            <ExhibitorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+          ) : participantSector === 'Articles' ? (
+            <ArticleAuthorDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+          ) : (
+            <ParticipantDashboard user={adminUser} registration={participantRegistration} onSignOut={handleParticipantSignOut} />
+          )}
+        </RuntimeErrorBoundary>
       )}
       {!showRoleDashboard && (
         <>
@@ -1153,10 +1245,14 @@ iSCENE 2026 Organizing Team</p>`,
               </button>
             </div>
 
-            {/* Mobile Nav Toggle */}
+            {/* Mobile auth CTA */}
             <div className="md:hidden">
-              <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="p-2 text-slate-600">
-                {isMenuOpen ? <X size={24} /> : <Menu size={24} />}
+              <button
+                type="button"
+                onClick={openAuthChoiceModal}
+                className="rounded-full bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-blue-700"
+              >
+                Sign In / Sign Up
               </button>
             </div>
           </div>
