@@ -353,6 +353,40 @@ function sectorColor(sector: string) {
   return 'bg-blue-100 text-blue-700';
 }
 
+function getInitials(name: string) {
+  const parts = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return 'U';
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('');
+}
+
+function getRegistrationProfileImage(registration: any) {
+  return (
+    registration?.profilePictureUrl ||
+    registration?.profilePhotoURL ||
+    registration?.photoURL ||
+    registration?.avatarUrl ||
+    registration?.avatar ||
+    registration?.photoUrl ||
+    ''
+  );
+}
+
+function getRegistrationProofRef(registration: any) {
+  return (
+    registration?.proofOfPaymentPath ||
+    registration?.proofOfPaymentUrl ||
+    registration?.paymentProofUrl ||
+    registration?.receiptUrl ||
+    ''
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${statusColor(status || 'pending')}`}>
@@ -757,6 +791,8 @@ export function AdminDashboard({
   const [passwordResetting, setPasswordResetting] = React.useState(false);
   const [actionMessage, setActionMessage] = React.useState<string | null>(null);
   const [proofError, setProofError] = React.useState<string | null>(null);
+  const [proofPreviewUrl, setProofPreviewUrl] = React.useState<string | null>(null);
+  const [proofPreviewLoading, setProofPreviewLoading] = React.useState(false);
   const [uploadingBoothBackground, setUploadingBoothBackground] = React.useState(false);
   const [expandedExhibitorId, setExpandedExhibitorId] = React.useState<string | null>(null);
   const [boothExhibitorSearch, setBoothExhibitorSearch] = React.useState('');
@@ -782,6 +818,8 @@ export function AdminDashboard({
   const [newRoomPresenterChoice, setNewRoomPresenterChoice] = React.useState('');
   const [newRoomSelectedPresenters, setNewRoomSelectedPresenters] = React.useState<string[]>([]);
   const [newRoomPresenters, setNewRoomPresenters] = React.useState('');
+  const [newRoomBackgroundImage, setNewRoomBackgroundImage] = React.useState('');
+  const [roomBackgroundUploading, setRoomBackgroundUploading] = React.useState(false);
   const [roomSaving, setRoomSaving] = React.useState(false);
 
   const [venues, setVenues] = React.useState<Venue[]>([]);
@@ -977,6 +1015,170 @@ export function AdminDashboard({
         .some((value) => String(value).toLowerCase().includes(q)),
     );
   }, [filteredRegistrations, searchText]);
+
+  React.useEffect(() => {
+    if (activeTab !== 'registrations') return;
+    const sample = registrationsView.slice(0, 5).map((r) => ({
+      id: r.id,
+      fullName: r.fullName || null,
+      profilePictureUrl: r.profilePictureUrl || null,
+      photoURL: r.photoURL || null,
+      avatarUrl: r.avatarUrl || null,
+      proofOfPaymentPath: r.proofOfPaymentPath || null,
+      proofOfPaymentUrl: r.proofOfPaymentUrl || null,
+      paymentProofUrl: r.paymentProofUrl || null,
+      receiptUrl: r.receiptUrl || null,
+    }));
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'registrations-media-debug',
+        hypothesisId: 'H1_H2_H3',
+        location: 'src/AdminDashboard.tsx:registrationsViewEffect',
+        message: 'Registration media fields snapshot',
+        data: {
+          total: registrationsView.length,
+          profilePictureUrlCount: registrationsView.filter((r) => Boolean(r.profilePictureUrl)).length,
+          photoURLCount: registrationsView.filter((r) => Boolean(r.photoURL)).length,
+          avatarUrlCount: registrationsView.filter((r) => Boolean(r.avatarUrl)).length,
+          proofOfPaymentPathCount: registrationsView.filter((r) => Boolean(r.proofOfPaymentPath)).length,
+          proofOfPaymentUrlCount: registrationsView.filter((r) => Boolean(r.proofOfPaymentUrl)).length,
+          paymentProofUrlCount: registrationsView.filter((r) => Boolean(r.paymentProofUrl)).length,
+          receiptUrlCount: registrationsView.filter((r) => Boolean(r.receiptUrl)).length,
+          sample,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [activeTab, registrationsView]);
+
+  React.useEffect(() => {
+    if (!registrations.length) return;
+    const first = registrations[0];
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'registrations-media-debug',
+        hypothesisId: 'H4',
+        location: 'src/AdminDashboard.tsx:registrationsRawEffect',
+        message: 'Raw registrations loaded',
+        data: {
+          activeTab,
+          total: registrations.length,
+          firstId: first.id || null,
+          firstName: first.fullName || null,
+          firstProfilePictureUrl: first.profilePictureUrl || null,
+          firstPhotoURL: first.photoURL || null,
+          firstAvatarUrl: first.avatarUrl || null,
+          firstProofPath: first.proofOfPaymentPath || null,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [registrations, activeTab]);
+
+  React.useEffect(() => {
+    if (!editingRegistration) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'manage-participant-media-debug',
+        hypothesisId: 'H1_H2_H3_H4',
+        location: 'src/AdminDashboard.tsx:editingRegistrationEffect',
+        message: 'Manage Participant media fields snapshot',
+        data: {
+          id: editingRegistration.id || null,
+          fullName: editingRegistration.fullName || null,
+          sector: editingRegistration.sector || null,
+          profilePictureUrl: editingRegistration.profilePictureUrl || null,
+          profilePhotoURL: editingRegistration.profilePhotoURL || null,
+          photoURL: editingRegistration.photoURL || null,
+          avatarUrl: editingRegistration.avatarUrl || null,
+          avatar: editingRegistration.avatar || null,
+          photoUrl: editingRegistration.photoUrl || null,
+          proofOfPaymentPath: editingRegistration.proofOfPaymentPath || null,
+          proofOfPaymentUrl: editingRegistration.proofOfPaymentUrl || null,
+          paymentProofUrl: editingRegistration.paymentProofUrl || null,
+          receiptUrl: editingRegistration.receiptUrl || null,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [editingRegistration]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const loadProofPreview = async () => {
+      if (!editingRegistration) {
+        setProofPreviewUrl(null);
+        setProofPreviewLoading(false);
+        return;
+      }
+      const proofRef = getRegistrationProofRef(editingRegistration);
+      if (!proofRef) {
+        setProofPreviewUrl(null);
+        setProofPreviewLoading(false);
+        return;
+      }
+      setProofPreviewLoading(true);
+      try {
+        const resolvedUrl = /^https?:\/\//i.test(proofRef) ? proofRef : await getDownloadURL(ref(storage, proofRef));
+        if (cancelled) return;
+        setProofPreviewUrl(resolvedUrl);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+          body: JSON.stringify({
+            sessionId: 'ec45ad',
+            runId: 'manage-participant-media-debug',
+            hypothesisId: 'H5',
+            location: 'src/AdminDashboard.tsx:proofPreviewEffect:success',
+            message: 'Resolved proof preview URL',
+            data: { registrationId: editingRegistration.id || null, hasPreviewUrl: Boolean(resolvedUrl), proofRef },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+      } catch (err) {
+        if (cancelled) return;
+        setProofPreviewUrl(null);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+          body: JSON.stringify({
+            sessionId: 'ec45ad',
+            runId: 'manage-participant-media-debug',
+            hypothesisId: 'H5',
+            location: 'src/AdminDashboard.tsx:proofPreviewEffect:error',
+            message: 'Failed resolving proof preview URL',
+            data: { registrationId: editingRegistration.id || null, proofRef },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+      } finally {
+        if (!cancelled) setProofPreviewLoading(false);
+      }
+    };
+    void loadProofPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [editingRegistration]);
 
   const clearMessageSoon = React.useCallback((message: string) => {
     setActionMessage(message);
@@ -1270,6 +1472,9 @@ export function AdminDashboard({
     }
     setRoomSaving(true);
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'admin-room-background',hypothesisId:'A1',location:'src/AdminDashboard.tsx:handleCreateRoom:start',message:'Create room requested',data:{hasBackgroundImage:!!newRoomBackgroundImage.trim(),roomName:newRoomName.trim()},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const manualPresenterNames = newRoomPresenters
         .split(',')
         .map((p) => p.trim())
@@ -1300,6 +1505,7 @@ export function AdminDashboard({
         presenterNames,
         ...(presenterUids.length > 0 && { presenterUids }),
         ...(presenterTitles.some(Boolean) && { presenterTitles: presenterTitles.map((t) => t ?? null) }),
+        ...(newRoomBackgroundImage.trim() && { backgroundImage: newRoomBackgroundImage.trim() }),
         projectDetail: null,
         certificateProcessSteps: null,
         createdAt: Timestamp.now(),
@@ -1319,6 +1525,7 @@ export function AdminDashboard({
       setNewRoomPresenterChoice('');
       setNewRoomSelectedPresenters([]);
       setNewRoomPresenters('');
+      setNewRoomBackgroundImage('');
       clearMessageSoon('Breakout room created.');
     } catch (err) {
       console.error('createRoom', err);
@@ -1356,6 +1563,7 @@ export function AdminDashboard({
     const manual = names.filter((n) => !registeredSet.has(String(n).trim().toLowerCase()));
     setNewRoomSelectedPresenters(fromDropdown);
     setNewRoomPresenters(manual.join(', '));
+    setNewRoomBackgroundImage(room.backgroundImage || '');
     const [start, end] = (room.timeline || '').split(/\s*-\s*/);
     setNewRoomStartTime(start?.trim() || '');
     setNewRoomEndTime(end?.trim() || '');
@@ -1373,6 +1581,7 @@ export function AdminDashboard({
     setNewRoomPresenterChoice('');
     setNewRoomSelectedPresenters([]);
     setNewRoomPresenters('');
+    setNewRoomBackgroundImage('');
   };
 
   const handleUpdateRoom = async (e: React.FormEvent) => {
@@ -1391,6 +1600,9 @@ export function AdminDashboard({
     }
     setRoomSaving(true);
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'admin-room-background',hypothesisId:'A2',location:'src/AdminDashboard.tsx:handleUpdateRoom:start',message:'Update room requested',data:{roomId:editingRoom.id,hasBackgroundImage:!!newRoomBackgroundImage.trim()},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const manualPresenterNames = newRoomPresenters.split(',').map((p) => p.trim()).filter(Boolean);
       const presenterNames = Array.from(new Set([...newRoomSelectedPresenters, ...manualPresenterNames]));
       const presenterUids = Array.from(
@@ -1412,6 +1624,7 @@ export function AdminDashboard({
         description: newRoomDesc.trim(),
         timeline,
         sessionDate: newRoomDate,
+        backgroundImage: newRoomBackgroundImage.trim() ? newRoomBackgroundImage.trim() : deleteField(),
         presenterNames,
         ...(presenterUids.length > 0 && { presenterUids }),
         ...(presenterTitles.some(Boolean) && { presenterTitles: presenterTitles.map((t) => t ?? null) }),
@@ -1434,6 +1647,38 @@ export function AdminDashboard({
       setTimeout(() => setActionMessage(null), 4000);
     } finally {
       setRoomSaving(false);
+    }
+  };
+
+  const handleRoomBackgroundUpload = async (file: File) => {
+    if (!user?.uid) {
+      setActionMessage('Link account to upload room background.');
+      return;
+    }
+    if (!file || !file.type.startsWith('image/')) {
+      setActionMessage('Please choose an image file.');
+      return;
+    }
+    setRoomBackgroundUploading(true);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `rooms/backgrounds/${user.uid}/${Date.now()}_${safeName}`;
+      await uploadBytes(ref(storage, path), file, { contentType: file.type || 'image/jpeg' });
+      const url = await getDownloadURL(ref(storage, path));
+      setNewRoomBackgroundImage(url);
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'admin-room-background',hypothesisId:'A3',location:'src/AdminDashboard.tsx:handleRoomBackgroundUpload:success',message:'Room background uploaded',data:{storagePath:path,fileSize:file.size},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      clearMessageSoon('Room background uploaded.');
+    } catch (err: any) {
+      console.error('room background upload', err);
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'admin-room-background',hypothesisId:'A4',location:'src/AdminDashboard.tsx:handleRoomBackgroundUpload:error',message:'Room background upload failed',data:{errorMessage:err?.message || 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setActionMessage(`Background upload failed: ${err?.message || err}`);
+      setTimeout(() => setActionMessage(null), 5000);
+    } finally {
+      setRoomBackgroundUploading(false);
     }
   };
 
@@ -1521,10 +1766,15 @@ export function AdminDashboard({
     }
   };
 
-  const handleViewProof = async (proofPath: string) => {
+  const handleViewProof = async (proofRef: string) => {
     setProofError(null);
     try {
-      const url = await getDownloadURL(ref(storage, proofPath));
+      if (!proofRef) return;
+      if (/^https?:\/\//i.test(proofRef)) {
+        window.open(proofRef, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      const url = await getDownloadURL(ref(storage, proofRef));
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
       console.error('viewProof', err);
@@ -1914,11 +2164,36 @@ export function AdminDashboard({
                 )}
                 {!registrationsLoading &&
                   registrationsView.map((registration) => (
-                    <div key={registration.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div
+                      key={registration.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setEditingRegistration({ ...registration })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setEditingRegistration({ ...registration });
+                        }
+                      }}
+                      className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                    >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-base font-black">{registration.fullName || '—'}</p>
-                          <p className="truncate text-xs text-slate-500">{registration.email || '—'}</p>
+                        <div className="flex min-w-0 items-start gap-3">
+                          <div className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200">
+                            {getRegistrationProfileImage(registration) ? (
+                              <img
+                                src={getRegistrationProfileImage(registration)}
+                                alt={registration.fullName || 'User'}
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <span className="text-xs font-black text-slate-600">{getInitials(registration.fullName || '')}</span>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-base font-black">{registration.fullName || '—'}</p>
+                            <p className="truncate text-xs text-slate-500">{registration.email || '—'}</p>
+                          </div>
                         </div>
                         <StatusBadge status={registration.status || 'pending'} />
                       </div>
@@ -1944,7 +2219,10 @@ export function AdminDashboard({
                       <div className="mt-4 flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => setEditingRegistration({ ...registration })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingRegistration({ ...registration });
+                          }}
                           className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700"
                         >
                           <Pencil size={13} />
@@ -1952,7 +2230,10 @@ export function AdminDashboard({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onUpdateStatus(registration, 'approved')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void onUpdateStatus(registration, 'approved');
+                          }}
                           disabled={registration.status === 'approved'}
                           className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
                         >
@@ -1960,16 +2241,22 @@ export function AdminDashboard({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onUpdateStatus(registration, 'declined')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void onUpdateStatus(registration, 'declined');
+                          }}
                           disabled={registration.status === 'declined'}
                           className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           Decline
                         </button>
-                        {registration.proofOfPaymentPath ? (
+                        {getRegistrationProofRef(registration) ? (
                           <button
                             type="button"
-                            onClick={() => handleViewProof(registration.proofOfPaymentPath)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleViewProof(getRegistrationProofRef(registration));
+                            }}
                             className="flex items-center gap-1 rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700"
                           >
                             <Eye size={13} />
@@ -2022,10 +2309,29 @@ export function AdminDashboard({
                       )}
                       {!registrationsLoading &&
                         registrationsView.map((registration) => (
-                          <tr key={registration.id} className="transition-colors hover:bg-blue-50/40">
+                          <tr
+                            key={registration.id}
+                            onClick={() => setEditingRegistration({ ...registration })}
+                            className="cursor-pointer transition-colors hover:bg-blue-50/40"
+                          >
                             <td className="px-4 py-3">
-                              <div className="font-bold">{registration.fullName || '—'}</div>
-                              <div className="text-xs text-slate-500">{registration.email || '—'}</div>
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200">
+                                  {getRegistrationProfileImage(registration) ? (
+                                    <img
+                                      src={getRegistrationProfileImage(registration)}
+                                      alt={registration.fullName || 'User'}
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <span className="text-xs font-black text-slate-600">{getInitials(registration.fullName || '')}</span>
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="truncate font-bold">{registration.fullName || '—'}</div>
+                                  <div className="truncate text-xs text-slate-500">{registration.email || '—'}</div>
+                                </div>
+                              </div>
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex flex-col items-start gap-1">
@@ -2066,10 +2372,13 @@ export function AdminDashboard({
                               )}
                             </td>
                             <td className="px-4 py-3">
-                              {registration.proofOfPaymentPath ? (
+                              {getRegistrationProofRef(registration) ? (
                                 <button
                                   type="button"
-                                  onClick={() => handleViewProof(registration.proofOfPaymentPath)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleViewProof(getRegistrationProofRef(registration));
+                                  }}
                                   className="flex items-center gap-1 rounded-xl bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-100"
                                 >
                                   <Eye size={13} />
@@ -2084,7 +2393,10 @@ export function AdminDashboard({
                                 <button
                                   type="button"
                                   title="Edit participant"
-                                  onClick={() => setEditingRegistration({ ...registration })}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingRegistration({ ...registration });
+                                  }}
                                   className="rounded-lg bg-blue-50 p-2 text-blue-600 hover:bg-blue-100"
                                 >
                                   <Pencil size={14} />
@@ -2092,7 +2404,10 @@ export function AdminDashboard({
                                 <button
                                   type="button"
                                   title="Approve"
-                                  onClick={() => onUpdateStatus(registration, 'approved')}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void onUpdateStatus(registration, 'approved');
+                                  }}
                                   disabled={registration.status === 'approved'}
                                   className="rounded-lg bg-emerald-50 p-2 text-emerald-600 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
@@ -2101,7 +2416,10 @@ export function AdminDashboard({
                                 <button
                                   type="button"
                                   title="Decline"
-                                  onClick={() => onUpdateStatus(registration, 'declined')}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void onUpdateStatus(registration, 'declined');
+                                  }}
                                   disabled={registration.status === 'declined'}
                                   className="rounded-lg bg-red-50 p-2 text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
@@ -2110,7 +2428,10 @@ export function AdminDashboard({
                                 <button
                                   type="button"
                                   title="Reset to pending"
-                                  onClick={() => onUpdateStatus(registration, 'pending')}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void onUpdateStatus(registration, 'pending');
+                                  }}
                                   disabled={registration.status === 'pending' || !registration.status}
                                   className="rounded-lg bg-slate-100 p-2 text-slate-500 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
@@ -2157,6 +2478,46 @@ export function AdminDashboard({
                     </div>
                     <Field label="Description">
                       <textarea value={newRoomDesc} onChange={(e) => setNewRoomDesc(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Brief room description..." />
+                    </Field>
+                    <Field label="Background Image">
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <label className={`inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold cursor-pointer hover:bg-slate-50 ${roomBackgroundUploading ? 'opacity-60' : ''}`}>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              disabled={roomBackgroundUploading}
+                              onChange={async (e) => {
+                                const f = e.target.files?.[0];
+                                e.currentTarget.value = '';
+                                if (!f) return;
+                                await handleRoomBackgroundUpload(f);
+                              }}
+                            />
+                            {roomBackgroundUploading ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                            {roomBackgroundUploading ? 'Uploading…' : 'Upload image'}
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setNewRoomBackgroundImage('')}
+                            className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <input
+                          value={newRoomBackgroundImage}
+                          onChange={(e) => setNewRoomBackgroundImage(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="https://... image url"
+                        />
+                        {newRoomBackgroundImage ? (
+                          <div className="h-24 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                            <img src={newRoomBackgroundImage} alt="" className="h-full w-full object-contain" />
+                          </div>
+                        ) : null}
+                      </div>
                     </Field>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <Field label="Session Date">
@@ -2480,6 +2841,46 @@ export function AdminDashboard({
                       </div>
                       <Field label="Description">
                         <textarea value={newRoomDesc} onChange={(e) => setNewRoomDesc(e.target.value)} rows={3} className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Brief room description..." />
+                      </Field>
+                      <Field label="Background Image">
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2">
+                            <label className={`inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold cursor-pointer hover:bg-slate-50 ${roomBackgroundUploading ? 'opacity-60' : ''}`}>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                disabled={roomBackgroundUploading}
+                                onChange={async (e) => {
+                                  const f = e.target.files?.[0];
+                                  e.currentTarget.value = '';
+                                  if (!f) return;
+                                  await handleRoomBackgroundUpload(f);
+                                }}
+                              />
+                              {roomBackgroundUploading ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}
+                              {roomBackgroundUploading ? 'Uploading…' : 'Upload image'}
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setNewRoomBackgroundImage('')}
+                              className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                          <input
+                            value={newRoomBackgroundImage}
+                            onChange={(e) => setNewRoomBackgroundImage(e.target.value)}
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="https://... image url"
+                          />
+                          {newRoomBackgroundImage ? (
+                            <div className="h-24 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                              <img src={newRoomBackgroundImage} alt="" className="h-full w-full object-contain" />
+                            </div>
+                          ) : null}
+                        </div>
                       </Field>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <Field label="Session Date">
@@ -3305,6 +3706,53 @@ export function AdminDashboard({
             </div>
 
             <div className="space-y-6 p-5">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 flex-col items-center text-center sm:flex-row sm:items-center sm:text-left">
+                    <div className="mb-2 flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white sm:mb-0 sm:mr-3 sm:h-16 sm:w-16">
+                      {getRegistrationProfileImage(editingRegistration) ? (
+                        <img
+                          src={getRegistrationProfileImage(editingRegistration)}
+                          alt={editingRegistration.fullName || 'Participant'}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-base font-black text-slate-600">{getInitials(editingRegistration.fullName || '')}</span>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-lg font-black text-slate-900">{editingRegistration.fullName || '—'}</p>
+                      <p className="truncate text-sm text-slate-500">{editingRegistration.email || '—'}</p>
+                      <div className="mt-1 flex justify-center sm:justify-start">
+                        <StatusBadge status={editingRegistration.status || 'pending'} />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="w-full rounded-xl border border-slate-200 bg-white p-3 sm:max-w-[220px]">
+                    <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Proof of payment</p>
+                    {proofPreviewLoading ? (
+                      <p className="text-xs text-slate-400">Loading preview...</p>
+                    ) : proofPreviewUrl ? (
+                      <a href={proofPreviewUrl} target="_blank" rel="noopener noreferrer" className="block">
+                        <img src={proofPreviewUrl} alt="Proof of payment" className="h-24 w-full rounded-lg border border-slate-200 bg-slate-100 object-contain" />
+                      </a>
+                    ) : (
+                      <p className="text-xs text-slate-400">No proof uploaded</p>
+                    )}
+                    {getRegistrationProofRef(editingRegistration) ? (
+                      <button
+                        type="button"
+                        onClick={() => handleViewProof(getRegistrationProofRef(editingRegistration))}
+                        className="mt-2 inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-100"
+                      >
+                        <Eye size={13} />
+                        View file
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="Full Name">
                   <input

@@ -9,7 +9,6 @@ import {
   LogOut,
   Search,
   Bell,
-  QrCode,
   ChevronLeft,
   ChevronRight,
   MoreHorizontal,
@@ -57,7 +56,7 @@ import { getEntranceCalendarDateKey } from './entranceCheckInDay';
 import { registrationSectorEligibleForMeal } from './mealEligibility';
 import { MealEntitlementCard } from './MealEntitlementCard';
 import { QrScanModal } from './QrScanModal';
-import { formatSessionDateTime } from './sessionRoomUtils';
+import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason } from './sessionRoomUtils';
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Types
@@ -265,7 +264,13 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   // â”€â”€ Detail modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [breakoutSearch, setBreakoutSearch] = React.useState('');
   const [breakoutDateFilter, setBreakoutDateFilter] = React.useState<string>('all');
+  const [breakoutAvailabilityFilter, setBreakoutAvailabilityFilter] = React.useState<'all' | 'open' | 'closed'>('all');
   const [breakoutDetailRoom, setBreakoutDetailRoom] = React.useState<Room | null>(null);
+  const [calendarSearch, setCalendarSearch] = React.useState('');
+  const [calendarDateFilter, setCalendarDateFilter] = React.useState<string>('all');
+  const [entranceDateFilter, setEntranceDateFilter] = React.useState<string>('all');
+  const [entranceSearch, setEntranceSearch] = React.useState('');
+  const [entranceRoleFilter, setEntranceRoleFilter] = React.useState<string>('all');
 
   const [foodReportSearch, setFoodReportSearch] = React.useState('');
   const [foodReportMealType, setFoodReportMealType] = React.useState<string>('all');
@@ -278,7 +283,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const [selectedParticipant, setSelectedParticipant] = React.useState<ParticipantReg | null>(null);
 
   // â”€â”€ QR Scan state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  type ScanMode = { type: 'entrance' } | { type: 'room'; room: Room };
+  type ScanMode = { type: 'entrance' };
   const [scanMode,    setScanMode]    = React.useState<ScanMode | null>(null);
   const [scanLoading, setScanLoading] = React.useState(false);
 
@@ -445,18 +450,65 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     return Array.from(keys).sort();
   }, [rooms]);
 
+  const calendarRoomDates = React.useMemo(() => {
+    const keys = new Set<string>();
+    for (const r of rooms) {
+      const raw = r.sessionDate ? String(r.sessionDate).split('T')[0] : '';
+      if (raw) keys.add(raw);
+    }
+    return Array.from(keys).sort();
+  }, [rooms]);
+
+  const filteredCalendarRooms = React.useMemo(() => {
+    const q = calendarSearch.trim().toLowerCase();
+    return rooms.filter((r) => {
+      const dateKey = r.sessionDate ? String(r.sessionDate).split('T')[0] : '';
+      if (calendarDateFilter !== 'all' && dateKey !== calendarDateFilter) return false;
+      if (!q) return true;
+      const name = (r.name || '').toLowerCase();
+      const venue = (r.venue || '').toLowerCase();
+      const presenter = (r.presenter || '').toLowerCase();
+      const presenters = (r.presenterNames || []).join(' ').toLowerCase();
+      return name.includes(q) || venue.includes(q) || presenter.includes(q) || presenters.includes(q);
+    });
+  }, [rooms, calendarSearch, calendarDateFilter]);
+
   const filteredBreakoutRooms = React.useMemo(() => {
     const q = breakoutSearch.trim().toLowerCase();
     return rooms.filter((r) => {
       const dateKey = r.sessionDate ? String(r.sessionDate).split('T')[0] : '';
       if (breakoutDateFilter !== 'all' && dateKey !== breakoutDateFilter) return false;
+      const blocked = !!getBreakoutRoomScheduleBlockReason(r, new Date());
+      if (breakoutAvailabilityFilter === 'open' && blocked) return false;
+      if (breakoutAvailabilityFilter === 'closed' && !blocked) return false;
       if (!q) return true;
       const name = (r.name || '').toLowerCase();
       const venue = (r.venue || '').toLowerCase();
       const pres = (r.presenterNames || []).join(' ').toLowerCase();
       return name.includes(q) || venue.includes(q) || pres.includes(q);
     });
-  }, [rooms, breakoutSearch, breakoutDateFilter]);
+  }, [rooms, breakoutSearch, breakoutDateFilter, breakoutAvailabilityFilter]);
+
+  const breakoutRoomsByDate = React.useMemo(() => {
+    const groups = new Map<string, Room[]>();
+    for (const room of filteredBreakoutRooms) {
+      const key = room.sessionDate ? String(room.sessionDate).split('T')[0] : 'unscheduled';
+      const arr = groups.get(key) || [];
+      arr.push(room);
+      groups.set(key, arr);
+    }
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => {
+        if (a === 'unscheduled') return 1;
+        if (b === 'unscheduled') return -1;
+        return a.localeCompare(b);
+      })
+      .map(([dateKey, roomsInDate]) => ({
+        dateKey,
+        label: dateKey === 'unscheduled' ? 'Unscheduled' : dateKey,
+        rooms: roomsInDate,
+      }));
+  }, [filteredBreakoutRooms]);
 
   const filteredFoodReportClaims = React.useMemo(() => {
     return allFoodClaims.filter((c) => {
@@ -489,6 +541,51 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       );
     });
   }, [allFoodClaims, foodReportSearch, foodReportMealType, foodReportSector, foodReportDateFrom, foodReportDateTo]);
+
+  const entranceCheckInDates = React.useMemo(() => {
+    const keys = new Set<string>();
+    for (const a of attendance) {
+      if (a.type !== 'entrance') continue;
+      const dt = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || Date.now());
+      const key = dt.toISOString().slice(0, 10);
+      keys.add(key);
+    }
+    return Array.from(keys).sort().reverse();
+  }, [attendance]);
+
+  const entranceRoleOptions = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const p of participants) {
+      if (p.sector) set.add(p.sector);
+    }
+    return Array.from(set).sort();
+  }, [participants]);
+
+  const filteredEntranceCheckIns = React.useMemo(() => {
+    const allEntrance = attendance.filter((a) => a.type === 'entrance');
+    const byDay = allEntrance.filter((a) => {
+      if (entranceDateFilter === 'all') return true;
+      const dt = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || Date.now());
+      return dt.toISOString().slice(0, 10) === entranceDateFilter;
+    });
+    const q = entranceSearch.trim().toLowerCase();
+    const byRoleAndSearch = byDay.filter((a) => {
+      const p = participants.find((pp) => pp.uid === a.uid);
+      if (entranceRoleFilter !== 'all' && (p?.sector || '') !== entranceRoleFilter) return false;
+      if (!q) return true;
+      const name = (p?.fullName || '').toLowerCase();
+      const sector = (p?.sector || '').toLowerCase();
+      const uid = (a.uid || '').toLowerCase();
+      return name.includes(q) || sector.includes(q) || uid.includes(q);
+    });
+    return byRoleAndSearch
+      .slice()
+      .sort((a, b) => {
+        const ad = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt || 0).getTime();
+        const bd = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt || 0).getTime();
+        return bd - ad;
+      });
+  }, [attendance, entranceDateFilter, entranceSearch, entranceRoleFilter, participants]);
 
   const foodReportTotalPages = Math.max(1, Math.ceil(filteredFoodReportClaims.length / FOOD_REPORT_PAGE));
   const foodReportSlice = filteredFoodReportClaims.slice(
@@ -707,41 +804,23 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
         return;
       }
 
-      if (scanMode.type === 'entrance') {
-        const docId = `${uid}_entrance`;
-        await setDoc(
-          doc(db, 'attendance', docId),
-          {
-            uid,
-            type: 'entrance',
-            entranceDateKey: getEntranceCalendarDateKey(),
-            recordedBy: user.uid,
-            createdAt: Timestamp.now(),
-          },
-          { merge: true },
-        );
-        setAttendance((prev) => {
-          const filtered = prev.filter((a) => a.id !== docId);
-          return [...filtered, { id: docId, uid, type: 'entrance', createdAt: Timestamp.now() }];
-        });
-        showToast(`âœ… ${pName} â€” Entrance check-in recorded!`);
-      } else {
-        const room = scanMode.room;
-        const hasReservation = reservations.some((r) => r.uid === uid && r.roomId === room.id);
-        if (!hasReservation) {
-          showToast(`âš ï¸ ${pName} has no reservation for "${room.name}".`, false);
-        } else {
-          const docId = `${uid}_${room.id}`;
-          await setDoc(doc(db, 'attendance', docId), {
-            uid, type: 'room', roomId: room.id, roomName: room.name, recordedBy: user.uid, createdAt: Timestamp.now(),
-          }, { merge: true });
-          setAttendance((prev) => {
-            const f = prev.filter((a) => a.id !== docId);
-            return [...f, { id: docId, uid, type: 'room', roomId: room.id, createdAt: Timestamp.now() }];
-          });
-          showToast(`âœ… ${pName} â€” Checked into "${room.name}"!`);
-        }
-      }
+      const docId = `${uid}_entrance`;
+      await setDoc(
+        doc(db, 'attendance', docId),
+        {
+          uid,
+          type: 'entrance',
+          entranceDateKey: getEntranceCalendarDateKey(),
+          recordedBy: user.uid,
+          createdAt: Timestamp.now(),
+        },
+        { merge: true },
+      );
+      setAttendance((prev) => {
+        const filtered = prev.filter((a) => a.id !== docId);
+        return [...filtered, { id: docId, uid, type: 'entrance', createdAt: Timestamp.now() }];
+      });
+      showToast(`âœ… ${pName} â€” Entrance check-in recorded!`);
     } catch (err) {
       console.error(err);
       showToast('âŒ Failed to process QR. Try again.', false);
@@ -767,8 +846,6 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     { id: 'overview'      as Tab, label: 'Overview',        icon: <LayoutDashboard size={19} /> },
     { id: 'analytics'     as Tab, label: 'Analytics',       icon: <BarChart3 size={19} /> },
     { id: 'participants'  as Tab, label: 'Participants',     icon: <Users size={19} /> },
-    { id: 'accommodations'as Tab, label: 'Accommodations',  icon: <BedDouble size={19} /> },
-    { id: 'travel'        as Tab, label: 'Travel Schedule',  icon: <Plane size={19} /> },
     { id: 'meals'         as Tab, label: 'My entitlements', icon: <Utensils size={19} /> },
     { id: 'calendar'      as Tab, label: 'Event Calendar',   icon: <CalendarDays size={19} /> },
     { id: 'breakouts'     as Tab, label: 'Breakout rooms',   icon: <DoorOpen size={19} /> },
@@ -797,6 +874,9 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     foodReports:    'Food & booths',
     profile:        'My Profile',
   };
+
+  const headerNeedsStackedLayout =
+    activeTab === 'participants' || activeTab === 'breakouts' || activeTab === 'foodReports';
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
@@ -841,6 +921,14 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           ))}
           <div className="pt-6">
             <p className="px-4 text-[9px] font-black text-slate-300 uppercase tracking-widest mb-2">Support</p>
+            <button type="button" onClick={() => { setActiveTab('accommodations'); setSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === 'accommodations' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-600 hover:bg-slate-100'}`}>
+              <BedDouble size={19} /><span>Accommodations</span>
+            </button>
+            <button type="button" onClick={() => { setActiveTab('travel'); setSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === 'travel' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-600 hover:bg-slate-100'}`}>
+              <Plane size={19} /><span>Travel Schedule</span>
+            </button>
             <button type="button" onClick={() => { setActiveTab('profile'); setSidebarOpen(false); }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === 'profile' ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'text-slate-600 hover:bg-slate-100'}`}>
               <Settings size={19} /><span>Profile & Settings</span>
@@ -876,7 +964,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       <main className="flex-1 flex flex-col overflow-hidden min-w-0">
 
         {/* Top header — wraps on narrow screens; export always tappable */}
-        <header className="min-h-16 shrink-0 bg-white border-b border-slate-200 px-3 sm:px-6 py-2 sm:py-0 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:h-16">
+        <header className={`min-h-16 shrink-0 bg-white border-b border-slate-200 px-3 sm:px-6 ${headerNeedsStackedLayout ? 'py-2 sm:py-0 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:h-16' : 'py-0 h-16 flex items-center justify-between'}`}>
           <div className="flex items-center gap-2 sm:gap-4 min-w-0 flex-wrap">
             <button type="button" onClick={() => setSidebarOpen(true)} className="lg:hidden w-9 h-9 flex items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 touch-manipulation shrink-0">
               <Menu size={20} />
@@ -907,8 +995,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
               </>
             )}
           </div>
-          <div className="flex items-center gap-2 flex-wrap justify-end w-full sm:w-auto min-w-0">
-            {(activeTab === 'participants' || activeTab === 'overview') && (
+          <div className={`flex items-center gap-2 flex-wrap justify-end min-w-0 ${headerNeedsStackedLayout ? 'w-full sm:w-auto' : 'w-auto'}`}>
+            {activeTab === 'participants' && (
               <div className="relative flex-1 min-w-0 sm:flex-initial sm:max-w-[14rem]">
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                 <input value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
@@ -980,10 +1068,6 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
               <Bell size={17} />
               {pendingCount > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 rounded-full text-[9px] text-white font-black flex items-center justify-center">{pendingCount}</span>}
             </button>
-            <button type="button" onClick={() => setScanMode({ type: 'entrance' })}
-              className="flex items-center gap-2 px-3 sm:px-4 py-2.5 sm:py-2 bg-blue-600 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-blue-200 hover:bg-blue-700 transition-colors touch-manipulation shrink-0">
-              <ScanLine size={15} /><span className="hidden sm:inline">Scan Entrance</span><span className="sm:hidden">Scan</span>
-            </button>
           </div>
         </header>
 
@@ -1029,12 +1113,49 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
 
               {/* Recent Activity */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                <h3 className="text-base font-black mb-4">Recent Entrance Check-ins</h3>
-                {attendance.filter((a) => a.type === 'entrance').length === 0 ? (
+                <div className="mb-4 flex flex-col gap-2">
+                  <h3 className="text-base font-black">Recent Entrance Check-ins</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                      <input
+                        value={entranceSearch}
+                        onChange={(e) => setEntranceSearch(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Search name, role, UID"
+                      />
+                    </div>
+                    <select
+                      value={entranceRoleFilter}
+                      onChange={(e) => setEntranceRoleFilter(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                    >
+                      <option value="all">All roles</option>
+                      {entranceRoleOptions.map((role) => (
+                        <option key={role} value={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={entranceDateFilter}
+                      onChange={(e) => setEntranceDateFilter(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                    >
+                      <option value="all">All days</option>
+                      {entranceCheckInDates.map((d) => (
+                        <option key={d} value={d}>
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {filteredEntranceCheckIns.length === 0 ? (
                   <p className="text-sm text-slate-400 py-4 text-center">No check-ins recorded yet. Use "Scan Entrance" to begin.</p>
                 ) : (
-                  <div className="space-y-3">
-                    {attendance.filter((a) => a.type === 'entrance').slice(-5).reverse().map((a) => {
+                  <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                    {filteredEntranceCheckIns.map((a) => {
                       const p = participants.find((pp) => pp.uid === a.uid);
                       const date = a.createdAt?.toDate ? a.createdAt.toDate() : new Date();
                       return (
@@ -1044,7 +1165,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             : <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p?.fullName || '')}`}>{initials(p?.fullName || '??')}</div>}
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold">{p?.fullName || a.uid}</p>
-                            <p className="text-[11px] text-slate-400">{p?.sector || 'â€”'}</p>
+                            <p className="text-[11px] text-slate-400">{p?.sector || '—'}</p>
                           </div>
                           <p className="text-xs text-slate-400 shrink-0">{date.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit', hour12: true })}</p>
                           <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
@@ -1218,9 +1339,27 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                               {p.profilePictureUrl
                                 ? <img src={p.profilePictureUrl} alt={p.fullName} className="w-10 h-10 rounded-full object-cover" />
                                 : <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p.fullName)}`}>{initials(p.fullName)}</div>}
-                              <div>
+                              <div className="min-w-0">
                                 <p className="font-bold text-sm">{p.fullName}</p>
                                 <p className="text-xs text-slate-400">{shortId(p.id)}</p>
+                                <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                                  Role: {p.sector || 'Participant'}
+                                </p>
+                                {(p.positionTitle || p.sectorOffice) && (
+                                  <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                                    {[p.positionTitle, p.sectorOffice].filter(Boolean).join(' • ')}
+                                  </p>
+                                )}
+                                {(p.accommodationHotel || p.accommodationRoom) && (
+                                  <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                                    Stay: {p.accommodationHotel || '—'}{p.accommodationRoom ? ` (${p.accommodationRoom})` : ''}
+                                  </p>
+                                )}
+                                {(p.flightRoute || p.flightNumber || p.transportMode || p.arrivalTime) && (
+                                  <p className={`text-[11px] mt-0.5 truncate ${p.travelDelay ? 'text-red-500' : 'text-slate-500'}`}>
+                                    Travel: {p.flightRoute || p.transportMode || '—'}{p.flightNumber ? ` (${p.flightNumber})` : ''}{p.arrivalTime ? ` • ${p.arrivalTime}` : ''}
+                                  </p>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -1345,56 +1484,86 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 <h2 className="text-xl font-black">Travel Schedule</h2>
                 <p className="text-slate-400 text-sm mt-1">Flight and ground transport details for all attendees</p>
               </div>
-              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-50 text-slate-400 text-[11px] uppercase tracking-wider">
-                    <tr>
-                      <th className="px-6 py-4 font-semibold">Name &amp; ID</th>
-                      <th className="px-5 py-4 font-semibold">Role</th>
-                      <th className="px-5 py-4 font-semibold">Travel / Flight</th>
-                      <th className="px-5 py-4 font-semibold">Arrival</th>
-                      <th className="px-5 py-4 font-semibold">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {participants.filter((p) => p.status === 'approved').map((p) => {
-                      const sb = statusBadge(p);
-                      return (
-                        <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4">
-                            <div className="flex items-center gap-3">
-                              {p.profilePictureUrl
-                                ? <img src={p.profilePictureUrl} alt={p.fullName} className="w-9 h-9 rounded-full object-cover" />
-                                : <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p.fullName)}`}>{initials(p.fullName)}</div>}
-                              <div>
-                                <p className="font-bold text-sm">{p.fullName}</p>
-                                <p className="text-[11px] text-slate-400">{shortId(p.id)}</p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-5 py-4"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${sectorBadge(p.sector)}`}>{p.sector || 'Participant'}</span></td>
-                          <td className="px-5 py-4">
-                            {p.flightRoute || p.flightNumber ? (
-                              <div className="flex items-center gap-2">
-                                {p.travelDelay ? <AlertTriangle size={14} className="text-red-500 shrink-0" /> : <Plane size={14} className="text-slate-400 shrink-0" />}
+              <div className="md:hidden space-y-3">
+                {participants.filter((p) => p.status === 'approved').map((p) => {
+                  const sb = statusBadge(p);
+                  const travelText = [p.flightRoute || p.transportMode || '—', p.flightNumber ? `(${p.flightNumber})` : ''].filter(Boolean).join(' ');
+                  return (
+                    <div key={p.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+                      <div className="flex items-center gap-3">
+                        {p.profilePictureUrl
+                          ? <img src={p.profilePictureUrl} alt={p.fullName} className="w-9 h-9 rounded-full object-cover" />
+                          : <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p.fullName)}`}>{initials(p.fullName)}</div>}
+                        <div className="min-w-0">
+                          <p className="font-bold text-sm truncate">{p.fullName}</p>
+                          <p className="text-[11px] text-slate-400">{shortId(p.id)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${sectorBadge(p.sector)}`}>{p.sector || 'Participant'}</span>
+                        <span className={`text-xs font-bold ${sb.cls}`}>{sb.label}</span>
+                      </div>
+                      <div className="mt-3 text-sm">
+                        <p className={`font-medium ${p.travelDelay ? 'text-red-500' : 'text-slate-800'}`}>{travelText}</p>
+                        <p className="text-xs text-slate-500 mt-1">{p.arrivalTime || '—'}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden md:block bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto overscroll-x-contain touch-pan-x [-webkit-overflow-scrolling:touch]">
+                  <table className="w-full text-left min-w-[760px]">
+                    <thead className="bg-slate-50 text-slate-400 text-[11px] uppercase tracking-wider">
+                      <tr>
+                        <th className="px-6 py-4 font-semibold">Name &amp; ID</th>
+                        <th className="px-5 py-4 font-semibold">Role</th>
+                        <th className="px-5 py-4 font-semibold">Travel / Flight</th>
+                        <th className="px-5 py-4 font-semibold">Arrival</th>
+                        <th className="px-5 py-4 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {participants.filter((p) => p.status === 'approved').map((p) => {
+                        const sb = statusBadge(p);
+                        const hasTravel = !!(p.flightRoute || p.flightNumber || p.transportMode);
+                        return (
+                          <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-3">
+                                {p.profilePictureUrl
+                                  ? <img src={p.profilePictureUrl} alt={p.fullName} className="w-9 h-9 rounded-full object-cover" />
+                                  : <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${avatarColors(p.fullName)}`}>{initials(p.fullName)}</div>}
                                 <div>
-                                  <p className={`text-sm font-medium ${p.travelDelay ? 'text-red-500' : ''}`}>{p.flightRoute || p.transportMode || 'â€”'} {p.flightNumber ? `(${p.flightNumber})` : ''}</p>
+                                  <p className="font-bold text-sm">{p.fullName}</p>
+                                  <p className="text-[11px] text-slate-400">{shortId(p.id)}</p>
                                 </div>
                               </div>
-                            ) : <span className="text-sm text-slate-300">â€”</span>}
-                          </td>
-                          <td className="px-5 py-4 text-sm text-slate-500">{p.arrivalTime || <span className="text-slate-300">â€”</span>}</td>
-                          <td className="px-5 py-4">
-                            <div className={`flex items-center gap-1.5 ${sb.cls}`}>
-                              <div className="w-1.5 h-1.5 rounded-full bg-current" />
-                              <span className="text-xs font-bold">{sb.label}</span>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                            </td>
+                            <td className="px-5 py-4"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${sectorBadge(p.sector)}`}>{p.sector || 'Participant'}</span></td>
+                            <td className="px-5 py-4">
+                              {hasTravel ? (
+                                <div className="flex items-center gap-2">
+                                  {p.travelDelay ? <AlertTriangle size={14} className="text-red-500 shrink-0" /> : <Plane size={14} className="text-slate-400 shrink-0" />}
+                                  <div>
+                                    <p className={`text-sm font-medium ${p.travelDelay ? 'text-red-500' : ''}`}>{p.flightRoute || p.transportMode || '—'} {p.flightNumber ? `(${p.flightNumber})` : ''}</p>
+                                  </div>
+                                </div>
+                              ) : <span className="text-sm text-slate-300">—</span>}
+                            </td>
+                            <td className="px-5 py-4 text-sm text-slate-500">{p.arrivalTime || <span className="text-slate-300">—</span>}</td>
+                            <td className="px-5 py-4">
+                              <div className={`flex items-center gap-1.5 ${sb.cls}`}>
+                                <div className="w-1.5 h-1.5 rounded-full bg-current" />
+                                <span className="text-xs font-bold">{sb.label}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}
@@ -1435,32 +1604,71 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {/* â•â• CALENDAR (Rooms / Sessions) â•â• */}
           {activeTab === 'calendar' && (
             <div>
-              <div className="mb-5">
-                <h2 className="text-xl font-black">Event Calendar â€” Session Rooms</h2>
-                <p className="text-slate-400 text-sm mt-1">Monitor session capacity and scan room attendance</p>
+              <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-black">Event Calendar â€” Session Rooms</h2>
+                  <p className="text-slate-400 text-sm mt-1">Monitor session capacity and attendance by day</p>
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <div className="relative w-full sm:w-56">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    <input
+                      value={calendarSearch}
+                      onChange={(e) => setCalendarSearch(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Search session, venue, speaker"
+                    />
+                  </div>
+                  <select
+                    value={calendarDateFilter}
+                    onChange={(e) => setCalendarDateFilter(e.target.value)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                  >
+                    <option value="all">All dates</option>
+                    {calendarRoomDates.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              {rooms.length === 0 ? (
+              {filteredCalendarRooms.length === 0 ? (
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm py-16 text-center text-slate-400">
                   <CalendarDays size={40} className="mx-auto mb-3 text-slate-200" />
-                  <p className="font-medium">No session rooms set up yet</p>
-                  <p className="text-sm mt-1">Contact the event admin to create rooms.</p>
+                  <p className="font-medium">No session rooms match your filters.</p>
+                  <p className="text-sm mt-1">Try a different day or search term.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {rooms.map((room) => {
+                  {filteredCalendarRooms.map((room) => {
                     const roomReservations = reservations.filter((r) => r.roomId === room.id);
                     const roomAttendees    = attendance.filter((a) => a.type === 'room' && a.roomId === room.id);
                     const cap              = room.capacity || 0;
                     const pct              = cap > 0 ? Math.min(100, (roomReservations.length / cap) * 100) : 0;
                     return (
                       <div key={room.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col gap-4">
-                        <div className="flex items-start gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0"><BookOpen size={18} className="text-blue-600" /></div>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-black text-base leading-tight">{room.name}</p>
-                            {room.presenter && <p className="text-xs text-slate-400 mt-0.5">Presenter: {room.presenter}</p>}
-                            {room.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{room.description}</p>}
+                        {room.backgroundImage ? (
+                          <div className="relative h-28 rounded-xl overflow-hidden">
+                            <img src={room.backgroundImage} alt={`${room.name} background`} className="absolute inset-0 w-full h-full object-cover" />
+                            <div className="absolute inset-0 bg-slate-900/35" />
+                            <div className="absolute left-3 right-3 bottom-2">
+                              <p className="font-black text-white text-base leading-tight drop-shadow-sm">{room.name}</p>
+                            </div>
                           </div>
+                        ) : (
+                          <div className="flex items-start gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0"><BookOpen size={18} className="text-blue-600" /></div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-black text-base leading-tight">{room.name}</p>
+                            </div>
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          {room.presenter && <p className="text-xs text-slate-500 mt-0.5">Presenter: {room.presenter}</p>}
+                          {room.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{room.description}</p>}
+                          <p className="text-xs text-slate-400 mt-1">{formatSessionDateTime(room)}</p>
+                          {room.venue ? <p className="text-xs text-slate-400 mt-0.5">Venue: {room.venue}</p> : null}
                         </div>
                         <div>
                           <div className="flex justify-between text-xs font-medium text-slate-500 mb-1">
@@ -1475,9 +1683,9 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                           <div className="flex items-center gap-1.5 text-xs text-slate-400">
                             <CheckCircle2 size={13} className="text-emerald-500" />{roomAttendees.length} checked in
                           </div>
-                          <button type="button" onClick={() => setScanMode({ type: 'room', room })}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-full text-xs font-bold hover:bg-blue-100 transition-colors">
-                            <QrCode size={13} /> Scan Room
+                          <button type="button" onClick={() => setBreakoutDetailRoom(room)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors">
+                            View details
                           </button>
                         </div>
                       </div>
@@ -1493,9 +1701,18 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
               <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
                 <div>
                   <h2 className="text-xl font-black">Breakout sessions</h2>
-                  <p className="text-slate-400 text-sm mt-1">Reservations, room check-ins, and who attended</p>
+                  <p className="text-slate-400 text-sm mt-1">Grouped by day with reservation and attendance details</p>
                 </div>
                 <div className="flex flex-wrap gap-2 items-center">
+                  <div className="relative w-full sm:w-56">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    <input
+                      value={breakoutSearch}
+                      onChange={(e) => setBreakoutSearch(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Search session, venue, speaker"
+                    />
+                  </div>
                   <select
                     value={breakoutDateFilter}
                     onChange={(e) => setBreakoutDateFilter(e.target.value)}
@@ -1508,6 +1725,15 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                       </option>
                     ))}
                   </select>
+                  <select
+                    value={breakoutAvailabilityFilter}
+                    onChange={(e) => setBreakoutAvailabilityFilter(e.target.value as 'all' | 'open' | 'closed')}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                  >
+                    <option value="all">All windows</option>
+                    <option value="open">Within schedule</option>
+                    <option value="closed">Outside schedule</option>
+                  </select>
                 </div>
               </div>
               {filteredBreakoutRooms.length === 0 ? (
@@ -1517,108 +1743,125 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 </div>
               ) : (
                 <>
-                  <div className="md:hidden space-y-3">
-                    {filteredBreakoutRooms.map((room) => {
-                      const roomRes = reservations.filter((r) => r.roomId === room.id);
-                      const roomAtt = attendance.filter((a) => a.type === 'room' && a.roomId === room.id);
-                      const uniqueIn = new Set(roomAtt.map((a) => a.uid)).size;
-                      return (
-                        <div key={room.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
-                          <p className="font-bold text-slate-900">{room.name}</p>
-                          {room.presenterNames?.length ? (
-                            <p className="text-xs text-slate-500 mt-1">{room.presenterNames.join(', ')}</p>
-                          ) : null}
-                          <p className="text-sm text-slate-600 mt-2">{formatSessionDateTime(room)}</p>
-                          {room.venue ? <p className="text-xs text-slate-500 mt-0.5">{room.venue}</p> : null}
-                          <div className="flex flex-wrap gap-3 mt-3 text-sm">
-                            <span>
-                              <span className="text-slate-500">Reserved </span>
-                              <span className="font-semibold">{roomRes.length}</span>
-                            </span>
-                            <span>
-                              <span className="text-slate-500">Checked in </span>
-                              <span className="font-semibold text-emerald-700">{uniqueIn}</span>
-                              <span className="text-slate-400 text-xs"> unique</span>
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap gap-2 mt-4">
-                            <button
-                              type="button"
-                              onClick={() => setBreakoutDetailRoom(room)}
-                              className="flex-1 min-w-[8rem] py-2.5 rounded-xl border border-slate-200 text-blue-600 font-bold text-sm touch-manipulation"
-                            >
-                              View names
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setScanMode({ type: 'room', room })}
-                              className="flex-1 min-w-[8rem] inline-flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-blue-50 text-blue-700 text-sm font-bold touch-manipulation"
-                            >
-                              <QrCode size={14} /> Scan
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="overflow-x-auto overscroll-x-contain touch-pan-x [-webkit-overflow-scrolling:touch]">
-                    <table className="w-full text-left text-sm min-w-[720px]">
-                      <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider">
-                        <tr>
-                          <th className="px-4 py-3 font-semibold">Session</th>
-                          <th className="px-4 py-3 font-semibold hidden md:table-cell">When</th>
-                          <th className="px-4 py-3 font-semibold hidden lg:table-cell">Venue</th>
-                          <th className="px-4 py-3 font-semibold">Reserved</th>
-                          <th className="px-4 py-3 font-semibold">Checked in</th>
-                          <th className="px-4 py-3 font-semibold text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filteredBreakoutRooms.map((room) => {
+                  {breakoutRoomsByDate.map((group) => (
+                    <section key={group.dateKey} className="mb-5 last:mb-0">
+                      <div className="mb-2 flex items-center justify-between">
+                        <h3 className="text-sm font-black text-slate-700">{group.label}</h3>
+                        <span className="text-[11px] text-slate-400">{group.rooms.length} session{group.rooms.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="md:hidden space-y-3">
+                        {group.rooms.map((room) => {
                           const roomRes = reservations.filter((r) => r.roomId === room.id);
                           const roomAtt = attendance.filter((a) => a.type === 'room' && a.roomId === room.id);
                           const uniqueIn = new Set(roomAtt.map((a) => a.uid)).size;
+                          const capacity = Number(room.capacity || 0);
+                          const fillRate = capacity > 0 ? Math.round((roomRes.length / capacity) * 100) : 0;
                           return (
-                            <tr key={room.id} className="hover:bg-slate-50/60">
-                              <td className="px-4 py-3">
+                            <div key={room.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+                              {room.backgroundImage ? (
+                                <div className="relative h-28 rounded-xl overflow-hidden mb-3">
+                                  <img src={room.backgroundImage} alt={`${room.name} background`} className="absolute inset-0 w-full h-full object-cover" />
+                                  <div className="absolute inset-0 bg-slate-900/35" />
+                                  <div className="absolute left-3 bottom-2 right-3">
+                                    <p className="font-bold text-white leading-tight drop-shadow-sm">{room.name}</p>
+                                  </div>
+                                </div>
+                              ) : (
                                 <p className="font-bold text-slate-900">{room.name}</p>
-                                {room.presenterNames?.length ? (
-                                  <p className="text-xs text-slate-500 mt-0.5">{room.presenterNames.join(', ')}</p>
-                                ) : null}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 hidden md:table-cell whitespace-nowrap">
-                                {formatSessionDateTime(room)}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 hidden lg:table-cell">{room.venue || '—'}</td>
-                              <td className="px-4 py-3 font-semibold">{roomRes.length}</td>
-                              <td className="px-4 py-3">
-                                <span className="font-semibold text-emerald-700">{uniqueIn}</span>
-                                <span className="text-slate-400 text-xs"> unique</span>
-                              </td>
-                              <td className="px-4 py-3 text-right whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={() => setBreakoutDetailRoom(room)}
-                                  className="text-blue-600 font-bold text-xs hover:underline mr-2"
-                                >
-                                  View names
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setScanMode({ type: 'room', room })}
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-bold"
-                                >
-                                  <QrCode size={12} /> Scan
-                                </button>
-                              </td>
-                            </tr>
+                              )}
+                              {room.presenterNames?.length ? <p className="text-xs text-slate-500 mt-1">{room.presenterNames.join(', ')}</p> : null}
+                              <p className="text-sm text-slate-600 mt-2">{formatSessionDateTime(room)}</p>
+                              {room.venue ? <p className="text-xs text-slate-500 mt-0.5">Venue: {room.venue}</p> : null}
+                              <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+                                <div className="rounded-lg bg-slate-50 py-2">
+                                  <p className="text-[10px] text-slate-400">Reserved</p>
+                                  <p className="text-sm font-semibold">{roomRes.length}</p>
+                                </div>
+                                <div className="rounded-lg bg-slate-50 py-2">
+                                  <p className="text-[10px] text-slate-400">Checked in</p>
+                                  <p className="text-sm font-semibold text-emerald-700">{uniqueIn}</p>
+                                </div>
+                                <div className="rounded-lg bg-slate-50 py-2">
+                                  <p className="text-[10px] text-slate-400">Fill</p>
+                                  <p className="text-sm font-semibold">{capacity > 0 ? `${fillRate}%` : '—'}</p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setBreakoutDetailRoom(room)}
+                                className="w-full mt-3 py-2.5 rounded-xl border border-slate-200 text-blue-600 font-bold text-sm touch-manipulation"
+                              >
+                                View details
+                              </button>
+                            </div>
                           );
                         })}
-                      </tbody>
-                    </table>
-                  </div>
-                  </div>
+                      </div>
+                      <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="overflow-x-auto overscroll-x-contain touch-pan-x [-webkit-overflow-scrolling:touch]">
+                          <table className="w-full text-left text-sm min-w-[860px]">
+                            <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider">
+                              <tr>
+                                <th className="px-4 py-3 font-semibold">Session</th>
+                                <th className="px-4 py-3 font-semibold">When</th>
+                                <th className="px-4 py-3 font-semibold">Venue</th>
+                                <th className="px-4 py-3 font-semibold">Capacity</th>
+                                <th className="px-4 py-3 font-semibold">Reserved</th>
+                                <th className="px-4 py-3 font-semibold">Checked in</th>
+                                <th className="px-4 py-3 font-semibold">Fill rate</th>
+                                <th className="px-4 py-3 font-semibold text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {group.rooms.map((room) => {
+                                const roomRes = reservations.filter((r) => r.roomId === room.id);
+                                const roomAtt = attendance.filter((a) => a.type === 'room' && a.roomId === room.id);
+                                const uniqueIn = new Set(roomAtt.map((a) => a.uid)).size;
+                                const capacity = Number(room.capacity || 0);
+                                const fillRate = capacity > 0 ? Math.round((roomRes.length / capacity) * 100) : 0;
+                                return (
+                                  <tr key={room.id} className="hover:bg-slate-50/60">
+                                    <td className="px-4 py-3">
+                                      <div className="flex items-center gap-2">
+                                        {room.backgroundImage ? (
+                                          <img
+                                            src={room.backgroundImage}
+                                            alt={`${room.name} background`}
+                                            className="w-12 h-9 rounded-md object-cover border border-slate-200 shrink-0"
+                                          />
+                                        ) : (
+                                          <div className="w-12 h-9 rounded-md border border-slate-200 bg-slate-50 shrink-0" />
+                                        )}
+                                        <div className="min-w-0">
+                                          <p className="font-bold text-slate-900 truncate">{room.name}</p>
+                                          {room.presenterNames?.length ? <p className="text-xs text-slate-500 mt-0.5 truncate">{room.presenterNames.join(', ')}</p> : null}
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{formatSessionDateTime(room)}</td>
+                                    <td className="px-4 py-3 text-slate-600">{room.venue || '—'}</td>
+                                    <td className="px-4 py-3">{capacity || '—'}</td>
+                                    <td className="px-4 py-3 font-semibold">{roomRes.length}</td>
+                                    <td className="px-4 py-3 font-semibold text-emerald-700">{uniqueIn}</td>
+                                    <td className="px-4 py-3">{capacity > 0 ? `${fillRate}%` : '—'}</td>
+                                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                                      <button
+                                        type="button"
+                                        onClick={() => setBreakoutDetailRoom(room)}
+                                        className="text-blue-600 font-bold text-xs hover:underline"
+                                      >
+                                        View details
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </section>
+                  ))}
                 </>
               )}
             </div>
@@ -1688,7 +1931,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 </div>
               ) : (
                 <>
-                  <div className="md:hidden space-y-3">
+                  <div className="md:hidden space-y-3 max-h-80 overflow-y-auto pr-1">
                     {foodReportSlice.map((c) => {
                       const at =
                         c.claimedAt && typeof (c.claimedAt as { toDate?: () => Date }).toDate === 'function'
@@ -1729,7 +1972,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                     })}
                   </div>
                   <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto overscroll-x-contain touch-pan-x [-webkit-overflow-scrolling:touch]">
+                    <div className="overflow-auto max-h-[28rem] overscroll-contain [-webkit-overflow-scrolling:touch]">
                       <table className="w-full text-left text-sm min-w-[640px]">
                         <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider">
                           <tr>
@@ -1824,18 +2067,91 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
               {boothRegs.length > 0 && (
                 <div className="mt-8">
                   <h3 className="text-sm font-black text-slate-800 mb-3">Booth directory</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {boothRegs.map((b) => (
-                      <div key={b.id || b.uid} className="bg-white rounded-xl border border-slate-200 p-4 flex justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="font-bold text-slate-900 truncate">{b.fullName || b.uid}</p>
-                          <p className="text-xs text-slate-500">{b.sector || 'Booth'}</p>
-                        </div>
-                        {b.boothLocationDetails ? (
-                          <span className="text-xs font-semibold text-rose-700 shrink-0">{b.boothLocationDetails}</span>
-                        ) : null}
+                  <div className="space-y-5">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wide text-orange-600 mb-2">Food booths</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {boothRegs.filter((b) => (b.sector || '').toLowerCase().includes('food')).map((b) => {
+                          const boothBg = (b as any).backgroundImage || (b as any).boothBackgroundImage;
+                          const boothName = b.fullName || b.uid || 'Booth';
+                          const boothInitial = String(boothName).trim().charAt(0).toUpperCase() || 'B';
+                          return (
+                          <div key={`food-${b.id || b.uid}`} className="rounded-2xl border border-orange-200 bg-white shadow-sm overflow-hidden">
+                            {boothBg ? (
+                              <div className="relative h-36 overflow-hidden">
+                                <img src={boothBg} alt={`${b.fullName || b.uid} booth`} className="absolute inset-0 w-full h-full object-cover" />
+                                <div className="absolute inset-0 bg-slate-900/20" />
+                              </div>
+                            ) : (
+                              <div className="h-36 bg-gradient-to-r from-orange-100 to-orange-50" />
+                            )}
+                            <div className="p-4">
+                              <div className="flex items-start gap-3">
+                                {(b as any).profilePictureUrl ? (
+                                  <img src={(b as any).profilePictureUrl} alt={boothName} className="w-10 h-10 rounded-full object-cover ring-2 ring-white shadow-sm shrink-0" />
+                                ) : (
+                                  <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center text-xs font-black shrink-0">
+                                    {boothInitial}
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-bold text-slate-900 truncate">{boothName}</p>
+                                  <p className="text-sm text-slate-500">{b.sector || 'Food Booth'}</p>
+                                </div>
+                              </div>
+                              <div className="mt-3 text-sm text-slate-600 space-y-1">
+                                {(b as any).sectorOffice ? <p>{(b as any).sectorOffice}</p> : null}
+                                {(b as any).contactNumber ? <p className="text-[13px] text-slate-500">{(b as any).contactNumber}</p> : null}
+                                {b.boothLocationDetails ? <p className="text-[13px] text-indigo-500">Booth {b.boothLocationDetails}</p> : null}
+                              </div>
+                            </div>
+                          </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wide text-blue-600 mb-2">Exhibitor booths</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {boothRegs.filter((b) => !(b.sector || '').toLowerCase().includes('food')).map((b) => {
+                          const boothBg = (b as any).backgroundImage || (b as any).boothBackgroundImage;
+                          const boothName = b.fullName || b.uid || 'Booth';
+                          const boothInitial = String(boothName).trim().charAt(0).toUpperCase() || 'B';
+                          return (
+                          <div key={`exhibitor-${b.id || b.uid}`} className="rounded-2xl border border-blue-200 bg-white shadow-sm overflow-hidden">
+                            {boothBg ? (
+                              <div className="relative h-36 overflow-hidden">
+                                <img src={boothBg} alt={`${b.fullName || b.uid} booth`} className="absolute inset-0 w-full h-full object-cover" />
+                                <div className="absolute inset-0 bg-slate-900/20" />
+                              </div>
+                            ) : (
+                              <div className="h-36 bg-gradient-to-r from-blue-100 to-blue-50" />
+                            )}
+                            <div className="p-4">
+                              <div className="flex items-start gap-3">
+                                {(b as any).profilePictureUrl ? (
+                                  <img src={(b as any).profilePictureUrl} alt={boothName} className="w-10 h-10 rounded-full object-cover ring-2 ring-white shadow-sm shrink-0" />
+                                ) : (
+                                  <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center text-xs font-black shrink-0">
+                                    {boothInitial}
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-bold text-slate-900 truncate">{boothName}</p>
+                                  <p className="text-sm text-slate-500">{b.sector || 'Exhibitor Booth'}</p>
+                                </div>
+                              </div>
+                              <div className="mt-3 text-sm text-slate-600 space-y-1">
+                                {(b as any).sectorOffice ? <p>{(b as any).sectorOffice}</p> : null}
+                                {(b as any).contactNumber ? <p className="text-[13px] text-slate-500">{(b as any).contactNumber}</p> : null}
+                                {b.boothLocationDetails ? <p className="text-[13px] text-indigo-500">Booth {b.boothLocationDetails}</p> : null}
+                              </div>
+                            </div>
+                          </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2009,15 +2325,6 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
               </div>
             </div>
 
-            {/* Scan entrance shortcut */}
-            {!checkedInSet.has(selectedParticipant.uid) && (
-              <div className="p-5 border-t border-slate-100 shrink-0">
-                <button type="button" onClick={() => setScanMode({ type: 'entrance' })}
-                  className="w-full flex items-center justify-center gap-2 py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors">
-                  <ScanLine size={16} /> Mark Entrance (Scan)
-                </button>
-              </div>
-            )}
           </div>
         </>
       )}
@@ -2075,16 +2382,9 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                 </ul>
               </div>
             </div>
-            <div className="p-3 border-t border-slate-100 flex gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setScanMode({ type: 'room', room: breakoutDetailRoom });
-                  setBreakoutDetailRoom(null);
-                }}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700"
-              >
-                <QrCode size={16} /> Scan room QR
+            <div className="p-3 border-t border-slate-100">
+              <button type="button" onClick={() => setBreakoutDetailRoom(null)} className="w-full py-2.5 rounded-xl border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50">
+                Close
               </button>
             </div>
           </div>
@@ -2094,8 +2394,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• QR SCANNER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       {scanMode && (
         <QrScanModal
-          title={scanMode.type === 'entrance' ? 'Scan Entrance QR' : `Scan for: ${scanMode.room.name}`}
-          subtitle={scanMode.type === 'entrance' ? 'Scan participant digital ID to record main entrance check-in' : `Verify reservation and mark attendance for this room`}
+          title="Scan Entrance QR"
+          subtitle="Scan participant digital ID to record main entrance check-in"
           onClose={() => setScanMode(null)}
           onResult={handleScanResult}
         />
@@ -2114,26 +2414,57 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
       {idModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl">
-            <div className="bg-indigo-600 px-4 py-3 flex items-center justify-between">
-              <div><p className="text-white text-xs font-black tracking-widest uppercase">iSCENE 2026</p><p className="text-indigo-200 text-[10px]">Facilitator Staff Pass</p></div>
-              <button type="button" onClick={() => setIdModal(false)} className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white"><X size={14} /></button>
-            </div>
-            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50">
-              {profilePicUrl
-                ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-indigo-100 shadow-md" />
-                : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-indigo-100">{myInitials}</div>}
-              <h3 className="text-base font-black text-center">{fullName}</h3>
-              <p className="text-xs text-slate-500 mt-0.5">{registration?.sectorOffice || 'Facilitator'}</p>
-              <span className="mt-2 px-3 py-1 rounded-full bg-indigo-100 text-indigo-700 text-[11px] font-bold">Lead Facilitator</span>
-              <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100">
-                <img src={qrImgSrc} alt="QR" className="w-44 h-44" />
+            <div className="relative bg-blue-600 px-4 py-3">
+              <div className="text-center">
+                <p className="text-white text-sm font-black tracking-widest uppercase">iSCENE 2026</p>
+                <p className="text-blue-200 text-[10px]">International Smart &amp; Sustainable Cities Expo</p>
               </div>
-              <p className="mt-2 text-[11px] text-slate-400 font-mono tracking-widest">ID #{user.uid.slice(0, 8).toUpperCase()}</p>
+              <button
+                type="button"
+                onClick={() => setIdModal(false)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white"
+                aria-label="Close"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50 relative overflow-hidden">
+              <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden>
+                <div className="absolute -left-16 -top-16 w-[140%] h-[140%] -rotate-45">
+                  <div className="grid" style={{ gridTemplateColumns: 'repeat(10, 44px)', gridTemplateRows: 'repeat(12, 44px)' }}>
+                    {Array.from({ length: 12 * 10 }).map((_, i) => {
+                      const row = Math.floor(i / 10);
+                      const col = i % 10;
+                      return (
+                        <div key={i} className={`flex items-center justify-center ${row % 2 === 1 ? 'translate-x-[22px]' : ''}`}>
+                          <div className="w-8 h-8 animate-id-watermark-wave-glow flex items-center justify-center" style={{ animationDelay: `${col * 0.2}s` }}>
+                            <img src="/iscene.png" alt="" className="w-6 h-6 object-contain" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="relative z-10 flex flex-col items-center">
+                {profilePicUrl
+                  ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
+                  : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{myInitials}</div>}
+                <h3 className="text-base font-black text-slate-900 text-center">{fullName}</h3>
+                <p className="text-xs text-slate-500 mt-0.5 text-center">{registration?.positionTitle}{registration?.sectorOffice ? ` · ${registration.sectorOffice}` : ''}</p>
+                <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{registration?.sector || 'Facilitator'}</span>
+                <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+                  <img src={qrImgSrc} alt="Digital ID QR" className="w-44 h-44 relative z-10" />
+                </div>
+                <p className="mt-3 text-[11px] text-slate-500 font-mono tracking-widest text-center">
+                  ID <span className="text-slate-400">#</span>{user.uid.slice(0, 8).toUpperCase()}
+                </p>
+              </div>
             </div>
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-[10px] text-slate-400">April 9â€“11, 2026</span>
+              <span className="text-[10px] text-slate-400">April 9–11, 2026</span>
               <a href={`https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(qrData)}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:underline">
-                <Download size={11} /> Download
+                <Download size={11} /> Download QR
               </a>
             </div>
           </div>

@@ -240,6 +240,19 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
   const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
   const mealsBadgeDisplay = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
 
+  React.useEffect(() => {
+    let mealsAck: string | null = null;
+    let storageError: string | null = null;
+    try {
+      mealsAck = localStorage.getItem(`iscene_${user.uid}_badgeAck_exhibitor_meals`);
+    } catch (err) {
+      storageError = err instanceof Error ? err.message : 'localStorage_access_error';
+    }
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix-quick-actions',hypothesisId:'H2',location:'src/ExhibitorDashboard.tsx:quickActionBadges',message:'Exhibitor quick-action meals badge source vs persisted ack',data:{eligibleMeals:eligibleMeals.length,unclaimedMeals:mealsBadgeDisplay,hasMealsAck:mealsAck !== null,storageError},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [user.uid, eligibleMeals.length, mealsBadgeDisplay]);
+
   const boothChecklist = [
     { done: !!bgUrl, label: 'Banner background', hint: 'Wide image participants see at the top' },
     { done: !!boothDesc.trim(), label: 'Booth description', hint: 'Tell visitors what you offer' },
@@ -1769,24 +1782,52 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
       {idModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl">
-            <div className="bg-blue-600 px-4 py-3 flex items-center justify-between">
-              <div>
-                <p className="text-white text-xs font-black tracking-widest uppercase">iSCENE 2026</p>
-                <p className="text-blue-200 text-[10px]">{sectorLabel}</p>
+            <div className="relative bg-blue-600 px-4 py-3">
+              <div className="text-center">
+                <p className="text-white text-sm font-black tracking-widest uppercase">iSCENE 2026</p>
+                <p className="text-blue-200 text-[10px]">International Smart &amp; Sustainable Cities Expo</p>
               </div>
-              <button type="button" onClick={() => setIdModal(false)} className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white"><X size={14} /></button>
+              <button
+                type="button"
+                onClick={() => setIdModal(false)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white"
+                aria-label="Close"
+              >
+                <X size={14} />
+              </button>
             </div>
-            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50">
-              {profilePicUrl
-                ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
-                : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
-              <h3 className="text-base font-black text-center">{fullName}</h3>
-              <p className="text-xs text-slate-500 mt-0.5 text-center">{orgName}</p>
-              <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{sectorLabel}</span>
-              <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100">
-                <img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44" />
+            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50 relative overflow-hidden">
+              <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden>
+                <div className="absolute -left-16 -top-16 w-[140%] h-[140%] -rotate-45">
+                  <div className="grid" style={{ gridTemplateColumns: 'repeat(10, 44px)', gridTemplateRows: 'repeat(12, 44px)' }}>
+                    {Array.from({ length: 12 * 10 }).map((_, i) => {
+                      const row = Math.floor(i / 10);
+                      const col = i % 10;
+                      return (
+                        <div key={i} className={`flex items-center justify-center ${row % 2 === 1 ? 'translate-x-[22px]' : ''}`}>
+                          <div className="w-8 h-8 animate-id-watermark-wave-glow flex items-center justify-center" style={{ animationDelay: `${col * 0.2}s` }}>
+                            <img src="/iscene.png" alt="" className="w-6 h-6 object-contain" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
-              <p className="mt-2 text-[11px] text-slate-400 font-mono tracking-widest">ID #{idNumber}</p>
+              <div className="relative z-10 flex flex-col items-center">
+                {profilePicUrl
+                  ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
+                  : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
+                <h3 className="text-base font-black text-slate-900 text-center">{fullName}</h3>
+                <p className="text-xs text-slate-500 mt-0.5 text-center">{registration?.positionTitle}{orgName ? ` · ${orgName}` : ''}</p>
+                <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{sectorLabel}</span>
+                <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+                  <img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44 relative z-10" />
+                </div>
+                <p className="mt-3 text-[11px] text-slate-500 font-mono tracking-widest text-center">
+                  ID <span className="text-slate-400">#</span>{idNumber}
+                </p>
+              </div>
             </div>
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
               <span className="text-[10px] text-slate-400">April 9–11, 2026</span>

@@ -1061,6 +1061,32 @@ iSCENE 2026 Organizing Team</p>`,
     // Auth is known but the participant's Firestore registration is still loading
     (!isAdminPanelOpen && !isAdminVerified && !!adminUser && participantRegistrationLoading && registerStatus !== 'submitting');
 
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'white-screen-triage',hypothesisId:'W1',location:'src/App.tsx:sessionGate',message:'Session gate state changed',data:{authInitialized,isAdminPanelOpen,isAdminVerified,hasAdminUser:!!adminUser,participantRegistrationLoading,registerStatus,hasParticipantRegistration:!!participantRegistration,isRestoringSession},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [authInitialized, isAdminPanelOpen, isAdminVerified, adminUser, participantRegistrationLoading, registerStatus, participantRegistration, isRestoringSession]);
+
+  React.useEffect(() => {
+    const onError = (event: ErrorEvent) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'white-screen-triage',hypothesisId:'W2',location:'src/App.tsx:window:error',message:'Unhandled window error',data:{message:event.message,filename:event.filename,lineno:event.lineno,colno:event.colno},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'white-screen-triage',hypothesisId:'W3',location:'src/App.tsx:window:unhandledrejection',message:'Unhandled promise rejection',data:{reason:typeof reason === 'string' ? reason : (reason instanceof Error ? reason.message : 'unknown')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
+
   if (isRestoringSession) {
     return (
       <div className="min-h-dvh bg-slate-50 flex flex-col items-center justify-center gap-4 px-4">

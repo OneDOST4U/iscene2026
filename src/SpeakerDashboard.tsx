@@ -37,7 +37,6 @@ import {
   AlertTriangle,
   Plane,
   Hotel,
-  Luggage,
 } from 'lucide-react';
 import { User as FirebaseUser, sendPasswordResetEmail } from 'firebase/auth';
 import {
@@ -66,6 +65,7 @@ import { useArticleCategoryNames } from './useArticleCategoryNames';
 import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, roomsOverlap } from './sessionRoomUtils';
 import { registrationSectorEligibleForMeal } from './mealEligibility';
 import { MealEntitlementCard } from './MealEntitlementCard';
+import { jsPDF } from 'jspdf';
 
 const TRAVEL_ACCOMMODATION_REMINDER_MS = 3 * 60 * 60 * 1000;
 
@@ -229,6 +229,59 @@ function relativeTime(ts: any): string {
   return `${d} days ago`;
 }
 
+function getDefaultDOSTSpeakerRatings(): DOSTSpeakerRatings {
+  return {
+    achievementOfObjectives: 5,
+    mastery: { exhibitKnowledge: 5, answerQuestions: 5, currentDevelopments: 5, balanceTheoryPractice: 5 },
+    presentation: { preparedness: 5, organizeMaterials: 5, arouseInterest: 5, instructionalMaterials: 5 },
+    personality: { rapport: 5, considerateness: 5 },
+    acceptability: 5,
+  };
+}
+
+function DOSTScale15({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const labels = [
+    { n: 1, l: 'Poor' },
+    { n: 2, l: 'Average' },
+    { n: 3, l: 'Good' },
+    { n: 4, l: 'Very Good' },
+    { n: 5, l: 'Excellent' },
+  ];
+  return (
+    <div className="grid w-full grid-cols-5 gap-2">
+      {labels.map(({ n, l }) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => onChange(n)}
+          title={l}
+          className={`aspect-square min-h-[2.5rem] rounded-xl text-sm font-bold transition-all ${value === n ? 'bg-blue-600 text-white ring-2 ring-blue-300 shadow-md shadow-blue-200/50' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+        >
+          {n}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DOSTPart1Scale({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const opts = [{ v: 'low', l: 'Low' }, { v: 'satisfactory', l: 'Satisfactory' }, { v: 'very_good', l: 'Very Good' }];
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          type="button"
+          onClick={() => onChange(o.v)}
+          className={`rounded-xl py-2.5 text-sm font-semibold transition-colors ${value === o.v ? 'bg-blue-600 text-white ring-2 ring-blue-300 shadow-md shadow-blue-200/50' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-[0.98]'}`}
+        >
+          {o.l}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -252,6 +305,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   const [assignedRooms, setAssignedRooms] = React.useState<Room[]>([]);
   const [allRooms, setAllRooms] = React.useState<Room[]>([]);
   const [sessionReviews, setSessionReviews] = React.useState<SessionReview[]>([]);
+  const [reviewerProfilePics, setReviewerProfilePics] = React.useState<Record<string, string>>({});
   const [materials, setMaterials] = React.useState<PresenterMaterial[]>([]);
   const [entranceAttendanceRaw, setEntranceAttendanceRaw] = React.useState<Record<string, unknown> | null>(null);
   const [entranceTodayKey, setEntranceTodayKey] = React.useState(() => getEntranceCalendarDateKey());
@@ -263,6 +317,8 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
 
   const [selectedRoomForChat, setSelectedRoomForChat] = React.useState<Room | null>(null);
   const [roomChatMessages, setRoomChatMessages] = React.useState<{ id: string; roomId: string; participantName: string; text: string; createdAt: any }[]>([]);
+  const [roomChatInput, setRoomChatInput] = React.useState('');
+  const [roomChatSending, setRoomChatSending] = React.useState(false);
 
   // ── Modals / UI ────────────────────────────────────────────────────────
   const [scanModal, setScanModal] = React.useState(false);
@@ -294,6 +350,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   const [speakerArticleCategoryFilter, setSpeakerArticleCategoryFilter] = React.useState<string>('all');
 
   const [attendeeReservations, setAttendeeReservations] = React.useState<Record<string, AttendeeReservation>>({});
+  const [detailRoom, setDetailRoom] = React.useState<Room | null>(null);
   const [meals, setMeals] = React.useState<MealWindow[]>([]);
   const [foodClaims, setFoodClaims] = React.useState<FoodClaim[]>([]);
   const [boothRegs, setBoothRegs] = React.useState<{ id?: string; uid?: string; fullName?: string; boothLocationDetails?: string; status?: string }[]>([]);
@@ -301,6 +358,24 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   const [attendeeMaterials, setAttendeeMaterials] = React.useState<
     { id: string; roomId?: string; roomName?: string; fileName: string; downloadUrl: string; fileType: string; fileSizeBytes: number }[]
   >([]);
+  const [reviewModal, setReviewModal] = React.useState<{ roomId: string; roomName: string; presenterNames: string[] } | null>(null);
+  const [dostPart1, setDostPart1] = React.useState<{ levelOfContent: string; appropriateness: string; applicability: string }>({
+    levelOfContent: 'satisfactory',
+    appropriateness: 'satisfactory',
+    applicability: 'satisfactory',
+  });
+  const [dostPart2, setDostPart2] = React.useState<Record<string, DOSTSpeakerRatings>>({});
+  const [dostPart3, setDostPart3] = React.useState<{ venue: number; food: number; organizerResponse: number; description: string }>({
+    venue: 5,
+    food: 5,
+    organizerResponse: 5,
+    description: '',
+  });
+  const [dostPart4, setDostPart4] = React.useState('');
+  const [part4Error, setPart4Error] = React.useState<string | null>(null);
+  const [reviewSubmitting, setReviewSubmitting] = React.useState(false);
+  const [certificatePreview, setCertificatePreview] = React.useState<{ roomId: string; roomName: string } | null>(null);
+  const [certModal, setCertModal] = React.useState(false);
   const [breakoutDateFilter, setBreakoutDateFilter] = React.useState<string>('all');
   const [breakoutSearchQuery, setBreakoutSearchQuery] = React.useState('');
   const [overlapModal, setOverlapModal] = React.useState<{ conflictingRoomName: string } | null>(null);
@@ -321,6 +396,88 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   );
   const mealsBadgeDisplay = unclaimedMealsCount;
   const reviewsBadgeDisplay = sessionReviews.length > 0 ? Math.min(99, sessionReviews.length) : 0;
+
+  React.useEffect(() => {
+    const reservationRows = Object.values(attendeeReservations);
+    const reservedCount = reservationRows.length;
+    const attendedCount = reservationRows.filter((r) => !!r.attended).length;
+    const reviewedCount = reservationRows.filter((r) => !!r.reviewSubmitted).length;
+    const pendingReviewCount = reservationRows.filter((r) => !!r.attended && !r.reviewSubmitted).length;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-breakout-flow-gap',hypothesisId:'B1',location:'src/SpeakerDashboard.tsx:attendeeReservationState',message:'Speaker breakout reservation/review state',data:{reservedCount,attendedCount,reviewedCount,pendingReviewCount,sessionReviewsCount:sessionReviews.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [attendeeReservations, sessionReviews.length]);
+
+  React.useEffect(() => {
+    if (!detailRoom) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-breakout-popup',hypothesisId:'P1',location:'src/SpeakerDashboard.tsx:detailRoomOpen',message:'Speaker breakout detail popup opened',data:{roomId:detailRoom.id,roomName:detailRoom.name},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [detailRoom]);
+
+  React.useEffect(() => {
+    if (!reviewModal) return;
+    const names = (reviewModal.presenterNames || []).filter((n) => n && n.trim() && n.toLowerCase() !== 'presenter');
+    const seed = names.length > 0 ? names : ['Speaker'];
+    const init: Record<string, DOSTSpeakerRatings> = {};
+    seed.forEach((n) => {
+      init[n] = getDefaultDOSTSpeakerRatings();
+    });
+    setDostPart2(init);
+    setDostPart1({ levelOfContent: 'satisfactory', appropriateness: 'satisfactory', applicability: 'satisfactory' });
+    setDostPart3({ venue: 5, food: 5, organizerResponse: 5, description: '' });
+    setDostPart4('');
+    setPart4Error(null);
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-review-format-gap',hypothesisId:'RF1',location:'src/SpeakerDashboard.tsx:reviewModalOpen',message:'Speaker review modal opened',data:{roomId:reviewModal.roomId,roomName:reviewModal.roomName,hasDetailRoom:!!detailRoom},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [reviewModal, detailRoom]);
+
+  React.useEffect(() => {
+    if (!detailRoom) return;
+    const res = attendeeReservations[detailRoom.id];
+    if (!res?.attended) return;
+    const roomMaterialsCount = attendeeMaterials.filter((m) => m.roomId === detailRoom.id).length;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-attendee-review-cert',hypothesisId:'C3',location:'src/SpeakerDashboard.tsx:timedInPanel',message:'Timed-in breakout panel rendered',data:{roomId:detailRoom.id,reviewDone:!!res.reviewSubmitted,roomMaterialsCount,roomChatCount:roomChatMessages.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [detailRoom, attendeeReservations, attendeeMaterials, roomChatMessages.length]);
+
+  React.useEffect(() => {
+    const sessionsNeedScroll = assignedRooms.length > 4;
+    const reviewsNeedScroll = sessionReviews.length > 4;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-scrollability',hypothesisId:'S1',location:'src/SpeakerDashboard.tsx:homePanels',message:'Speaker home panel size thresholds',data:{assignedRooms:assignedRooms.length,sessionReviews:sessionReviews.length,sessionsNeedScroll,reviewsNeedScroll},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [assignedRooms.length, sessionReviews.length]);
+
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'latest-reviews-scroll',hypothesisId:'R1',location:'src/SpeakerDashboard.tsx:latestReviewsPanel',message:'Latest reviews panel item count',data:{sessionReviews:sessionReviews.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [sessionReviews.length]);
+
+  React.useEffect(() => {
+    const roomsWithImage = assignedRooms.filter((r) => !!r.backgroundImage).length;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-session-thumbnail',hypothesisId:'T1',location:'src/SpeakerDashboard.tsx:sessionsTableThumbnailCoverage',message:'Assigned sessions with background images',data:{assignedRooms:assignedRooms.length,roomsWithImage,roomsWithoutImage:assignedRooms.length-roomsWithImage},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [assignedRooms]);
+
+  React.useEffect(() => {
+    let reviewsAck: string | null = null;
+    let mealsAck: string | null = null;
+    let storageError: string | null = null;
+    try {
+      reviewsAck = localStorage.getItem(`iscene_${user.uid}_badgeAck_presenter_reviews`);
+      mealsAck = localStorage.getItem(`iscene_${user.uid}_badgeAck_presenter_meals`);
+    } catch (err) {
+      storageError = err instanceof Error ? err.message : 'localStorage_access_error';
+    }
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix-quick-actions',hypothesisId:'H1',location:'src/SpeakerDashboard.tsx:quickActionBadges',message:'Speaker quick-action badge source vs persisted ack',data:{reviewsTotal:sessionReviews.length,reviewsBadgeDisplay,unclaimedMealsCount,mealsBadgeDisplay,hasReviewsAck:reviewsAck !== null,hasMealsAck:mealsAck !== null,storageError},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [user.uid, sessionReviews.length, reviewsBadgeDisplay, unclaimedMealsCount, mealsBadgeDisplay]);
 
   React.useEffect(() => {
     setTravelDetails((registration?.travelDetails as string) || '');
@@ -409,6 +566,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
 
   const breakoutDateOptions = React.useMemo(() => {
     const dates = [...new Set(allRooms.map((r) => r.sessionDate).filter(Boolean))];
+    dates.sort((a, b) => String(b).localeCompare(String(a)));
     return ['all', ...dates];
   }, [allRooms]);
 
@@ -420,8 +578,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   const filteredBreakoutRooms = React.useMemo(() => {
     const q = breakoutSearchQuery.trim().toLowerCase();
     const tokens = q.split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) return roomsForBreakoutDate;
-    return roomsForBreakoutDate.filter((r) => {
+    const list = tokens.length === 0 ? roomsForBreakoutDate : roomsForBreakoutDate.filter((r) => {
       const hay = [
         r.name,
         r.description,
@@ -436,9 +593,33 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         .toLowerCase();
       return tokens.every((t) => hay.includes(t));
     });
+    return [...list].sort((a, b) => String(b.sessionDate || '').localeCompare(String(a.sessionDate || '')));
   }, [roomsForBreakoutDate, breakoutSearchQuery]);
 
+  const filteredBreakoutRoomsByDate = React.useMemo(() => {
+    const groups = new Map<string, Room[]>();
+    filteredBreakoutRooms.forEach((room) => {
+      const key = room.sessionDate || 'No date';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(room);
+    });
+    return Array.from(groups.entries()).sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+  }, [filteredBreakoutRooms]);
+
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-breakout-date-order',hypothesisId:'BD1',location:'src/SpeakerDashboard.tsx:breakoutDateOrder',message:'Speaker breakout date ordering snapshot',data:{dateOptions:breakoutDateOptions.slice(0,6),filteredRooms:filteredBreakoutRooms.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [breakoutDateOptions, filteredBreakoutRooms.length]);
+
   const isPresentingRoom = React.useCallback((roomId: string) => assignedRooms.some((r) => r.id === roomId), [assignedRooms]);
+  const certifiableSpeakerRooms = React.useMemo(
+    () =>
+      Object.values(attendeeReservations)
+        .filter((r) => r.attended && r.reviewSubmitted)
+        .map((r) => ({ roomId: r.roomId, roomName: allRooms.find((x) => x.id === r.roomId)?.name || r.roomName || 'Session' })),
+    [attendeeReservations, allRooms],
+  );
 
   React.useEffect(() => {
     const id = window.setInterval(() => setClaimClockTick(Date.now()), 30_000);
@@ -616,6 +797,12 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     return list;
   }, [sessionReviews, reviewSearchQuery, reviewSessionFilter, reviewRatingFilter]);
 
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix',hypothesisId:'H1',location:'src/SpeakerDashboard.tsx:filteredSessionReviews',message:'Review records loaded for speaker',data:{totalReviews:sessionReviews.length,reviewsWithUid:sessionReviews.filter((r)=>!!r.uid).length,reviewsWithoutUid:sessionReviews.filter((r)=>!r.uid).length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [sessionReviews]);
+
   const reviewsGroupedBySession = React.useMemo(() => {
     const groups = new Map<string, { label: string; items: SessionReview[] }>();
     filteredSessionReviews.forEach((rev) => {
@@ -629,6 +816,54 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [filteredSessionReviews]);
 
+  React.useEffect(() => {
+    let cancelled = false;
+    const loadReviewerPics = async () => {
+      const uids = Array.from(new Set(sessionReviews.map((r) => r.uid).filter(Boolean)));
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix',hypothesisId:'H2',location:'src/SpeakerDashboard.tsx:loadReviewerPics:start',message:'Starting reviewer profile image lookup',data:{uniqueReviewerUids:uids.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      if (uids.length === 0) {
+        if (!cancelled) setReviewerProfilePics({});
+        return;
+      }
+      try {
+        const chunks: string[][] = [];
+        for (let i = 0; i < uids.length; i += 30) chunks.push(uids.slice(i, i + 30));
+        const next: Record<string, string> = {};
+        for (const chunk of chunks) {
+          const snap = await getDocs(query(collection(db, 'registrations'), where('uid', 'in', chunk)));
+          snap.docs.forEach((d) => {
+            const data = d.data() as { uid?: string; profilePictureUrl?: string };
+            if (data.uid && data.profilePictureUrl) next[data.uid] = data.profilePictureUrl;
+          });
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix',hypothesisId:'H3',location:'src/SpeakerDashboard.tsx:loadReviewerPics:done',message:'Reviewer profile image lookup completed',data:{uidsRequested:uids.length,uidsWithProfileImages:Object.keys(next).length},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (!cancelled) setReviewerProfilePics(next);
+      } catch (err) {
+        console.error('[iSCENE] load reviewer profile images', err);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix',hypothesisId:'H4',location:'src/SpeakerDashboard.tsx:loadReviewerPics:error',message:'Reviewer profile image lookup failed',data:{errorMessage:err instanceof Error ? err.message : 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (!cancelled) setReviewerProfilePics({});
+      }
+    };
+    loadReviewerPics();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionReviews]);
+
+  React.useEffect(() => {
+    const visibleCount = filteredSessionReviews.length;
+    const visibleWithImage = filteredSessionReviews.filter((rev) => !!reviewerProfilePics[rev.uid]).length;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'pre-fix',hypothesisId:'H5',location:'src/SpeakerDashboard.tsx:reviewRenderCoverage',message:'Visible review cards with profile image coverage',data:{visibleReviews:visibleCount,visibleReviewsWithProfileImage:visibleWithImage},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [filteredSessionReviews, reviewerProfilePics]);
+
   const avgRating = sessionReviews.length > 0
     ? (sessionReviews.reduce((s, r) => s + getReviewRating(r), 0) / sessionReviews.length).toFixed(1)
     : '—';
@@ -641,12 +876,18 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     let cancelled = false;
     const load = async () => {
       setLoading(true);
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'loading-investigation',hypothesisId:'H4',location:'src/SpeakerDashboard.tsx:load:start',message:'Speaker dashboard load started',data:{uid:user.uid,fullName},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       try {
         // Rooms where this presenter is listed (by name and/or uid — rules use presenterUids for review reads)
         const [byNameSnap, byUidSnap] = await Promise.all([
           getDocs(query(collection(db, 'rooms'), where('presenterNames', 'array-contains', fullName))),
           getDocs(query(collection(db, 'rooms'), where('presenterUids', 'array-contains', user.uid))),
         ]);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'loading-investigation',hypothesisId:'H5',location:'src/SpeakerDashboard.tsx:load:roomsFetched',message:'Speaker rooms fetched',data:{roomsByName:byNameSnap.size,roomsByUid:byUidSnap.size},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         const roomMap = new Map<string, Room>();
         byNameSnap.docs.forEach((d) => roomMap.set(d.id, { id: d.id, ...(d.data() as Omit<Room, 'id'>) }));
         byUidSnap.docs.forEach((d) => {
@@ -671,8 +912,17 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           }
         }
         if (!cancelled) setSessionReviews(reviews);
-      } catch (err) { console.error('SpeakerDashboard load', err); }
-      finally { if (!cancelled) setLoading(false); }
+      } catch (err) {
+        console.error('SpeakerDashboard load', err);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'loading-investigation',hypothesisId:'H6',location:'src/SpeakerDashboard.tsx:load:error',message:'Speaker dashboard load failed',data:{errorMessage:err instanceof Error ? err.message : 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      } finally {
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'loading-investigation',hypothesisId:'H7',location:'src/SpeakerDashboard.tsx:load:finally',message:'Speaker dashboard load finished',data:{cancelled},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (!cancelled) setLoading(false);
+      }
     };
     load();
     return () => { cancelled = true; };
@@ -697,16 +947,17 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   }, [user.uid]);
 
   React.useEffect(() => {
-    if (!selectedRoomForChat?.id) {
+    const activeRoomId = detailRoom?.id || selectedRoomForChat?.id;
+    if (!activeRoomId) {
       setRoomChatMessages([]);
       return;
     }
-    const q = query(collection(db, 'roomChat'), where('roomId', '==', selectedRoomForChat.id), orderBy('createdAt', 'asc'));
+    const q = query(collection(db, 'roomChat'), where('roomId', '==', activeRoomId), orderBy('createdAt', 'asc'));
     const unsub = onSnapshot(q, (snap) => {
       setRoomChatMessages(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
     });
     return () => unsub();
-  }, [selectedRoomForChat?.id]);
+  }, [detailRoom?.id, selectedRoomForChat?.id]);
 
   // ── Parse QR content (same rules as participant app: entrance + room time-in) ───
   const parseQrContent = (raw: string): { type: string | null; id: string | null } => {
@@ -776,6 +1027,9 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           }
         }
         const alreadyAttended = existing.exists() && (existing.data() as { attended?: boolean })?.attended;
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-breakout-flow-gap',hypothesisId:'B2',location:'src/SpeakerDashboard.tsx:handleScanResult:room',message:'Speaker room scan branch',data:{roomId:id,roomFound:!!room,reservationExists:existing.exists(),alreadyAttended:!!alreadyAttended},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         if (alreadyAttended) {
           setScanToast('✅ Already timed in.');
         } else if (existing.exists()) {
@@ -824,6 +1078,9 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
 
   const handleAttendeeReserve = async (room: Room) => {
     const blockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-breakout-flow-gap',hypothesisId:'B3',location:'src/SpeakerDashboard.tsx:handleAttendeeReserve',message:'Speaker reserve attempt',data:{roomId:room.id,roomName:room.name,blocked:!!blockReason},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     if (blockReason) {
       setScanToast(`❌ ${blockReason}`);
       setTimeout(() => setScanToast(null), 5000);
@@ -861,6 +1118,145 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       delete next[room.id];
       return next;
     });
+  };
+
+  const handleSubmitDetailReview = async () => {
+    if (!reviewModal) return;
+    setPart4Error(null);
+    const commentsTrimmed = dostPart4.trim();
+    if (!commentsTrimmed) {
+      setPart4Error('Comments & suggestions are required before submitting.');
+      return;
+    }
+    setReviewSubmitting(true);
+    try {
+      const part2Arr = Object.entries(dostPart2).map(([speakerName, ratings]) => ({ speakerName, ratings }));
+      const part3DescTrimmed = dostPart3.description?.trim() ?? '';
+      const part3Payload: {
+        venue: number;
+        food: number;
+        organizerResponse: number;
+        description?: string;
+      } = {
+        venue: dostPart3.venue,
+        food: dostPart3.food,
+        organizerResponse: dostPart3.organizerResponse,
+      };
+      if (part3DescTrimmed) part3Payload.description = part3DescTrimmed;
+      const payload = {
+        uid: user.uid,
+        participantName: fullName,
+        roomId: reviewModal.roomId,
+        roomName: reviewModal.roomName,
+        part1: dostPart1,
+        part2: part2Arr,
+        part3: part3Payload,
+        part4: commentsTrimmed,
+        submittedAt: Timestamp.now(),
+      };
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-review-format-gap',hypothesisId:'RF2',location:'src/SpeakerDashboard.tsx:handleSubmitDetailReview:payloadShape',message:'Speaker review payload shape before submit',data:{roomId:reviewModal.roomId,payloadKeys:Object.keys(payload),hasPart1:true,hasPart2:true,hasPart3:true,hasPart4:true},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      await addDoc(collection(db, 'reviews'), payload);
+      const resRef = doc(db, 'reservations', `${user.uid}_${reviewModal.roomId}`);
+      await setDoc(
+        resRef,
+        {
+          uid: user.uid,
+          roomId: reviewModal.roomId,
+          roomName: reviewModal.roomName,
+          reviewSubmitted: true,
+        },
+        { merge: true },
+      );
+      setAttendeeReservations((prev) => {
+        const cur = prev[reviewModal.roomId];
+        if (cur) return { ...prev, [reviewModal.roomId]: { ...cur, reviewSubmitted: true } };
+        return {
+          ...prev,
+          [reviewModal.roomId]: {
+            id: `${user.uid}_${reviewModal.roomId}`,
+            roomId: reviewModal.roomId,
+            roomName: reviewModal.roomName,
+            attended: true,
+            reviewSubmitted: true,
+            reservedAt: Timestamp.now(),
+          },
+        };
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-attendee-review-cert',hypothesisId:'C1',location:'src/SpeakerDashboard.tsx:handleSubmitDetailReview:success',message:'Speaker attendee review submitted',data:{roomId:reviewModal.roomId,part4Length:commentsTrimmed.length,speakerRatingsCount:part2Arr.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      const certRoomName = reviewModal.roomName;
+      setReviewModal(null);
+      setDostPart4('');
+      setCertificatePreview({ roomId: reviewModal.roomId, roomName: certRoomName });
+      setScanToast('✅ Review submitted. Certificate unlocked.');
+      setTimeout(() => setScanToast(null), 4000);
+    } catch (err: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-attendee-review-cert',hypothesisId:'C2',location:'src/SpeakerDashboard.tsx:handleSubmitDetailReview:error',message:'Speaker attendee review submit failed',data:{errorMessage:err?.message || 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setPart4Error('Failed to save. Please check your connection and try again.');
+      setScanToast('❌ Could not submit review. Please try again.');
+      setTimeout(() => setScanToast(null), 4000);
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const handleDownloadSpeakerCertificate = (cert: { roomId: string; roomName: string }) => {
+    const docPdf = new jsPDF('landscape', 'pt', 'a4');
+    const w = docPdf.internal.pageSize.getWidth();
+    const h = docPdf.internal.pageSize.getHeight();
+    docPdf.setFillColor(248, 250, 252);
+    docPdf.rect(0, 0, w, h, 'F');
+    docPdf.setDrawColor(37, 99, 235);
+    docPdf.setLineWidth(4);
+    docPdf.rect(24, 24, w - 48, h - 48);
+    docPdf.setFont('helvetica', 'bold');
+    docPdf.setFontSize(30);
+    docPdf.text('Certificate of Participation', w / 2, 110, { align: 'center' });
+    docPdf.setFont('helvetica', 'normal');
+    docPdf.setFontSize(16);
+    docPdf.text('This certifies that', w / 2, 160, { align: 'center' });
+    docPdf.setFont('helvetica', 'bold');
+    docPdf.setFontSize(28);
+    docPdf.text(fullName, w / 2, 205, { align: 'center' });
+    docPdf.setFont('helvetica', 'normal');
+    docPdf.setFontSize(14);
+    docPdf.text(`has attended and reviewed "${cert.roomName}" in iSCENE 2026.`, w / 2, 245, { align: 'center', maxWidth: w - 140 });
+    docPdf.setFontSize(12);
+    docPdf.text(`Generated on ${new Date().toLocaleDateString('en-PH')}`, w / 2, h - 80, { align: 'center' });
+    docPdf.save(`iscene-certificate-${cert.roomName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.pdf`);
+  };
+
+  const handleSendRoomChat = async () => {
+    const roomId = detailRoom?.id || selectedRoomForChat?.id;
+    const roomName = detailRoom?.name || selectedRoomForChat?.name || 'Session';
+    if (!roomId || !roomChatInput.trim()) return;
+    setRoomChatSending(true);
+    try {
+      await addDoc(collection(db, 'roomChat'), {
+        roomId,
+        uid: user.uid,
+        participantName: fullName,
+        text: roomChatInput.trim(),
+        createdAt: Timestamp.now(),
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-chat-write',hypothesisId:'Q1',location:'src/SpeakerDashboard.tsx:handleSendRoomChat:success',message:'Speaker posted room chat message',data:{roomId,roomName,textLength:roomChatInput.trim().length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setRoomChatInput('');
+    } catch (err: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-chat-write',hypothesisId:'Q2',location:'src/SpeakerDashboard.tsx:handleSendRoomChat:error',message:'Speaker room chat post failed',data:{roomId,errorMessage:err?.message || 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setScanToast('❌ Could not send question. Please try again.');
+      setTimeout(() => setScanToast(null), 4000);
+    } finally {
+      setRoomChatSending(false);
+    }
   };
 
   const handleFileUpload = async (file: File, roomId?: string) => {
@@ -1140,14 +1536,34 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 ? (
               <tr><td colSpan={5} className="px-6 py-10 text-center text-slate-400 text-sm">No assigned sessions yet. The admin will assign you to a session.</td></tr>
-            ) : rows.map((room) => {
+            ) : rows.map((room, rowIndex) => {
               const dateObj = room.sessionDate ? new Date(room.sessionDate) : null;
               const isConfirmed = !!dateObj;
+              const grad = BREAKOUT_CARD_GRADIENTS[rowIndex % BREAKOUT_CARD_GRADIENTS.length];
               return (
                 <tr key={room.id} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-5">
-                    <p className="font-bold text-slate-800">{room.name}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{room.sessionType || room.description?.slice(0, 40) || 'Session'}</p>
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`h-14 w-20 shrink-0 overflow-hidden rounded-lg border border-slate-200 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
+                        style={
+                          room.backgroundImage
+                            ? {
+                                backgroundImage: `url(${room.backgroundImage})`,
+                                backgroundSize: 'cover',
+                                backgroundPosition: 'center',
+                                backgroundRepeat: 'no-repeat',
+                                backgroundColor: '#f1f5f9',
+                              }
+                            : undefined
+                        }
+                        aria-hidden
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate font-bold text-slate-800">{room.name}</p>
+                        <p className="mt-0.5 line-clamp-2 text-xs text-slate-400">{room.sessionType || room.description?.slice(0, 70) || 'Session'}</p>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-6 py-5 text-sm text-slate-600">
                     {dateObj ? (
@@ -1226,13 +1642,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     { icon: <Utensils size={20} className="text-orange-500" />, label: 'My meals', bg: 'bg-orange-50', action: () => goTab('meals'), badge: mealsBadgeDisplay },
                     { icon: <Upload size={20} className="text-amber-600" />, label: 'Booth assets', bg: 'bg-amber-50', action: () => goTab('uploads') },
                     { icon: <Newspaper size={20} className="text-rose-500" />, label: 'Articles', bg: 'bg-rose-50', action: () => goTab('articles') },
-                    {
-                      icon: <Luggage size={20} className="text-cyan-600" />,
-                      label: 'Travel & stay',
-                      bg: 'bg-cyan-50',
-                      action: () => goTab('travel'),
-                      badge: travelAccIncomplete ? 1 : undefined,
-                    },
                     { icon: <CreditCard size={20} className="text-indigo-600" />, label: 'My ID', bg: 'bg-indigo-50', action: () => setIdModal(true) },
                     { icon: <DoorOpen size={20} className="text-indigo-600" />, label: 'Breakouts', bg: 'bg-indigo-50', action: () => goTab('breakouts') },
                   ].map(({ icon, label, bg, action, badge }) => (
@@ -1338,13 +1747,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     { icon: <Utensils size={20} className="text-orange-500" />, label: 'My meals', bg: 'bg-orange-50', action: () => goTab('meals'), badge: mealsBadgeDisplay },
                     { icon: <Upload size={20} className="text-amber-600" />, label: 'Booth assets', bg: 'bg-amber-50', action: () => goTab('uploads') },
                     { icon: <Newspaper size={20} className="text-rose-500" />, label: 'Articles', bg: 'bg-rose-50', action: () => goTab('articles') },
-                    {
-                      icon: <Luggage size={20} className="text-cyan-600" />,
-                      label: 'Travel & stay',
-                      bg: 'bg-cyan-50',
-                      action: () => goTab('travel'),
-                      badge: travelAccIncomplete ? 1 : undefined,
-                    },
                   ].map(({ icon, label, bg, action, badge }) => (
                     <button
                       key={label}
@@ -1371,8 +1773,8 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                       Full list <ChevronRight size={13} />
                     </button>
                   </div>
-                  <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                    <SessionsTable limit={4} />
+                  <section className="max-h-[30rem] overflow-y-auto overscroll-y-contain rounded-2xl border border-slate-200 bg-white shadow-sm [-webkit-overflow-scrolling:touch]">
+                    <SessionsTable />
                   </section>
                 </div>
                 <div className="col-span-2 space-y-4">
@@ -1382,12 +1784,12 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                       All reviews →
                     </button>
                   </div>
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex h-[24rem] flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                     {sessionReviews.length === 0 ? (
-                      <p className="py-8 text-center text-sm text-slate-400">No reviews yet.</p>
+                      <p className="m-auto py-8 text-center text-sm text-slate-400">No reviews yet.</p>
                     ) : (
-                      <div className="space-y-3">
-                        {sessionReviews.slice(0, 4).map((rev) => (
+                      <div className="flex-1 space-y-3 overflow-y-auto overscroll-y-contain pr-1 [-webkit-overflow-scrolling:touch]">
+                        {sessionReviews.map((rev) => (
                           <div key={rev.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
                             <div className="mb-1 flex items-center justify-between gap-2">
                               <Stars rating={getReviewRating(rev)} />
@@ -1492,84 +1894,98 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                 </ul>
               </section>
             )}
-            <div className="max-w-3xl space-y-3">
+            <div className="max-w-3xl space-y-5">
               {filteredBreakoutRooms.length === 0 ? (
                 <div className="rounded-2xl border border-slate-100 bg-white py-12 text-center text-sm text-slate-400 shadow-sm">
                   No sessions match this date or search.
                 </div>
               ) : (
-                filteredBreakoutRooms.map((room, i) => {
-                  const res = attendeeReservations[room.id];
-                  const presenting = isPresentingRoom(room.id);
-                  const grad = BREAKOUT_CARD_GRADIENTS[i % BREAKOUT_CARD_GRADIENTS.length];
-                  const breakoutBlockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
-                  return (
-                    <div
-                      key={room.id}
-                      className="flex overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
-                    >
-                      <div
-                        className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
-                        style={
-                          room.backgroundImage
-                            ? {
-                                backgroundImage: `url(${room.backgroundImage})`,
-                                backgroundSize: 'contain',
-                                backgroundPosition: 'center',
-                                backgroundRepeat: 'no-repeat',
-                                backgroundColor: '#f1f5f9',
-                              }
-                            : undefined
-                        }
-                      />
-                      <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 p-4">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-[11px] text-slate-500">
-                            {formatSessionDateTime(room)}
-                            {room.venue ? ` · ${room.venue}` : ''}
-                          </p>
-                          {presenting ? (
-                            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black uppercase text-violet-800">
-                              You present
-                            </span>
-                          ) : null}
+                filteredBreakoutRoomsByDate.map(([dateKey, roomsForDate], groupIndex) => (
+                  <section key={dateKey} className="space-y-3">
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-500">
+                      {dateKey === 'No date' ? 'No date' : new Date(dateKey).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', year: 'numeric' })}
+                    </h3>
+                    {roomsForDate.map((room, i) => {
+                      const res = attendeeReservations[room.id];
+                      const presenting = isPresentingRoom(room.id);
+                      const grad = BREAKOUT_CARD_GRADIENTS[(groupIndex + i) % BREAKOUT_CARD_GRADIENTS.length];
+                      return (
+                        <div
+                          key={room.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setDetailRoom(room)}
+                          onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
+                          className="flex cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md"
+                        >
+                          <div
+                            className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
+                            style={
+                              room.backgroundImage
+                                ? {
+                                    backgroundImage: `url(${room.backgroundImage})`,
+                                    backgroundSize: 'contain',
+                                    backgroundPosition: 'center',
+                                    backgroundRepeat: 'no-repeat',
+                                    backgroundColor: '#f1f5f9',
+                                  }
+                                : undefined
+                            }
+                          />
+                          <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 p-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-[11px] text-slate-500">
+                                {formatSessionDateTime(room)}
+                                {room.venue ? ` · ${room.venue}` : ''}
+                              </p>
+                              {presenting ? (
+                                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black uppercase text-violet-800">
+                                  You present
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="text-sm font-bold text-slate-900">{room.name}</p>
+                            {room.description ? (
+                              <p className="line-clamp-2 text-[11px] text-slate-400">{room.description}</p>
+                            ) : null}
+                            <div className="mt-1 flex flex-wrap gap-2">
+                              {presenting ? (
+                                <span className="text-xs font-medium text-slate-500">Open to view details.</span>
+                              ) : !res ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDetailRoom(room);
+                                  }}
+                                  className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700"
+                                >
+                                  Reserve
+                                </button>
+                              ) : res.attended ? (
+                                <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">Checked in</span>
+                              ) : (
+                                <>
+                                  <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">Reserved</span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void handleAttendeeCancelReservation(room);
+                                    }}
+                                    className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
+                                  >
+                                    Cancel
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <p className="text-sm font-bold text-slate-900">{room.name}</p>
-                        {room.description ? (
-                          <p className="line-clamp-2 text-[11px] text-slate-400">{room.description}</p>
-                        ) : null}
-                        <div className="mt-1 flex flex-wrap gap-2">
-                          {presenting ? (
-                            <span className="text-xs font-medium text-slate-500">No need to reserve — you are assigned as presenter.</span>
-                          ) : !res ? (
-                            <button
-                              type="button"
-                              disabled={!!breakoutBlockReason}
-                              onClick={() => void handleAttendeeReserve(room)}
-                              className={`rounded-full px-3 py-1.5 text-xs font-bold ${breakoutBlockReason ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                              title={breakoutBlockReason || undefined}
-                            >
-                              Reserve
-                            </button>
-                          ) : res.attended ? (
-                            <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">Checked in</span>
-                          ) : (
-                            <>
-                              <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">Reserved</span>
-                              <button
-                                type="button"
-                                onClick={() => void handleAttendeeCancelReservation(room)}
-                                className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
+                      );
+                    })}
+                  </section>
+                ))
               )}
             </div>
           </div>
@@ -1683,13 +2099,22 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                               const displayRating = getReviewRating(rev);
                               const commentText = rev.part4 || rev.comment;
                               const initial = (rev.participantName || 'A').trim().charAt(0).toUpperCase() || 'A';
+                              const reviewerPic = reviewerProfilePics[rev.uid];
                               return (
                                 <div key={rev.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                                   <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                     <div className="flex items-center gap-3">
-                                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-600">
-                                        {initial}
-                                      </div>
+                                      {reviewerPic ? (
+                                        <img
+                                          src={reviewerPic}
+                                          alt={rev.participantName || 'Reviewer'}
+                                          className="h-9 w-9 shrink-0 rounded-full object-cover ring-1 ring-blue-100"
+                                        />
+                                      ) : (
+                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-600">
+                                          {initial}
+                                        </div>
+                                      )}
                                       <div>
                                         <p className="text-sm font-bold text-slate-700">{rev.participantName || 'Attendee'}</p>
                                         <p className="text-[11px] text-slate-400">{relativeTime(rev.submittedAt)}</p>
@@ -2021,30 +2446,93 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   ))}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => goTab('travel')}
-                className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/40"
+              <div
+                className={`rounded-2xl border-2 p-5 shadow-sm transition-colors ${
+                  travelAccIncomplete
+                    ? 'border-orange-300 bg-orange-50/80 ring-1 ring-orange-200/80'
+                    : 'border-slate-100 bg-white'
+                }`}
               >
-                <div className="flex min-w-0 items-center gap-3">
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
-                    <Luggage size={18} />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Travel &amp; stay</p>
-                    <p className="text-sm font-semibold text-slate-800">
-                      {travelAccIncomplete ? 'Add flight & accommodation' : 'Details on file'}
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {travelAccIncomplete ? <AlertTriangle size={16} className="shrink-0 text-orange-600" aria-hidden /> : null}
+                    <p
+                      className={`text-[11px] font-bold uppercase tracking-wide ${
+                        travelAccIncomplete ? 'text-orange-800' : 'text-slate-400'
+                      }`}
+                    >
+                      Flight &amp; accommodation
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingTravel(!editingTravel)}
+                    className="flex shrink-0 items-center gap-1 text-xs font-bold text-blue-600"
+                  >
+                    <Edit2 size={11} /> {editingTravel ? 'Cancel' : 'Edit'}
+                  </button>
                 </div>
-                {travelAccIncomplete ? (
-                  <span className="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-black text-orange-800">
-                    Needed
-                  </span>
+                {travelAccIncomplete && !editingTravel ? (
+                  <p className="mb-2 text-xs font-semibold text-orange-800">
+                    Please add both flight and accommodation details when you can.
+                  </p>
+                ) : null}
+                {editingTravel ? (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="mb-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                        <Plane size={12} className="text-blue-600" aria-hidden /> Flight details
+                      </p>
+                      <textarea
+                        value={travelDetails}
+                        onChange={(e) => setTravelDetails(e.target.value)}
+                        rows={3}
+                        className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Airline, flight numbers, arrival/departure times, airports…"
+                      />
+                    </div>
+                    <div>
+                      <p className="mb-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                        <Hotel size={12} className="text-violet-600" aria-hidden /> Accommodation
+                      </p>
+                      <textarea
+                        value={accommodationDetails}
+                        onChange={(e) => setAccommodationDetails(e.target.value)}
+                        rows={3}
+                        className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Hotel name, check-in/out dates, confirmation number, special requests…"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveTravel()}
+                      disabled={travelSaving || !registrationId}
+                      className="rounded-xl bg-blue-600 px-5 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {travelSaving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
                 ) : (
-                  <ChevronRight size={18} className="shrink-0 text-slate-300" />
+                  <div className="space-y-3 text-sm">
+                    <div>
+                      <p className="text-[11px] text-slate-400">Flight</p>
+                      <p className={!String(travelDetails || '').trim() ? 'font-semibold text-orange-800' : 'text-slate-700'}>
+                        {travelDetails || 'Not provided'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-slate-400">Accommodation</p>
+                      <p
+                        className={
+                          !String(accommodationDetails || '').trim() ? 'font-semibold text-orange-800' : 'text-slate-700'
+                        }
+                      >
+                        {accommodationDetails || 'Not provided'}
+                      </p>
+                    </div>
+                  </div>
                 )}
-              </button>
+              </div>
               {/* Account */}
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">Account</p>
@@ -2164,14 +2652,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   {Math.min(99, bellUnreadCount)}
                 </span>
               ) : null}
-            </button>
-            <button
-              type="button"
-              onClick={() => setScanModal(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-700"
-              aria-label="Scan QR"
-            >
-              <QrCode size={18} />
             </button>
           </div>
         </header>
@@ -2307,13 +2787,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   active={activeTab === 'articles'}
                   onClick={() => goTab('articles')}
                 />
-                <NavItem
-                  icon={<Luggage size={17} />}
-                  label="Travel & stay"
-                  active={activeTab === 'travel'}
-                  onClick={() => goTab('travel')}
-                  badge={travelAccIncomplete ? 1 : undefined}
-                />
                 <p className="px-1 pb-2 pt-4 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">Quick tools</p>
                 <NavItem
                   icon={<QrCode size={17} />}
@@ -2372,13 +2845,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
             <NavItem icon={<Star size={17} />} label="Reviews" active={activeTab === 'reviews'} onClick={() => goTab('reviews')} badge={reviewsBadgeDisplay || undefined} />
             <NavItem icon={<Utensils size={17} />} label="My meals" active={activeTab === 'meals'} onClick={() => goTab('meals')} badge={mealsBadgeDisplay || undefined} />
             <NavItem icon={<Upload size={17} />} label="Booth assets" active={activeTab === 'uploads'} onClick={() => goTab('uploads')} />
-            <NavItem
-              icon={<Luggage size={17} />}
-              label="Travel & stay"
-              active={activeTab === 'travel'}
-              onClick={() => goTab('travel')}
-              badge={travelAccIncomplete ? 1 : undefined}
-            />
             <NavItem icon={<Newspaper size={17} />} label="Articles" active={activeTab === 'articles'} onClick={() => goTab('articles')} />
             <NavItem icon={<User size={17} />} label="Profile" active={activeTab === 'profile'} onClick={() => goTab('profile')} />
           </nav>
@@ -2441,14 +2907,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   </button>
                   <button
                     type="button"
-                    onClick={() => setScanModal(true)}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 transition-colors hover:bg-blue-100"
-                    aria-label="Scan QR"
-                  >
-                    <QrCode size={17} className="text-slate-600" />
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => goTab('profile')}
                     className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-600 text-xs font-black text-white ring-2 ring-blue-200 transition-all hover:ring-blue-400"
                   >
@@ -2486,6 +2944,245 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         </div>
       )}
 
+      {/* Breakout Room Detail Popup (participant-style flow for speaker attendee mode) */}
+      {detailRoom && (() => {
+        const res = attendeeReservations[detailRoom.id];
+        const presentingDetailRoom = isPresentingRoom(detailRoom.id);
+        const reviewDone = !!res?.reviewSubmitted;
+        const breakoutScheduleBlock = getBreakoutRoomScheduleBlockReason(detailRoom, new Date());
+        const descriptionLength = (detailRoom.description || '').length;
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-design-parity',hypothesisId:'D1',location:'src/SpeakerDashboard.tsx:detailRoomRenderProfile',message:'Speaker detail popup content profile',data:{roomId:detailRoom.id,descriptionLength,hasBackgroundImage:!!detailRoom.backgroundImage,hasVenue:!!detailRoom.venue},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        const currentStep = !res ? 1 : !res.attended ? 2 : !reviewDone ? 3 : 4;
+        const steps = [
+          { id: 'reserve', label: 'RESERVE', done: !!res, current: currentStep === 1 },
+          { id: 'timein', label: 'TIME IN', done: !!res?.attended, current: currentStep === 2 },
+          { id: 'review', label: 'REVIEW', done: reviewDone, current: currentStep === 3 },
+          { id: 'cert', label: 'CERTIFICATE', done: !!res?.attended && reviewDone, current: currentStep === 4 },
+        ];
+        return (
+          <div className="fixed inset-0 z-[70] min-h-dvh max-h-dvh overflow-y-auto overflow-x-hidden bg-slate-100/95 overscroll-y-contain pt-[env(safe-area-inset-top)]">
+            <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-6 lg:px-8">
+              <button
+                type="button"
+                onClick={() => setDetailRoom(null)}
+                className="flex min-h-[44px] min-w-[44px] items-center justify-center gap-2 rounded-xl bg-slate-100 px-3 py-2.5 font-medium text-slate-700 transition-colors hover:bg-slate-200 hover:text-slate-900"
+                aria-label="Back"
+              >
+                <ArrowLeft size={20} className="shrink-0" />
+                <span className="hidden sm:inline">Back</span>
+              </button>
+              <div className="h-5 w-px bg-slate-200" aria-hidden />
+              <span className="flex-1 truncate text-sm font-semibold text-slate-800">{detailRoom.name}</span>
+            </div>
+
+            <div className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Reserve a slot</p>
+                <div className="flex items-center justify-between gap-2 sm:gap-4">
+                  {steps.map((s, i) => {
+                    const onStepClick = s.id === 'reserve'
+                      ? () => document.getElementById('speaker-detail-actions')?.scrollIntoView({ behavior: 'smooth' })
+                      : s.id === 'timein'
+                        ? (!res?.attended ? () => setScanModal(true) : undefined)
+                        : s.id === 'review'
+                          ? (res?.attended ? () => setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [] }) : undefined)
+                          : s.id === 'cert'
+                            ? () => setCertModal(true)
+                            : undefined;
+                    return (
+                    <React.Fragment key={s.id}>
+                      <button
+                        type="button"
+                        onClick={onStepClick}
+                        className={`flex flex-col items-center gap-1.5 rounded-xl p-1 -m-1 transition-opacity ${onStepClick ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${s.current ? 'text-blue-600' : s.done ? 'text-blue-600' : 'text-slate-300'}`}
+                      >
+                        <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold ${s.done ? 'bg-blue-600 text-white' : s.current ? 'border-2 border-blue-600 bg-white text-blue-600' : 'bg-slate-100'}`}>
+                          {s.done ? <CheckCircle2 size={16} /> : i + 1}
+                        </div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider">{s.label}</span>
+                      </button>
+                      {i < steps.length - 1 && <div className={`h-0.5 min-w-[8px] flex-1 rounded ${s.done ? 'bg-blue-600' : 'bg-slate-200'}`} />}
+                    </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div
+                className={`relative flex min-h-[200px] flex-col justify-between overflow-hidden rounded-2xl sm:rounded-3xl p-6 sm:min-h-[260px] sm:p-8 ${!detailRoom.backgroundImage ? `bg-gradient-to-br ${BREAKOUT_CARD_GRADIENTS[filteredBreakoutRooms.indexOf(detailRoom) >= 0 ? filteredBreakoutRooms.indexOf(detailRoom) % BREAKOUT_CARD_GRADIENTS.length : 0]}` : ''}`}
+                style={detailRoom.backgroundImage ? { backgroundImage: `url(${detailRoom.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#1e293b' } : undefined}
+              >
+                {detailRoom.backgroundImage ? <div className="absolute inset-0 bg-black/45" /> : null}
+                <div className="relative z-10">
+                  <h3 className="text-2xl font-black leading-tight text-white drop-shadow-lg sm:text-3xl lg:text-4xl">{detailRoom.name}</h3>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="rounded-full bg-blue-600/95 px-3 py-1 text-[11px] font-bold text-white">Presenter</span>
+                    <span className="rounded-full bg-slate-700/80 px-3 py-1 text-[11px] font-bold text-white">
+                      {(detailRoom.presenterNames && detailRoom.presenterNames[0]) || 'Owner'}
+                    </span>
+                  </div>
+                </div>
+                <div className="relative z-10 mt-4 flex flex-wrap items-center gap-3 text-sm text-white/95">
+                  {detailRoom.venue ? <span>📍 {detailRoom.venue}</span> : null}
+                  {detailRoom.sessionDate ? <span>📅 {new Date(detailRoom.sessionDate).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', year: 'numeric' })}</span> : null}
+                  {detailRoom.timeline ? <span>🕒 {detailRoom.timeline}</span> : null}
+                  {detailRoom.capacity > 0 ? <span>👥 {detailRoom.capacity} seats max</span> : null}
+                </div>
+              </div>
+
+              {detailRoom.description ? (
+                <div className="max-h-[200px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-5 sm:p-6">
+                  <p className="text-sm leading-relaxed text-slate-700 sm:text-base">{detailRoom.description}</p>
+                </div>
+              ) : null}
+
+              {!res ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
+                  <p className="font-medium text-slate-700">
+                    {breakoutScheduleBlock
+                      ? breakoutScheduleBlock
+                      : 'Reserve a slot to get started. After reserving, scan the QR code at the breakout room entrance to check in and unlock full session details.'}
+                  </p>
+                </div>
+              ) : null}
+
+              <div id="speaker-detail-actions" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                {presentingDetailRoom ? (
+                  <div className="rounded-xl bg-violet-50 px-6 py-3 text-center font-semibold text-violet-800">
+                    You are assigned as presenter for this session. No reservation needed.
+                  </div>
+                ) : !res ? (
+                  <button
+                    type="button"
+                    disabled={!!breakoutScheduleBlock}
+                    onClick={() => void handleAttendeeReserve(detailRoom)}
+                    className={`w-full rounded-xl px-6 py-3 font-bold ${breakoutScheduleBlock ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                    title={breakoutScheduleBlock || undefined}
+                  >
+                    Reserve Slot
+                  </button>
+                ) : !res.attended ? (
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      disabled={!!breakoutScheduleBlock}
+                      onClick={() => setScanModal(true)}
+                      className={`w-full rounded-xl px-6 py-3 font-bold ${breakoutScheduleBlock ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                      title={breakoutScheduleBlock || undefined}
+                    >
+                      Scan QR at Breakout Room Entrance
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleAttendeeCancelReservation(detailRoom)}
+                      className="w-full rounded-xl bg-red-500 px-6 py-3 font-bold text-white hover:bg-red-600"
+                    >
+                      Cancel Reservation
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    <div className="rounded-xl bg-emerald-100 px-6 py-3 text-center font-bold text-emerald-700">Timed in — full attendee flow unlocked.</div>
+                    <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+                      <div className="lg:col-span-2 space-y-4">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <h4 className="mb-3 text-sm font-bold text-slate-800">Training materials</h4>
+                          {attendeeMaterials.filter((m) => m.roomId === detailRoom.id).length > 0 ? (
+                            <div className="space-y-2">
+                              {attendeeMaterials.filter((m) => m.roomId === detailRoom.id).map((mat) => (
+                                <a
+                                  key={mat.id}
+                                  href={mat.downloadUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm hover:bg-blue-50"
+                                >
+                                  <FileText size={16} className="text-blue-600" />
+                                  <span className="min-w-0 flex-1 truncate">{mat.fileName}</span>
+                                  <Download size={14} className="text-slate-500" />
+                                </a>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500">No materials available for this room yet.</p>
+                          )}
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <div className="mb-3 flex items-center justify-between gap-2">
+                            <h4 className="text-sm font-bold text-slate-800">Live Q&A</h4>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedRoomForChat(detailRoom)}
+                              className="rounded-full border border-blue-200 px-3 py-1 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                            >
+                              Open full Q&A
+                            </button>
+                          </div>
+                          <div className="max-h-40 space-y-2 overflow-y-auto pr-1">
+                            {roomChatMessages.length === 0 ? (
+                              <p className="text-sm text-slate-500">No live Q&A yet.</p>
+                            ) : (
+                              roomChatMessages.slice(-6).map((msg) => (
+                                <div key={msg.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                                  <p className="text-[11px] font-semibold text-slate-600">{msg.participantName || 'Anonymous'}</p>
+                                  <p className="text-sm text-slate-700">{msg.text}</p>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                          <div className="mt-3 flex gap-2">
+                            <input
+                              value={roomChatInput}
+                              onChange={(e) => setRoomChatInput(e.target.value)}
+                              placeholder="Ask a question..."
+                              className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  void handleSendRoomChat();
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              disabled={roomChatSending || !roomChatInput.trim()}
+                              onClick={() => void handleSendRoomChat()}
+                              className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Ask
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <button
+                          type="button"
+                          disabled={reviewDone}
+                          onClick={() => setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [] })}
+                          className={`w-full rounded-xl px-4 py-3 text-sm font-bold ${reviewDone ? 'cursor-default bg-slate-200 text-slate-500' : 'bg-amber-100 text-amber-800 hover:bg-amber-200'}`}
+                        >
+                          {reviewDone ? 'Review submitted' : 'Submit review'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!reviewDone}
+                          onClick={() => setCertModal(true)}
+                          className={`w-full rounded-xl px-4 py-3 text-sm font-bold ${reviewDone ? 'bg-blue-600 text-white hover:bg-blue-700' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}
+                        >
+                          View certificate
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── QR Scanner modal ─────────────────────────────────────────── */}
       {scanModal && (
         <QrScanModal
@@ -2500,21 +3197,52 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       {idModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl">
-            <div className="bg-blue-600 px-4 py-3 flex items-center justify-between">
-              <div><p className="text-white text-xs font-black tracking-widest uppercase">iSCENE 2026</p><p className="text-blue-200 text-[10px]">Staff Portal · Presenter</p></div>
-              <button type="button" onClick={() => setIdModal(false)} className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white"><X size={14} /></button>
-            </div>
-            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50">
-              {profilePicUrl
-                ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
-                : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
-              <h3 className="text-base font-black text-center">{fullName}</h3>
-              <p className="text-xs text-slate-500 mt-0.5 text-center">{roleTitle}{registration?.sectorOffice ? ` · ${registration.sectorOffice}` : ''}</p>
-              <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">Presenter</span>
-              <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100">
-                <img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44" />
+            <div className="relative bg-blue-600 px-4 py-3">
+              <div className="text-center">
+                <p className="text-white text-sm font-black tracking-widest uppercase">iSCENE 2026</p>
+                <p className="text-blue-200 text-[10px]">International Smart &amp; Sustainable Cities Expo</p>
               </div>
-              <p className="mt-2 text-[11px] text-slate-400 font-mono tracking-widest">ID #{idNumber}</p>
+              <button
+                type="button"
+                onClick={() => setIdModal(false)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white"
+                aria-label="Close"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50 relative overflow-hidden">
+              <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden>
+                <div className="absolute -left-16 -top-16 w-[140%] h-[140%] -rotate-45">
+                  <div className="grid" style={{ gridTemplateColumns: 'repeat(10, 44px)', gridTemplateRows: 'repeat(12, 44px)' }}>
+                    {Array.from({ length: 12 * 10 }).map((_, i) => {
+                      const row = Math.floor(i / 10);
+                      const col = i % 10;
+                      return (
+                        <div key={i} className={`flex items-center justify-center ${row % 2 === 1 ? 'translate-x-[22px]' : ''}`}>
+                          <div className="w-8 h-8 animate-id-watermark-wave-glow flex items-center justify-center" style={{ animationDelay: `${col * 0.2}s` }}>
+                            <img src="/iscene.png" alt="" className="w-6 h-6 object-contain" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="relative z-10 flex flex-col items-center">
+                {profilePicUrl
+                  ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
+                  : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{initials}</div>}
+                <h3 className="text-base font-black text-slate-900 text-center">{fullName}</h3>
+                <p className="text-xs text-slate-500 mt-0.5 text-center">{roleTitle}{registration?.sectorOffice ? ` · ${registration.sectorOffice}` : ''}</p>
+                <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{registration?.sector || 'Presenter'}</span>
+                <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+                  <img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44 relative z-10" />
+                </div>
+                <p className="mt-3 text-[11px] text-slate-500 font-mono tracking-widest text-center">
+                  ID <span className="text-slate-400">#</span>{idNumber}
+                </p>
+              </div>
             </div>
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
               <span className="text-[10px] text-slate-400">April 9–11, 2026</span>
@@ -2594,7 +3322,217 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         </div>
       )}
 
-      {/* Room Q&A Modal (read-only for speakers) */}
+      {/* Speaker attendee review modal */}
+      {reviewModal && (
+        (() => {
+          const reviewAlreadySubmitted = !!attendeeReservations[reviewModal.roomId]?.reviewSubmitted;
+          return (
+        <div className="fixed inset-0 z-[75] flex max-h-dvh min-h-dvh w-full max-w-[100vw] items-end justify-center overflow-hidden bg-black/60 backdrop-blur-sm md:items-center md:p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+          <div className="flex max-h-[min(94dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl md:max-h-[min(90dvh,calc(100dvh-2rem))] md:rounded-3xl">
+            <div className="md:hidden mx-auto mt-2 h-1 w-12 rounded-full bg-slate-300" aria-hidden />
+            <div className="shrink-0 border-b border-slate-200 bg-gradient-to-b from-slate-50 to-white p-4 sm:p-5 flex items-center justify-between">
+              <div className="min-w-0 flex-1 pr-3">
+                <h3 className="text-lg font-black text-slate-900">Session Evaluation Form</h3>
+                <p className="mt-0.5 truncate text-sm font-semibold text-blue-600">{reviewModal.roomName}</p>
+              </div>
+              <button type="button" onClick={() => setReviewModal(null)} className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">
+                <X size={18} />
+              </button>
+            </div>
+            {reviewAlreadySubmitted ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600"><CheckCircle2 size={34} /></div>
+                <p className="text-xl font-black text-slate-900">Submitted</p>
+                <p className="max-w-sm text-sm text-slate-600">Your evaluation for this session is saved. You cannot submit again for this breakout.</p>
+              </div>
+            ) : (
+            <div className="flex-1 space-y-6 overflow-y-auto p-4 pb-8 sm:p-6">
+              <section className="space-y-5 rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50 to-white p-5 shadow-sm sm:p-6">
+                <div>
+                  <h4 className="text-base font-bold text-slate-800">PART I. SUBJECT MATTER</h4>
+                  <p className="mt-1 text-xs text-slate-500">Rate: Low · Satisfactory · Very Good</p>
+                </div>
+                <div className="space-y-6">
+                  <div className="space-y-2"><p className="text-sm font-semibold text-slate-700">Level of Content</p><DOSTPart1Scale value={dostPart1.levelOfContent} onChange={(v) => setDostPart1((p) => ({ ...p, levelOfContent: v }))} /></div>
+                  <div className="space-y-2"><p className="text-sm font-semibold text-slate-700">Appropriateness</p><DOSTPart1Scale value={dostPart1.appropriateness} onChange={(v) => setDostPart1((p) => ({ ...p, appropriateness: v }))} /></div>
+                  <div className="space-y-2"><p className="text-sm font-semibold text-slate-700">Applicability</p><DOSTPart1Scale value={dostPart1.applicability} onChange={(v) => setDostPart1((p) => ({ ...p, applicability: v }))} /></div>
+                </div>
+              </section>
+
+              {(reviewModal.presenterNames.filter((n) => n && n.trim() && n.toLowerCase() !== 'presenter').length
+                ? reviewModal.presenterNames.filter((n) => n && n.trim() && n.toLowerCase() !== 'presenter')
+                : ['Speaker']
+              ).map((speakerName) => {
+                const r = dostPart2[speakerName] || getDefaultDOSTSpeakerRatings();
+                const setR = (up: Partial<DOSTSpeakerRatings>) => setDostPart2((p) => ({ ...p, [speakerName]: { ...(p[speakerName] || getDefaultDOSTSpeakerRatings()), ...up } }));
+                return (
+                  <section key={speakerName} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                    <div className="border-b border-slate-200 pb-4">
+                      <h4 className="text-base font-bold text-slate-800">PART II. SPEAKER</h4>
+                      <p className="mt-1 text-sm font-semibold text-blue-600">{speakerName}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">1 Poor → 5 Excellent</p>
+                    </div>
+                    <div className="space-y-6">
+                      <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Achievement of Session Objectives</p><DOSTScale15 value={r.achievementOfObjectives} onChange={(v) => setR({ achievementOfObjectives: v })} /></div>
+                      <div>
+                        <p className="mb-4 text-sm font-semibold text-slate-700">Mastery of Subject Matter</p>
+                        <div className="space-y-4">
+                          {[{ k: 'exhibitKnowledge', l: 'Ability to exhibit knowledge of subject matter' }, { k: 'answerQuestions', l: "Ability to answer participant's questions" }, { k: 'currentDevelopments', l: 'Ability to inject current developments' }, { k: 'balanceTheoryPractice', l: 'Ability to balance principles/theories with practical applications' }].map(({ k, l }) => (
+                            <div key={k} className="space-y-3"><p className="text-sm text-slate-600">{l}</p><DOSTScale15 value={(r.mastery as any)[k]} onChange={(v) => setR({ mastery: { ...r.mastery, [k]: v } })} /></div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-4 text-sm font-semibold text-slate-700">Presentation of Subject Matter</p>
+                        <div className="space-y-4">
+                          {[{ k: 'preparedness', l: 'Preparedness of speaker' }, { k: 'organizeMaterials', l: 'Ability to organize materials for clarity and precision' }, { k: 'arouseInterest', l: 'Ability to arouse interest' }, { k: 'instructionalMaterials', l: 'Ability to use appropriate instructional materials' }].map(({ k, l }) => (
+                            <div key={k} className="space-y-3"><p className="text-sm text-slate-600">{l}</p><DOSTScale15 value={(r.presentation as any)[k]} onChange={(v) => setR({ presentation: { ...r.presentation, [k]: v } })} /></div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-4 text-sm font-semibold text-slate-700">Teacher-Related Personality Traits</p>
+                        <div className="space-y-4">
+                          {[{ k: 'rapport', l: 'Ability to establish rapport' }, { k: 'considerateness', l: 'Considerateness' }].map(({ k, l }) => (
+                            <div key={k} className="space-y-3"><p className="text-sm text-slate-600">{l}</p><DOSTScale15 value={(r.personality as any)[k]} onChange={(v) => setR({ personality: { ...r.personality, [k]: v } })} /></div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-3 border-t border-slate-200 pt-4"><p className="text-sm font-semibold text-slate-700">Acceptability of Speaker as Resource Person</p><DOSTScale15 value={r.acceptability} onChange={(v) => setR({ acceptability: v })} /></div>
+                    </div>
+                  </section>
+                );
+              })}
+
+              <section className="space-y-5 rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50 to-white p-5 shadow-sm sm:p-6">
+                <div>
+                  <h4 className="text-base font-bold text-slate-800">PART III. TRAINING ENVIRONMENT</h4>
+                  <p className="mt-1 text-xs text-slate-500">1 Poor → 5 Excellent</p>
+                </div>
+                <div className="space-y-6">
+                  <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Venue (room size, lighting, etc.)</p><DOSTScale15 value={dostPart3.venue} onChange={(v) => setDostPart3((p) => ({ ...p, venue: v }))} /></div>
+                  <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Food</p><DOSTScale15 value={dostPart3.food} onChange={(v) => setDostPart3((p) => ({ ...p, food: v }))} /></div>
+                  <div className="space-y-3"><p className="text-sm font-semibold text-slate-700">Ability of organizer to respond to participant&apos;s needs</p><DOSTScale15 value={dostPart3.organizerResponse} onChange={(v) => setDostPart3((p) => ({ ...p, organizerResponse: v }))} /></div>
+                  <div className="space-y-2 pt-2">
+                    <p className="text-xs font-medium text-slate-500">Description (optional)</p>
+                    <textarea value={dostPart3.description} onChange={(e) => setDostPart3((p) => ({ ...p, description: e.target.value }))} rows={2} className="w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500" placeholder="Additional remarks (optional)…" />
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                <div>
+                  <h4 className="text-base font-bold text-slate-800">PART IV. COMMENTS & SUGGESTIONS <span className="text-red-500">*</span></h4>
+                  <p className="mt-1 text-xs text-slate-500">Required. To improve future provision of DOST training assistance.</p>
+                </div>
+                <div className="space-y-2">
+                  <textarea
+                    value={dostPart4}
+                    onChange={(e) => { setDostPart4(e.target.value); setPart4Error(null); }}
+                    rows={4}
+                    className={`w-full resize-none rounded-xl border p-4 text-sm outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-slate-400 ${part4Error ? 'border-red-400 ring-2 ring-red-200' : 'border-slate-200 bg-slate-50 focus:border-blue-500'}`}
+                    placeholder="Your comments, suggestions, and recommendations..."
+                  />
+                  {part4Error ? <p className="text-sm font-medium text-red-600">{part4Error}</p> : null}
+                </div>
+              </section>
+            </div>
+            )}
+            <div className="shrink-0 border-t border-slate-200 bg-white p-4 sm:p-5 pt-3">
+              <button
+                type="button"
+                onClick={() => void handleSubmitDetailReview()}
+                disabled={reviewAlreadySubmitted || reviewSubmitting || !dostPart4.trim()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {reviewAlreadySubmitted ? <><CheckCircle2 size={18} /> Submitted</> : reviewSubmitting ? <><Loader2 size={18} className="animate-spin" /> Submitting…</> : <><Star size={18} /> Submit Review</>}
+              </button>
+            </div>
+          </div>
+        </div>
+          );
+        })()
+      )}
+
+      {/* Speaker attendee certificate modal */}
+      {certificatePreview && (
+        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 p-4">
+              <h3 className="text-lg font-black text-slate-900">Certificate unlocked</h3>
+              <button type="button" onClick={() => setCertificatePreview(null)} className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-3 p-5 text-center">
+              <p className="text-sm text-slate-500">You completed attendance and review for this breakout session.</p>
+              <p className="text-xl font-black text-slate-900">{certificatePreview.roomName}</p>
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+                Awarded to: <span className="font-bold">{fullName}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleDownloadSpeakerCertificate(certificatePreview)}
+                className="w-full rounded-xl bg-blue-600 py-3 text-sm font-black text-white hover:bg-blue-700"
+              >
+                Download certificate (PDF)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Speaker certificates list modal (participant-like) */}
+      {certModal && (
+        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between bg-blue-600 px-5 py-4 text-white">
+              <div>
+                <h3 className="text-xl font-black">Certificates</h3>
+                <p className="text-xs font-medium text-blue-100">Your earned participation certificates</p>
+              </div>
+              <button type="button" onClick={() => setCertModal(false)} className="flex h-10 w-10 items-center justify-center rounded-full bg-white/20 hover:bg-white/30">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="max-h-[70vh] space-y-4 overflow-y-auto p-5">
+              {certifiableSpeakerRooms.length > 0 ? (
+                <>
+                  <p className="text-xs text-slate-500">One certificate per attended session. Preview below and download as PDF.</p>
+                  {certifiableSpeakerRooms.map((c) => (
+                    <div key={c.roomId} className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="rounded-xl border border-slate-200 bg-white p-6 text-center">
+                        <img src="/iscene.png" alt="" className="mx-auto mb-3 h-10 w-10 object-contain" />
+                        <h4 className="text-3xl font-black text-slate-900">iSCENE 2026</h4>
+                        <p className="text-sm text-slate-600">International Smart &amp; Sustainable Cities Expo</p>
+                        <p className="mt-2 text-2xl font-bold text-slate-900">Certificate of Participation</p>
+                        <p className="mt-3 text-sm text-slate-500">This certifies that</p>
+                        <p className="mt-1 text-4xl font-black text-slate-900">{fullName}</p>
+                        <p className="mx-auto mt-3 max-w-xl text-sm text-slate-700">has participated in the breakout session &ldquo;{c.roomName}&rdquo; at the iSCENE 2026 Global Summit.</p>
+                        <p className="mt-4 text-sm text-slate-500">{new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadSpeakerCertificate(c)}
+                        className="w-full rounded-xl bg-blue-600 py-3.5 font-bold text-white hover:bg-blue-700"
+                      >
+                        Download PDF
+                      </button>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center">
+                  <p className="font-semibold text-slate-700">No certificates yet</p>
+                  <p className="mt-1 text-sm text-slate-500">Time in and submit review to unlock a certificate.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Room Q&A Modal */}
       {selectedRoomForChat && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden">
@@ -2606,7 +3544,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
               <button type="button" onClick={() => setSelectedRoomForChat(null)} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200"><X size={18} /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-5">
-              <p className="text-xs text-slate-500 mb-3">Read-only. Participant questions from the discussion.</p>
+              <p className="text-xs text-slate-500 mb-3">Ask and view live participant questions for this breakout room.</p>
               {roomChatMessages.length === 0 ? (
                 <p className="text-sm text-slate-400 text-center py-8">No questions yet.</p>
               ) : (
@@ -2622,6 +3560,28 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   ))}
                 </div>
               )}
+              <div className="mt-4 flex gap-2">
+                <input
+                  value={roomChatInput}
+                  onChange={(e) => setRoomChatInput(e.target.value)}
+                  placeholder="Ask a question..."
+                  className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSendRoomChat();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={roomChatSending || !roomChatInput.trim()}
+                  onClick={() => void handleSendRoomChat()}
+                  className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Send
+                </button>
+              </div>
             </div>
           </div>
         </div>
