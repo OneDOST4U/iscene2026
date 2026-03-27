@@ -1,6 +1,6 @@
 import React from 'react';
 import QrScanner from 'qr-scanner';
-import { ArrowLeft, Camera, CheckCircle2, ImageUp, QrCode, RefreshCw } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ImageUp, QrCode, RefreshCw } from 'lucide-react';
 
 export type QrScanModalProps = {
   title?: string;
@@ -15,7 +15,7 @@ export type QrScanModalProps = {
 export function QrScanModal({
   title = 'iSCENE 2026 Scan',
   subtitle = 'Scanning will start automatically',
-  showTakePhoto = true,
+  showTakePhoto = false,
   onClose,
   onResult,
   footerActions,
@@ -26,7 +26,6 @@ export function QrScanModal({
   const [scanResult, setScanResult] = React.useState<string | null>(null);
 
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-  const captureInputRef = React.useRef<HTMLInputElement | null>(null);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const scannerRef = React.useRef<QrScanner | null>(null);
   const closingRef = React.useRef(false);
@@ -268,16 +267,6 @@ export function QrScanModal({
         onChange={handleImageUpload}
         className="hidden"
       />
-      {showTakePhoto && (
-        <input
-          ref={captureInputRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          onChange={handleImageUpload}
-          className="hidden"
-        />
-      )}
 
       {scanResult ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950">
@@ -354,7 +343,7 @@ export function QrScanModal({
               </div>
             )}
             <div className="grid grid-cols-3 items-center justify-items-center gap-4 max-w-sm mx-auto">
-              <div className={`flex items-center gap-3 justify-self-end ${showTakePhoto ? '' : 'col-span-1'}`}>
+              <div className="flex items-center gap-3 justify-self-end">
                 <button
                   type="button"
                   onClick={() => !controlsDisabled && fileInputRef.current?.click()}
@@ -367,20 +356,6 @@ export function QrScanModal({
                   </span>
                   <span className="text-[10px] font-semibold text-slate-500">Gallery</span>
                 </button>
-                {showTakePhoto && (
-                  <button
-                    type="button"
-                    onClick={() => !controlsDisabled && captureInputRef.current?.click()}
-                    disabled={controlsDisabled}
-                    title="Take Photo"
-                    className="flex flex-col items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
-                  >
-                    <span className="flex size-11 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-blue-600">
-                      <Camera size={18} />
-                    </span>
-                    <span className="text-[10px] font-semibold text-slate-500">Take Photo</span>
-                  </button>
-                )}
               </div>
               <div className="flex size-20 items-center justify-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-500/30 ring-4 ring-blue-200/60">
                 <QrCode size={30} />
@@ -399,7 +374,7 @@ export function QrScanModal({
               </button>
             </div>
             <p className="mt-3 text-center text-xs font-medium text-slate-500">
-              Scan live · Upload from gallery{showTakePhoto ? ' · Take a photo' : ''}
+              Scan live · Upload from gallery
             </p>
           </div>
         </>

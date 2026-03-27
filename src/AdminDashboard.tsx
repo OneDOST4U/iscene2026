@@ -497,6 +497,7 @@ function CreateEntitlementForm({
   const [foodLocationDetails, setFoodLocationDetails] = React.useState('');
   const [eligibleSectors, setEligibleSectors] = React.useState<string[]>([]);
   const [eligibleParticipantIds, setEligibleParticipantIds] = React.useState<string[]>([]);
+  const [personSearch, setPersonSearch] = React.useState('');
   const [saving, setSaving] = React.useState(false);
 
   const editingMealId = initialMeal?.id;
@@ -513,6 +514,7 @@ function CreateEntitlementForm({
       setFoodLocationDetails('');
       setEligibleSectors([]);
       setEligibleParticipantIds([]);
+      setPersonSearch('');
       return;
     }
     const m = initialMeal;
@@ -532,6 +534,7 @@ function CreateEntitlementForm({
     setFoodLocationDetails(m.foodLocationDetails || '');
     setEligibleSectors(m.eligibleSectors?.length ? [...m.eligibleSectors] : []);
     setEligibleParticipantIds(m.eligibleParticipantIds?.length ? [...m.eligibleParticipantIds] : []);
+    setPersonSearch('');
   }, [initialMeal]);
 
   /** Food / kit entitlements are issued only by Food (Booth) — not exhibitor research booths */
@@ -602,6 +605,43 @@ function CreateEntitlementForm({
       setEligibleParticipantIds((prev) => [...prev, regId]);
     }
   };
+
+  const togglePerson = (regId: string) => {
+    setEligibleParticipantIds((prev) => (prev.includes(regId) ? prev.filter((x) => x !== regId) : [...prev, regId]));
+  };
+
+  const filteredApprovedPeople = React.useMemo(() => {
+    const q = personSearch.trim().toLowerCase();
+    if (!q) return approvedRegistrations;
+    return approvedRegistrations.filter((r) =>
+      [r.fullName, r.email, r.sector]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(q)),
+    );
+  }, [approvedRegistrations, personSearch]);
+
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'food-entitlement-people-picker',
+        hypothesisId: 'P1_P2_P3',
+        location: 'src/AdminDashboard.tsx:CreateEntitlementForm:personPicker',
+        message: 'Specific person picker state changed',
+        data: {
+          personSearch,
+          selectedCount: eligibleParticipantIds.length,
+          visibleCount: filteredApprovedPeople.length,
+          totalApproved: approvedRegistrations.length,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [personSearch, eligibleParticipantIds.length, filteredApprovedPeople.length, approvedRegistrations.length]);
 
   const toggleSector = (sector: string) => {
     setEligibleSectors((prev) =>
@@ -700,12 +740,48 @@ function CreateEntitlementForm({
         <p className="text-[10px] text-slate-400 mt-1">Leave empty = all sectors eligible</p>
       </Field>
       <Field label="Specific Persons (optional)">
-        <select value="" onChange={(e) => addPerson(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">Add a person...</option>
-          {approvedRegistrations.filter((r) => !eligibleParticipantIds.includes(r.id)).map((r) => (
-            <option key={r.id} value={r.id}>{r.fullName} ({r.sector})</option>
-          ))}
-        </select>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="search"
+              value={personSearch}
+              onChange={(e) => setPersonSearch(e.target.value)}
+              placeholder="Search by name, email, or role..."
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                filteredApprovedPeople.forEach((p) => addPerson(p.id));
+              }}
+              className="shrink-0 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs font-bold text-blue-700 hover:bg-blue-100"
+            >
+              Add all
+            </button>
+          </div>
+          <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2">
+            {filteredApprovedPeople.length === 0 ? (
+              <p className="px-2 py-2 text-xs text-slate-400">No approved users match your search.</p>
+            ) : (
+              <div className="space-y-1">
+                {filteredApprovedPeople.map((r) => (
+                  <label key={r.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={eligibleParticipantIds.includes(r.id)}
+                      onChange={() => togglePerson(r.id)}
+                      className="mt-0.5 rounded border-slate-300 text-blue-600"
+                    />
+                    <span className="min-w-0 text-xs text-slate-700">
+                      <span className="block truncate font-semibold">{r.fullName || '—'}</span>
+                      <span className="block truncate text-slate-500">{r.email || '—'} · {r.sector || '—'}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
         {eligibleParticipantIds.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-2">
             {eligibleParticipantIds.map((regId) => {
