@@ -166,6 +166,45 @@ const MEAL_LABELS: Record<string, string> = {
   kit: 'Kit',
 };
 
+function foodClaimTimeMs(c: FoodClaim): number {
+  const raw = c.claimedAt as { toDate?: () => Date } | undefined;
+  try {
+    return raw?.toDate ? raw.toDate().getTime() : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Booth operators set `boothBackgroundUrl` in the food/exhibitor booth app; older docs may use other keys. */
+function boothBackgroundFromReg(b: Record<string, unknown>): string | undefined {
+  for (const key of ['boothBackgroundUrl', 'backgroundImage', 'boothBackgroundImage'] as const) {
+    const v = b[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+function mealTypeReportBadgeClass(mealType: string | undefined): string {
+  const t = (mealType || '').toLowerCase();
+  if (t === 'kit') return 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200/80';
+  if (
+    t === 'food' ||
+    t === 'lunch' ||
+    t === 'dinner' ||
+    t === 'breakfast' ||
+    t === 'snacks' ||
+    t === 'snacks_pm'
+  ) {
+    return 'bg-orange-100 text-orange-900 ring-1 ring-orange-200/80';
+  }
+  return 'bg-slate-100 text-slate-700 ring-1 ring-slate-200/80';
+}
+
+function mealTypeReportBadgeText(mealType: string | undefined): string {
+  if (!mealType) return '';
+  return mealType.replace(/_/g, ' ').toUpperCase();
+}
+
 function csvEscape(v: unknown): string {
   const s = v == null ? '' : String(v);
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -251,7 +290,20 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
   const [loading,      setLoading]        = React.useState(true);
   const [meals, setMeals] = React.useState<MealWindow[]>([]);
   const [allFoodClaims, setAllFoodClaims] = React.useState<FoodClaim[]>([]);
-  const [boothRegs, setBoothRegs] = React.useState<{ id?: string; uid?: string; fullName?: string; boothLocationDetails?: string; status?: string; sector?: string }[]>([]);
+  const [boothRegs, setBoothRegs] = React.useState<
+    {
+      id?: string;
+      uid?: string;
+      fullName?: string;
+      boothLocationDetails?: string;
+      status?: string;
+      sector?: string;
+      boothBackgroundUrl?: string;
+      profilePictureUrl?: string;
+      sectorOffice?: string;
+      contactNumber?: string;
+    }[]
+  >([]);
   const [claimClockTick, setClaimClockTick] = React.useState(() => Date.now());
 
   // â”€â”€ Participant table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -598,6 +650,20 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     [allFoodClaims],
   );
 
+  const foodClaimsByBoothUid = React.useMemo(() => {
+    const m = new Map<string, FoodClaim[]>();
+    for (const c of allFoodClaims) {
+      const uid = c.claimedBy;
+      if (!uid) continue;
+      if (!m.has(uid)) m.set(uid, []);
+      m.get(uid)!.push(c);
+    }
+    for (const arr of m.values()) {
+      arr.sort((a, b) => foodClaimTimeMs(b) - foodClaimTimeMs(a));
+    }
+    return m;
+  }, [allFoodClaims]);
+
   const entranceRate = approvedCount > 0 ? Math.round((checkedInCount / approvedCount) * 100) : 0;
   const roomAttendanceUniqueCount = React.useMemo(
     () => new Set(attendance.filter((a) => a.type === 'room').map((a) => a.uid)).size,
@@ -869,7 +935,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
     accommodations: 'Accommodations',
     travel:         'Travel Schedule',
     meals:          'My Entitlements',
-    calendar:       'Event Calendar',
+    calendar:       'Event Calendar \u2014 Session Rooms',
     breakouts:      'Breakout rooms',
     foodReports:    'Food & booths',
     profile:        'My Profile',
@@ -1181,8 +1247,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {activeTab === 'analytics' && (
             <div>
               <div className="mb-5">
-                <h2 className="text-xl font-black">Event analytics</h2>
-                <p className="text-slate-400 text-sm mt-1">Attendance, room utilization, and participant distribution</p>
+                <h2 className="text-xl font-black lg:hidden">Event analytics</h2>
+                <p className="text-slate-400 text-sm mt-1 lg:mt-0">Attendance, room utilization, and participant distribution</p>
               </div>
 
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
@@ -1427,8 +1493,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {activeTab === 'accommodations' && (
             <div>
               <div className="mb-5">
-                <h2 className="text-xl font-black">Accommodation Details</h2>
-                <p className="text-slate-400 text-sm mt-1">View hotel and check-in details for all registered attendees</p>
+                <h2 className="text-xl font-black lg:hidden">Accommodation Details</h2>
+                <p className="text-slate-400 text-sm mt-1 lg:mt-0">View hotel and check-in details for all registered attendees</p>
               </div>
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                 <table className="w-full text-left">
@@ -1481,8 +1547,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {activeTab === 'travel' && (
             <div>
               <div className="mb-5">
-                <h2 className="text-xl font-black">Travel Schedule</h2>
-                <p className="text-slate-400 text-sm mt-1">Flight and ground transport details for all attendees</p>
+                <h2 className="text-xl font-black lg:hidden">Travel Schedule</h2>
+                <p className="text-slate-400 text-sm mt-1 lg:mt-0">Flight and ground transport details for all attendees</p>
               </div>
               <div className="md:hidden space-y-3">
                 {participants.filter((p) => p.status === 'approved').map((p) => {
@@ -1572,9 +1638,11 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {activeTab === 'meals' && (
             <div className="max-w-6xl mx-auto w-full">
               <div className="mb-6">
-                <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Entitlements</p>
-                <h2 className="text-2xl font-black tracking-tight">My Entitlements</h2>
-                <p className="text-sm text-slate-500 mt-1">
+                <div className="lg:hidden">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Entitlements</p>
+                  <h2 className="text-2xl font-black tracking-tight">My Entitlements</h2>
+                </div>
+                <p className="text-sm text-slate-500 mt-1 lg:mt-0">
                   Food, kits, and giveaways — during the pickup window, open Digital ID so the food booth can scan your QR.
                 </p>
               </div>
@@ -1606,8 +1674,10 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             <div>
               <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
                 <div>
-                  <h2 className="text-xl font-black">Event Calendar â€” Session Rooms</h2>
-                  <p className="text-slate-400 text-sm mt-1">Monitor session capacity and attendance by day</p>
+                  <h2 className="text-xl font-black lg:hidden">
+                    Event Calendar {'\u2014'} Session Rooms
+                  </h2>
+                  <p className="text-slate-400 text-sm mt-1 lg:mt-0">Monitor session capacity and attendance by day</p>
                 </div>
                 <div className="flex flex-wrap gap-2 items-center">
                   <div className="relative w-full sm:w-56">
@@ -1700,8 +1770,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
             <div>
               <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
                 <div>
-                  <h2 className="text-xl font-black">Breakout sessions</h2>
-                  <p className="text-slate-400 text-sm mt-1">Grouped by day with reservation and attendance details</p>
+                  <h2 className="text-xl font-black lg:hidden">Breakout sessions</h2>
+                  <p className="text-slate-400 text-sm mt-1 lg:mt-0">Grouped by day with reservation and attendance details</p>
                 </div>
                 <div className="flex flex-wrap gap-2 items-center">
                   <div className="relative w-full sm:w-56">
@@ -1870,8 +1940,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
           {activeTab === 'foodReports' && (
             <div>
               <div className="mb-6">
-                <h2 className="text-xl font-black">Food & booth reporting</h2>
-                <p className="text-slate-400 text-sm mt-1">Booth registrations, meal entitlements, and recorded claims</p>
+                <h2 className="text-xl font-black lg:hidden">Food & booth reporting</h2>
+                <p className="text-slate-400 text-sm mt-1 lg:mt-0">Booth registrations, meal entitlements, and recorded claims</p>
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
                 {[
@@ -1955,6 +2025,20 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                               </dd>
                             </div>
                             <div className="flex justify-between gap-2">
+                              <dt className="text-slate-500">Type</dt>
+                              <dd className="text-right">
+                                {c.mealType ? (
+                                  <span
+                                    className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${mealTypeReportBadgeClass(c.mealType)}`}
+                                  >
+                                    {mealTypeReportBadgeText(c.mealType)}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">—</span>
+                                )}
+                              </dd>
+                            </div>
+                            <div className="flex justify-between gap-2">
                               <dt className="text-slate-500">Session date</dt>
                               <dd className="text-slate-700">{c.sessionDate ? String(c.sessionDate).split('T')[0] : '—'}</dd>
                             </div>
@@ -1979,6 +2063,7 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             <th className="px-4 py-3 font-semibold">Participant</th>
                             <th className="px-4 py-3 font-semibold hidden sm:table-cell">Sector</th>
                             <th className="px-4 py-3 font-semibold">Meal</th>
+                            <th className="px-4 py-3 font-semibold whitespace-nowrap">Type</th>
                             <th className="px-4 py-3 font-semibold hidden md:table-cell">Session date</th>
                             <th className="px-4 py-3 font-semibold hidden lg:table-cell">Booth / staff</th>
                             <th className="px-4 py-3 font-semibold">Claimed</th>
@@ -1999,6 +2084,17 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                                 <td className="px-4 py-3 text-slate-600 hidden sm:table-cell">{c.sector || '—'}</td>
                                 <td className="px-4 py-3">
                                   <span className="font-medium">{c.mealName || MEAL_LABELS[c.mealType || ''] || c.mealType || '—'}</span>
+                                </td>
+                                <td className="px-4 py-3 align-middle">
+                                  {c.mealType ? (
+                                    <span
+                                      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${mealTypeReportBadgeClass(c.mealType)}`}
+                                    >
+                                      {mealTypeReportBadgeText(c.mealType)}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3 text-slate-600 hidden md:table-cell whitespace-nowrap">
                                   {c.sessionDate ? String(c.sessionDate).split('T')[0] : '—'}
@@ -2072,9 +2168,11 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                       <p className="text-xs font-bold uppercase tracking-wide text-orange-600 mb-2">Food booths</p>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {boothRegs.filter((b) => (b.sector || '').toLowerCase().includes('food')).map((b) => {
-                          const boothBg = (b as any).backgroundImage || (b as any).boothBackgroundImage;
+                          const boothBg = boothBackgroundFromReg(b as Record<string, unknown>);
                           const boothName = b.fullName || b.uid || 'Booth';
                           const boothInitial = String(boothName).trim().charAt(0).toUpperCase() || 'B';
+                          const boothUid = b.uid || '';
+                          const boothClaims = boothUid ? foodClaimsByBoothUid.get(boothUid) ?? [] : [];
                           return (
                           <div key={`food-${b.id || b.uid}`} className="rounded-2xl border border-orange-200 bg-white shadow-sm overflow-hidden">
                             {boothBg ? (
@@ -2087,8 +2185,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             )}
                             <div className="p-4">
                               <div className="flex items-start gap-3">
-                                {(b as any).profilePictureUrl ? (
-                                  <img src={(b as any).profilePictureUrl} alt={boothName} className="w-10 h-10 rounded-full object-cover ring-2 ring-white shadow-sm shrink-0" />
+                                {b.profilePictureUrl ? (
+                                  <img src={b.profilePictureUrl} alt={boothName} className="w-10 h-10 rounded-full object-cover ring-2 ring-white shadow-sm shrink-0" />
                                 ) : (
                                   <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center text-xs font-black shrink-0">
                                     {boothInitial}
@@ -2100,9 +2198,32 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                                 </div>
                               </div>
                               <div className="mt-3 text-sm text-slate-600 space-y-1">
-                                {(b as any).sectorOffice ? <p>{(b as any).sectorOffice}</p> : null}
-                                {(b as any).contactNumber ? <p className="text-[13px] text-slate-500">{(b as any).contactNumber}</p> : null}
+                                {b.sectorOffice ? <p>{b.sectorOffice}</p> : null}
+                                {b.contactNumber ? <p className="text-[13px] text-slate-500">{b.contactNumber}</p> : null}
                                 {b.boothLocationDetails ? <p className="text-[13px] text-indigo-500">Booth {b.boothLocationDetails}</p> : null}
+                              </div>
+                              <div className="mt-3 border-t border-slate-100 pt-3">
+                                <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">Claims ({boothClaims.length})</p>
+                                {boothClaims.length === 0 ? (
+                                  <p className="text-xs text-slate-400">No claims recorded at this booth yet.</p>
+                                ) : (
+                                  <ul className="max-h-44 space-y-2 overflow-y-auto overscroll-y-contain pr-1 text-xs [-webkit-overflow-scrolling:touch]">
+                                    {boothClaims.map((c) => {
+                                      const at =
+                                        c.claimedAt && typeof (c.claimedAt as { toDate?: () => Date }).toDate === 'function'
+                                          ? (c.claimedAt as { toDate: () => Date }).toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+                                          : '—';
+                                      return (
+                                        <li key={c.id} className="rounded-lg bg-slate-50/90 px-2 py-1.5 ring-1 ring-slate-100">
+                                          <span className="font-semibold text-slate-800">{c.participantName || c.participantUid || 'Attendee'}</span>
+                                          <span className="mt-0.5 block text-[11px] text-slate-500">
+                                            {c.mealName || MEAL_LABELS[c.mealType || ''] || c.mealType || 'Meal'} · {at}
+                                          </span>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -2114,9 +2235,11 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                       <p className="text-xs font-bold uppercase tracking-wide text-blue-600 mb-2">Exhibitor booths</p>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {boothRegs.filter((b) => !(b.sector || '').toLowerCase().includes('food')).map((b) => {
-                          const boothBg = (b as any).backgroundImage || (b as any).boothBackgroundImage;
+                          const boothBg = boothBackgroundFromReg(b as Record<string, unknown>);
                           const boothName = b.fullName || b.uid || 'Booth';
                           const boothInitial = String(boothName).trim().charAt(0).toUpperCase() || 'B';
+                          const boothUid = b.uid || '';
+                          const boothClaims = boothUid ? foodClaimsByBoothUid.get(boothUid) ?? [] : [];
                           return (
                           <div key={`exhibitor-${b.id || b.uid}`} className="rounded-2xl border border-blue-200 bg-white shadow-sm overflow-hidden">
                             {boothBg ? (
@@ -2129,8 +2252,8 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                             )}
                             <div className="p-4">
                               <div className="flex items-start gap-3">
-                                {(b as any).profilePictureUrl ? (
-                                  <img src={(b as any).profilePictureUrl} alt={boothName} className="w-10 h-10 rounded-full object-cover ring-2 ring-white shadow-sm shrink-0" />
+                                {b.profilePictureUrl ? (
+                                  <img src={b.profilePictureUrl} alt={boothName} className="w-10 h-10 rounded-full object-cover ring-2 ring-white shadow-sm shrink-0" />
                                 ) : (
                                   <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center text-xs font-black shrink-0">
                                     {boothInitial}
@@ -2142,9 +2265,32 @@ function FacilitatorDashboard({ user, registration, onSignOut }: Props) {
                                 </div>
                               </div>
                               <div className="mt-3 text-sm text-slate-600 space-y-1">
-                                {(b as any).sectorOffice ? <p>{(b as any).sectorOffice}</p> : null}
-                                {(b as any).contactNumber ? <p className="text-[13px] text-slate-500">{(b as any).contactNumber}</p> : null}
+                                {b.sectorOffice ? <p>{b.sectorOffice}</p> : null}
+                                {b.contactNumber ? <p className="text-[13px] text-slate-500">{b.contactNumber}</p> : null}
                                 {b.boothLocationDetails ? <p className="text-[13px] text-indigo-500">Booth {b.boothLocationDetails}</p> : null}
+                              </div>
+                              <div className="mt-3 border-t border-slate-100 pt-3">
+                                <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">Claims ({boothClaims.length})</p>
+                                {boothClaims.length === 0 ? (
+                                  <p className="text-xs text-slate-400">No claims recorded at this booth yet.</p>
+                                ) : (
+                                  <ul className="max-h-44 space-y-2 overflow-y-auto overscroll-y-contain pr-1 text-xs [-webkit-overflow-scrolling:touch]">
+                                    {boothClaims.map((c) => {
+                                      const at =
+                                        c.claimedAt && typeof (c.claimedAt as { toDate?: () => Date }).toDate === 'function'
+                                          ? (c.claimedAt as { toDate: () => Date }).toDate().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+                                          : '—';
+                                      return (
+                                        <li key={c.id} className="rounded-lg bg-slate-50/90 px-2 py-1.5 ring-1 ring-slate-100">
+                                          <span className="font-semibold text-slate-800">{c.participantName || c.participantUid || 'Attendee'}</span>
+                                          <span className="mt-0.5 block text-[11px] text-slate-500">
+                                            {c.mealName || MEAL_LABELS[c.mealType || ''] || c.mealType || 'Meal'} · {at}
+                                          </span>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                )}
                               </div>
                             </div>
                           </div>

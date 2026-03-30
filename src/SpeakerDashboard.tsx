@@ -543,7 +543,11 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       case 'sessions':
         return { title: 'My sessions', subtitle: 'Sessions where you are assigned as a presenter — edit details and view Q&A.' };
       case 'breakouts':
-        return { title: 'Break out room', subtitle: 'Reserve other sessions to attend as a participant. Scan the room QR to check in.' };
+        return {
+          title: 'Join breakouts',
+          subtitle:
+            'Reserve sessions you are not presenting to attend as a participant. One overlapping reservation at a time — same rules as the participant app. Scan the room QR to check in.',
+        };
       case 'reviews':
         return { title: 'Session reviews', subtitle: 'Feedback from attendees for your sessions.' };
       case 'meals':
@@ -605,12 +609,6 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     });
     return Array.from(groups.entries()).sort((a, b) => String(b[0]).localeCompare(String(a[0])));
   }, [filteredBreakoutRooms]);
-
-  React.useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'speaker-breakout-date-order',hypothesisId:'BD1',location:'src/SpeakerDashboard.tsx:breakoutDateOrder',message:'Speaker breakout date ordering snapshot',data:{dateOptions:breakoutDateOptions.slice(0,6),filteredRooms:filteredBreakoutRooms.length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  }, [breakoutDateOptions, filteredBreakoutRooms.length]);
 
   const isPresentingRoom = React.useCallback((roomId: string) => assignedRooms.some((r) => r.id === roomId), [assignedRooms]);
   const certifiableSpeakerRooms = React.useMemo(
@@ -1820,8 +1818,8 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
           <div className="p-4 sm:p-6 lg:p-8">
             <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <h2 className="text-2xl font-black">Assigned Sessions</h2>
-                <p className="text-slate-500 text-sm mt-1">All sessions where you are listed as a presenter</p>
+                <h2 className="text-2xl font-black lg:hidden">Assigned Sessions</h2>
+                <p className="text-slate-500 text-sm mt-1 lg:hidden">All sessions where you are listed as a presenter</p>
               </div>
             </div>
             <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
@@ -1833,9 +1831,9 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         {/* ══════════════════════ JOIN BREAKOUTS (as attendee) ══════════════════════ */}
         {activeTab === 'breakouts' && (
           <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6 max-w-2xl">
-              <h2 className="text-2xl font-black">Join breakouts</h2>
-              <p className="mt-1 text-sm text-slate-500">
+            <div className="mb-6 max-w-2xl lg:mb-4">
+              <h2 className="text-2xl font-black lg:hidden">Join breakouts</h2>
+              <p className="mt-1 text-sm text-slate-500 lg:hidden">
                 Reserve sessions you are <strong>not</strong> presenting to attend as a participant. Scan the room QR to check in. One overlapping reservation at a time — same rules as the participant app.
               </p>
             </div>
@@ -2210,9 +2208,9 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         {/* ══════════════════════ UPLOADS TAB ══════════════════════ */}
         {activeTab === 'uploads' && (
           <div className="p-4 sm:p-6 lg:p-8">
-            <div className="mb-6">
-              <h2 className="text-2xl font-black">Booth Uploads</h2>
-              <p className="text-slate-500 text-sm mt-1">Upload and manage your booth digital assets</p>
+            <div className="mb-6 lg:mb-4">
+              <h2 className="text-2xl font-black lg:hidden">Booth Uploads</h2>
+              <p className="text-slate-500 text-sm mt-1 lg:hidden">Upload and manage your booth digital assets</p>
             </div>
             <div className="max-w-3xl">
                 {/* Large upload zone */}
@@ -2413,7 +2411,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
         {/* ══════════════════════ PROFILE TAB ══════════════════════ */}
         {activeTab === 'profile' && (
           <div className="max-w-2xl p-4 sm:p-6 lg:p-8">
-            <h2 className="text-2xl font-black mb-6">My Profile</h2>
+            <h2 className="mb-6 text-2xl font-black lg:hidden">My Profile</h2>
             <div className="space-y-4">
               {/* Avatar */}
               <div className="flex flex-col gap-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-sm sm:flex-row sm:items-center">
