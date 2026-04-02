@@ -474,7 +474,11 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
   }, [meals]);
 
   const digitalIdQrData = `https://iscene.app/verify?uid=${user.uid}&name=${encodeURIComponent(fullName)}&role=food-booth`;
-  const digitalIdQrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(digitalIdQrData)}`;
+  const digitalIdQrImg = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(digitalIdQrData)}`;
+  const idNumber = user.uid.slice(0, 8).toUpperCase();
+  const idPositionTrim = registration?.positionTitle?.trim();
+  const idDesignationTrim =
+    (registrationOverride?.sectorOffice ?? registration?.sectorOffice)?.trim() || registration?.sector?.trim() || '';
 
   // ── Load ───────────────────────────────────────────────────────────────
   React.useEffect(() => {
@@ -2965,60 +2969,60 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
       {/* ── Digital ID ───────────────────────────────────────────────── */}
       {idModal && (
         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl">
-            <div className="relative bg-blue-600 px-4 py-3">
-              <div className="text-center">
-                <p className="text-white text-sm font-black tracking-widest uppercase">iSCENE 2026</p>
-                <p className="text-blue-200 text-[10px]">International Smart &amp; Sustainable Cities Expo</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIdModal(false)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white"
-                aria-label="Close"
-              >
-                <X size={14} />
-              </button>
-            </div>
-            <div className="px-5 py-5 flex flex-col items-center bg-gradient-to-b from-white to-slate-50 relative overflow-hidden">
-              <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden>
-                <div className="absolute -left-16 -top-16 w-[140%] h-[140%] -rotate-45">
-                  <div className="grid" style={{ gridTemplateColumns: 'repeat(10, 44px)', gridTemplateRows: 'repeat(12, 44px)' }}>
-                    {Array.from({ length: 12 * 10 }).map((_, i) => {
-                      const row = Math.floor(i / 10);
-                      const col = i % 10;
-                      return (
-                        <div key={i} className={`flex items-center justify-center ${row % 2 === 1 ? 'translate-x-[22px]' : ''}`}>
-                          <div className="w-8 h-8 animate-id-watermark-wave-glow flex items-center justify-center" style={{ animationDelay: `${col * 0.2}s` }}>
-                            <img src="/iscene.png" alt="" className="w-6 h-6 object-contain" />
-                          </div>
-                        </div>
-                      );
-                    })}
+          <div className="relative w-full max-w-xs rounded-3xl overflow-hidden shadow-2xl bg-white flex flex-col">
+            <button
+              type="button"
+              onClick={() => setIdModal(false)}
+              className="absolute right-3 top-3 z-20 w-8 h-8 rounded-full bg-white/90 shadow-sm border border-slate-200/80 hover:bg-slate-50 flex items-center justify-center text-slate-700"
+              aria-label="Close"
+            >
+              <X size={14} />
+            </button>
+            <div
+              className="relative flex flex-col flex-1 min-h-[400px] bg-cover bg-center bg-no-repeat"
+              style={{ backgroundImage: "url('/id-background.png')" }}
+            >
+              <img
+                src="/iscene.png"
+                alt="iSCENE"
+                className="absolute left-4 top-4 w-[5.5rem] sm:w-24 h-auto object-contain z-10 pointer-events-none select-none"
+              />
+              <div className="relative z-10 flex flex-col items-center flex-1 justify-center px-4 pt-16 pb-4">
+                {profilePicUrl ? (
+                  <img
+                    src={profilePicUrl}
+                    alt={fullName}
+                    className="w-28 h-28 rounded-full object-cover ring-2 ring-white/90 shadow-md"
+                  />
+                ) : (
+                  <div className="w-28 h-28 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white ring-2 ring-white/90 shadow-md">
+                    {myInitials}
                   </div>
+                )}
+                <div className="mt-2.5 w-full max-w-[15.5rem] mx-auto rounded-xl border border-white/70 bg-white/40 px-2.5 py-2 text-center shadow-[0_1px_14px_rgba(15,23,42,0.06)] backdrop-blur-md backdrop-saturate-150">
+                  <h3 className="text-xs sm:text-[13px] font-black text-slate-900 uppercase tracking-wide leading-none">
+                    {fullName.toUpperCase()}
+                  </h3>
+                  <p className="mt-1 text-[10px] font-semibold text-slate-800 uppercase tracking-wide leading-tight">
+                    {(idPositionTrim || 'Food (Booth)').toUpperCase()}
+                    {idDesignationTrim ? (
+                      <span className="font-medium text-slate-600 normal-case tracking-normal">
+                        {' '}
+                        | {idDesignationTrim}
+                      </span>
+                    ) : null}
+                  </p>
                 </div>
-              </div>
-              <div className="relative z-10 flex flex-col items-center">
-                {profilePicUrl
-                  ? <img src={profilePicUrl} alt={fullName} className="w-20 h-20 rounded-full object-cover mb-3 ring-4 ring-blue-100 shadow-md" />
-                  : <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white mb-3 ring-4 ring-blue-100">{myInitials}</div>}
-                <h3 className="text-base font-black text-slate-900 text-center">{fullName}</h3>
-                <p className="text-xs text-slate-500 mt-0.5 text-center">{registration?.positionTitle}{(registrationOverride?.sectorOffice ?? registration?.sectorOffice) ? ` · ${(registrationOverride?.sectorOffice ?? registration?.sectorOffice)}` : ''}</p>
-                <span className="mt-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">{registration?.sector || 'Food (Booth)'}</span>
-                <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
-                  <img src={digitalIdQrImg} alt="Digital ID QR" className="w-44 h-44 relative z-10" />
+                <div className="mt-3 p-2.5 bg-white rounded-xl shadow-sm border border-slate-200/90">
+                  <img src={digitalIdQrImg} alt="Digital ID QR" className="w-[7.5rem] h-[7.5rem] sm:w-32 sm:h-32 block" />
                 </div>
-                <p className="mt-3 text-[11px] text-slate-500 font-mono tracking-widest text-center">
-                  ID <span className="text-slate-400">#</span>{user.uid.slice(0, 8).toUpperCase()}
+                <p className="mt-2.5 text-[10px] text-slate-600 font-mono tracking-widest text-center">
+                  ID <span className="text-slate-400">#</span>
+                  {idNumber}
                 </p>
               </div>
             </div>
-            <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-[10px] text-slate-400">April 9–11, 2026</span>
-              <a href={`https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(digitalIdQrData)}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:underline">
-                <Download size={11} /> Download QR
-              </a>
-            </div>
+            <img src="/footer.png" alt="" className="w-full h-auto object-cover object-bottom block shrink-0" />
           </div>
         </div>
       )}
