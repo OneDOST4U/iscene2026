@@ -1396,8 +1396,19 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     if (!registrationId) return;
     setTravelSaving(true);
     try {
-      await updateDoc(doc(db, 'registrations', registrationId), { travelDetails, accommodationDetails });
+      await updateDoc(doc(db, 'registrations', registrationId), {
+        travelDetails,
+        accommodationDetails,
+        travelAccommodationUpdatedAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
       setEditingTravel(false);
+      setScanToast('✅ Travel & accommodation saved.');
+      setTimeout(() => setScanToast(null), 4000);
+    } catch (err) {
+      console.error('Travel save failed', err);
+      setScanToast('❌ Could not save. Check connection and try again.');
+      setTimeout(() => setScanToast(null), 5000);
     } finally {
       setTravelSaving(false);
     }

@@ -385,11 +385,19 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
     if (!registration?.id) return;
     setTravelSaving(true);
     try {
-      await updateDoc(doc(db, 'registrations', registration.id), { travelDetails, accommodationDetails });
+      const now = Timestamp.now();
+      await updateDoc(doc(db, 'registrations', registration.id), {
+        travelDetails,
+        accommodationDetails,
+        travelAccommodationUpdatedAt: now,
+        updatedAt: now,
+      });
       setRegistrationOverride((prev) => ({
         ...(prev || {}),
         travelDetails,
         accommodationDetails,
+        travelAccommodationUpdatedAt: now,
+        updatedAt: now,
       }));
       setEditingTravel(false);
       showToast('Travel & accommodation saved.');

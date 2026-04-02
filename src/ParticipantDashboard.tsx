@@ -331,7 +331,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [travelDetails, setTravelDetails] = React.useState((registration?.travelDetails as string) || '');
   const [accommodationDetails, setAccommodationDetails] = React.useState((registration?.accommodationDetails as string) || '');
   const [travelSaving, setTravelSaving] = React.useState(false);
+  const [travelSaveError, setTravelSaveError] = React.useState<string | null>(null);
+  const [travelSavedFlash, setTravelSavedFlash] = React.useState(false);
   const [pwResetSent, setPwResetSent] = React.useState(false);
+
+  React.useEffect(() => {
+    setTravelDetails((registration?.travelDetails as string) || '');
+    setAccommodationDetails((registration?.accommodationDetails as string) || '');
+  }, [registration?.id, registration?.travelDetails, registration?.accommodationDetails]);
 
   // ── Scan toast ─────────────────────────────────────────────────────────────
   const [scanToast, setScanToast] = React.useState<string | null>(null);
@@ -1154,13 +1161,38 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     } finally { setRoomChatSending(false); }
   };
 
+  const travelFileUpdatedLabel = React.useMemo(() => {
+    const raw = registration?.travelAccommodationUpdatedAt as Timestamp | undefined;
+    if (!raw || typeof raw.toDate !== 'function') return null;
+    try {
+      return raw.toDate().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
+    } catch {
+      return null;
+    }
+  }, [registration?.travelAccommodationUpdatedAt]);
+
   const handleSaveTravel = async () => {
     if (!registration?.id) return;
+    setTravelSaveError(null);
     setTravelSaving(true);
     try {
-      await updateDoc(doc(db, 'registrations', registration.id), { travelDetails, accommodationDetails });
+      await updateDoc(doc(db, 'registrations', registration.id), {
+        travelDetails,
+        accommodationDetails,
+        travelAccommodationUpdatedAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
       setEditingTravel(false);
-    } finally { setTravelSaving(false); }
+      setTravelSavedFlash(true);
+      window.setTimeout(() => setTravelSavedFlash(false), 5000);
+      setScanToast('✅ Travel & accommodation saved.');
+      window.setTimeout(() => setScanToast(null), 4000);
+    } catch (err) {
+      console.error('Travel save failed', err);
+      setTravelSaveError('Could not save. Check your connection and tap Save again.');
+    } finally {
+      setTravelSaving(false);
+    }
   };
 
   const handlePasswordReset = async () => {
@@ -1294,11 +1326,21 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {travelAccIncomplete && !editingTravel ? (
           <p className="text-xs font-semibold text-orange-800 mb-2">Please add both travel and accommodation details.</p>
         ) : null}
+        {!travelAccIncomplete && !editingTravel ? (
+          <p className="text-xs font-medium text-emerald-800 mb-2">
+            On file — your flight and stay are saved for organizers.
+            {travelFileUpdatedLabel ? (
+              <span className="block text-[11px] text-emerald-700/90 mt-0.5 font-normal">Last updated {travelFileUpdatedLabel}</span>
+            ) : null}
+          </p>
+        ) : null}
+        {travelSavedFlash ? <p className="text-xs font-semibold text-emerald-600 mb-2">Saved successfully.</p> : null}
+        {travelSaveError ? <p className="text-xs font-semibold text-red-600 mb-2">{travelSaveError}</p> : null}
         {editingTravel ? (
           <div className="space-y-3">
             <textarea value={travelDetails} onChange={(e) => setTravelDetails(e.target.value)} rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500" placeholder="Travel details…" />
             <textarea value={accommodationDetails} onChange={(e) => setAccommodationDetails(e.target.value)} rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-blue-500" placeholder="Accommodation details…" />
-            <button type="button" onClick={handleSaveTravel} disabled={travelSaving} className="px-5 py-2 bg-blue-600 text-white font-bold rounded-xl text-sm hover:bg-blue-700 disabled:opacity-50">
+            <button type="button" onClick={() => void handleSaveTravel()} disabled={travelSaving} className="px-5 py-2 bg-blue-600 text-white font-bold rounded-xl text-sm hover:bg-blue-700 disabled:opacity-50">
               {travelSaving ? 'Saving…' : 'Save'}
             </button>
           </div>

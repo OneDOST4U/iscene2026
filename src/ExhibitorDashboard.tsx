@@ -448,7 +448,12 @@ export function ExhibitorDashboard({ user, registration, onSignOut }: Props) {
     if (!registration?.id) return;
     setTravelSaving(true);
     try {
-      await updateDoc(doc(db, 'registrations', registration.id), { travelDetails, accommodationDetails });
+      await updateDoc(doc(db, 'registrations', registration.id), {
+        travelDetails,
+        accommodationDetails,
+        travelAccommodationUpdatedAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
       setEditingTravel(false);
       showToast('✅ Travel details saved.');
     } catch {

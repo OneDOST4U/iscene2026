@@ -43,6 +43,7 @@ import {
   doc,
   where,
 } from 'firebase/firestore';
+import type { QuerySnapshot } from 'firebase/firestore';
 import { db, storage, auth, app } from './firebase';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { ParticipantDashboard } from './ParticipantDashboard';
@@ -395,11 +396,11 @@ export default function App() {
     getDocs(q)
       .then((snap) => {
         if (cancelled) return;
-        if (snap.empty) {
+        const reg = pickRegistrationFromQuerySnapshot(snap) as any;
+        if (!reg) {
           setParticipantRegistration(null);
           return;
         }
-        const reg = { id: snap.docs[0].id, ...snap.docs[0].data() } as any;
         const status = (reg.status as string | undefined) || 'pending';
         const sector = (reg.sector as string) || '';
         if (status === 'approved' || sector === 'Articles') {
@@ -529,15 +530,15 @@ export default function App() {
       );
       const snap = await getDocs(q);
 
-      if (snap.empty) {
+      const reg = pickRegistrationFromQuerySnapshot(snap) as any;
+      if (!reg) {
         await signOut(auth);
+        setParticipantRegistration(null);
         setParticipantAuthError(
           'No registration was found for this account. Please register first or use a different email.',
         );
         return;
       }
-
-      const reg = { id: snap.docs[0].id, ...snap.docs[0].data() } as any;
       const status = (reg.status as string | undefined) || 'pending';
       const sector = (reg.sector as string) || '';
 
