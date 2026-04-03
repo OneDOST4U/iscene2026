@@ -1230,7 +1230,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       docPdf.setFontSize(12);
       docPdf.text(`Generated on ${new Date().toLocaleDateString('en-PH')}`, w / 2, h - 80, { align: 'center' });
       const result = await deliverPdfBlob(docPdf.output('blob'), filename, loadingTab);
-      if (!result.ok) {
+      if (result.ok === false) {
         setScanToast(`❌ ${result.reason}`);
         setTimeout(() => setScanToast(null), 7000);
       } else if (result.method === 'share') {

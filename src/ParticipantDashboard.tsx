@@ -1043,7 +1043,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       pdf.text(new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }), w / 2, 158, { align: 'center' });
       const blob = pdf.output('blob');
       const result = await deliverPdfBlob(blob, filename, loadingTab);
-      if (!result.ok) {
+      if (result.ok === false) {
         setScanToast(`❌ ${result.reason}`);
         window.setTimeout(() => setScanToast(null), 7000);
       } else if (result.method === 'share') {

@@ -101,6 +101,25 @@ function registrationAllowsRoleDashboard(reg: Record<string, unknown> | null): b
   return false;
 }
 
+/**
+ * Build the registration object for the signed-in user. The Firestore document id must always be
+ * `chosen.id` — if we spread `...data()` first and it contains an `id` field, updateDoc would target
+ * the wrong path. When multiple registration docs share the same uid, prefer the most recently updated/created.
+ */
+function pickRegistrationFromQuerySnapshot(snap: QuerySnapshot): Record<string, unknown> | null {
+  if (snap.empty) return null;
+  const docs = [...snap.docs];
+  const docMillis = (data: Record<string, unknown>) => {
+    const u = data.updatedAt as Timestamp | undefined;
+    const c = data.createdAt as Timestamp | undefined;
+    return Math.max(u?.toMillis?.() ?? 0, c?.toMillis?.() ?? 0);
+  };
+  docs.sort((a, b) => docMillis(b.data() as Record<string, unknown>) - docMillis(a.data() as Record<string, unknown>));
+  const chosen = docs[0];
+  const data = chosen.data() as Record<string, unknown>;
+  return { ...data, id: chosen.id };
+}
+
 /** Blob download works more reliably on mobile Safari / iOS than triggering save on some PDF paths. */
 function downloadBlobAsFile(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -226,7 +245,7 @@ class RuntimeErrorBoundary extends React.Component<RuntimeErrorBoundaryProps, Ru
         </div>
       );
     }
-    return this.props.children;
+    return (this.props as RuntimeErrorBoundaryProps).children;
   }
 }
 
@@ -380,6 +399,7 @@ export default function App() {
   React.useEffect(() => {
     if (!adminUser?.uid) {
       setParticipantRegistration(null);
+      setParticipantRegistrationLoading(false);
       return;
     }
     if (isArticleAuthorLoginBypass(adminUser.email)) {
