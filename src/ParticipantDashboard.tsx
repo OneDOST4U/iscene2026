@@ -1042,10 +1042,22 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       pdf.setFontSize(10);
       pdf.text(new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }), w / 2, 158, { align: 'center' });
       const blob = pdf.output('blob');
-      deliverPdfBlob(blob, filename, loadingTab);
+      const result = await deliverPdfBlob(blob, filename, loadingTab);
+      if (!result.ok) {
+        setScanToast(`❌ ${result.reason}`);
+        window.setTimeout(() => setScanToast(null), 7000);
+      } else if (result.method === 'share') {
+        setScanToast('✅ Shared. Choose Save to Files (iOS) or Downloads (Android) if needed.');
+        window.setTimeout(() => setScanToast(null), 5000);
+      } else if (result.method === 'viewer_tab' || result.method === 'popup') {
+        setScanToast('✅ Check the new tab — tap Open/save PDF, then use Share to save.');
+        window.setTimeout(() => setScanToast(null), 7000);
+      }
     } catch (err) {
       if (loadingTab && !loadingTab.closed) loadingTab.close();
       console.error('Certificate generation failed:', err);
+      setScanToast('❌ Could not create the certificate PDF. Try again.');
+      window.setTimeout(() => setScanToast(null), 5000);
     }
   };
 

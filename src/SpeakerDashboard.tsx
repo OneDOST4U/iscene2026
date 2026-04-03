@@ -1203,7 +1203,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     }
   };
 
-  const handleDownloadSpeakerCertificate = (cert: { roomId: string; roomName: string }) => {
+  const handleDownloadSpeakerCertificate = async (cert: { roomId: string; roomName: string }) => {
     const filename = `iscene-certificate-${cert.roomName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.pdf`;
     const loadingTab = shouldUseMobilePdfDelivery() ? openPdfLoadingPlaceholder() : null;
     try {
@@ -1229,10 +1229,22 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
       docPdf.text(`has attended and reviewed "${cert.roomName}" in iSCENE 2026.`, w / 2, 245, { align: 'center', maxWidth: w - 140 });
       docPdf.setFontSize(12);
       docPdf.text(`Generated on ${new Date().toLocaleDateString('en-PH')}`, w / 2, h - 80, { align: 'center' });
-      deliverPdfBlob(docPdf.output('blob'), filename, loadingTab);
+      const result = await deliverPdfBlob(docPdf.output('blob'), filename, loadingTab);
+      if (!result.ok) {
+        setScanToast(`❌ ${result.reason}`);
+        setTimeout(() => setScanToast(null), 7000);
+      } else if (result.method === 'share') {
+        setScanToast('✅ Shared. Choose Save to Files (iOS) or Downloads (Android) if needed.');
+        setTimeout(() => setScanToast(null), 5000);
+      } else if (result.method === 'viewer_tab' || result.method === 'popup') {
+        setScanToast('✅ Check the new tab — tap Open/save PDF, then use Share to save.');
+        setTimeout(() => setScanToast(null), 7000);
+      }
     } catch (err) {
       if (loadingTab && !loadingTab.closed) loadingTab.close();
       console.error('Certificate PDF failed:', err);
+      setScanToast('❌ Could not create the certificate PDF. Try again.');
+      setTimeout(() => setScanToast(null), 5000);
     }
   };
 
