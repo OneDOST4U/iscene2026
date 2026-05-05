@@ -589,8 +589,33 @@ export default function App() {
     };
 
     document.addEventListener('focusin', onFocusIn);
+    const onViewportResize = () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'signin-zoom-bug',
+          hypothesisId: 'Z3',
+          location: 'src/App.tsx:visualViewportResize',
+          message: 'Visual viewport resized while login modal open',
+          data: {
+            visualViewportScale: window.visualViewport ? window.visualViewport.scale : null,
+            visualViewportWidth: window.visualViewport ? window.visualViewport.width : null,
+            visualViewportHeight: window.visualViewport ? window.visualViewport.height : null,
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+    };
+    window.visualViewport?.addEventListener('resize', onViewportResize);
     return () => {
       document.removeEventListener('focusin', onFocusIn);
+      window.visualViewport?.removeEventListener('resize', onViewportResize);
     };
   }, [isParticipantLoginOpen]);
 
@@ -2117,7 +2142,30 @@ iSCENE 2026 Organizing Team</p>`,
                   type="email"
                   value={participantEmail}
                   onChange={(e) => setParticipantEmail(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  onFocus={(e) => {
+                    const computed = window.getComputedStyle(e.currentTarget);
+                    // #region agent log
+                    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+                      body: JSON.stringify({
+                        sessionId: 'ec45ad',
+                        runId: 'signin-zoom-bug',
+                        hypothesisId: 'Z4',
+                        location: 'src/App.tsx:participantEmailInput:onFocus',
+                        message: 'Participant email input focused',
+                        data: {
+                          fontSize: computed.fontSize,
+                          visualViewportScale: window.visualViewport ? window.visualViewport.scale : null,
+                          innerWidth: window.innerWidth,
+                          innerHeight: window.innerHeight,
+                        },
+                        timestamp: Date.now(),
+                      }),
+                    }).catch(() => {});
+                    // #endregion
+                  }}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   placeholder="you@example.com"
                 />
               </div>
@@ -2128,7 +2176,30 @@ iSCENE 2026 Organizing Team</p>`,
                   type="password"
                   value={participantPassword}
                   onChange={(e) => setParticipantPassword(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  onFocus={(e) => {
+                    const computed = window.getComputedStyle(e.currentTarget);
+                    // #region agent log
+                    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+                      body: JSON.stringify({
+                        sessionId: 'ec45ad',
+                        runId: 'signin-zoom-bug',
+                        hypothesisId: 'Z5',
+                        location: 'src/App.tsx:participantPasswordInput:onFocus',
+                        message: 'Participant password input focused',
+                        data: {
+                          fontSize: computed.fontSize,
+                          visualViewportScale: window.visualViewport ? window.visualViewport.scale : null,
+                          innerWidth: window.innerWidth,
+                          innerHeight: window.innerHeight,
+                        },
+                        timestamp: Date.now(),
+                      }),
+                    }).catch(() => {});
+                    // #endregion
+                  }}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   placeholder="Your password"
                 />
               </div>
