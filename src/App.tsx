@@ -209,14 +209,6 @@ const Card = ({ title, description, icon: Icon, color }: { title: string, descri
 
 type RuntimeErrorBoundaryProps = { children: React.ReactNode };
 type RuntimeErrorBoundaryState = { hasError: boolean; message: string };
-type LandingArticle = {
-  id: string;
-  title?: string;
-  description?: string;
-  authorName?: string;
-  headerImageUrl?: string;
-  category?: string;
-};
 
 class RuntimeErrorBoundary extends React.Component<RuntimeErrorBoundaryProps, RuntimeErrorBoundaryState> {
   state: RuntimeErrorBoundaryState = { hasError: false, message: '' };
@@ -315,10 +307,6 @@ export default function App() {
   const [paymentMethod, setPaymentMethod] = React.useState<'upload' | 'pay_at_venue'>('upload');
   const [registerPrivacyConsent, setRegisterPrivacyConsent] = React.useState(false);
   const registerPrivacyNoticeRef = React.useRef<HTMLDivElement | null>(null);
-  const [landingArticles, setLandingArticles] = React.useState<LandingArticle[]>([]);
-  const [landingArticlesLoading, setLandingArticlesLoading] = React.useState(true);
-  const [landingArticlesError, setLandingArticlesError] = React.useState<string | null>(null);
-  const [activeLandingArticle, setActiveLandingArticle] = React.useState(0);
 
   // Profile picture preview (data URL shown in the form before submit)
   const [profilePicPreview, setProfilePicPreview] = React.useState<string | null>(null);
@@ -549,6 +537,64 @@ export default function App() {
   }, [isRegisterOpen, registerPrivacyConsent]);
 
   React.useEffect(() => {
+    if (!isParticipantLoginOpen) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'signin-zoom-bug',
+        hypothesisId: 'Z1',
+        location: 'src/App.tsx:participantLoginOpenEffect',
+        message: 'Participant login modal opened',
+        data: {
+          viewportWidth: typeof window !== 'undefined' ? window.innerWidth : null,
+          viewportHeight: typeof window !== 'undefined' ? window.innerHeight : null,
+          visualViewportScale: typeof window !== 'undefined' && window.visualViewport ? window.visualViewport.scale : null,
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target as HTMLInputElement | null;
+      if (!target || target.tagName !== 'INPUT') return;
+      const computed = window.getComputedStyle(target);
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'signin-zoom-bug',
+          hypothesisId: 'Z2',
+          location: 'src/App.tsx:participantLoginFocusIn',
+          message: 'Input focused inside participant login modal',
+          data: {
+            inputType: target.type || '',
+            inputName: target.name || '',
+            fontSize: computed.fontSize,
+            lineHeight: computed.lineHeight,
+            visualViewportScale: window.visualViewport ? window.visualViewport.scale : null,
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+    };
+
+    document.addEventListener('focusin', onFocusIn);
+    return () => {
+      document.removeEventListener('focusin', onFocusIn);
+    };
+  }, [isParticipantLoginOpen]);
+
+  React.useEffect(() => {
     if (!isAdminVerified) return;
 
     setRegistrationsLoading(true);
@@ -576,57 +622,6 @@ export default function App() {
 
     return () => unsub();
   }, [isAdminVerified]);
-
-  React.useEffect(() => {
-    setLandingArticlesLoading(true);
-    setLandingArticlesError(null);
-    const q = query(collection(db, 'articles'), orderBy('createdAt', 'desc'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<LandingArticle, 'id'>) }));
-        setLandingArticles(items);
-        setActiveLandingArticle((prev) => {
-          if (items.length === 0) return 0;
-          return Math.min(prev, items.length - 1);
-        });
-        setLandingArticlesLoading(false);
-        // #region agent log
-        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'landing-articles-carousel',hypothesisId:'H1_data_load',location:'src/App.tsx:landingArticlesSnapshot',message:'Landing carousel articles snapshot loaded',data:{count:items.length},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-      },
-      (err) => {
-        console.error('Error loading landing articles', err);
-        setLandingArticlesError('Unable to load articles right now.');
-        setLandingArticlesLoading(false);
-        // #region agent log
-        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'landing-articles-carousel',hypothesisId:'H2_query_error',location:'src/App.tsx:landingArticlesSnapshot:error',message:'Landing carousel articles query failed',data:{code:err&&typeof err==='object'&&'code' in err?String((err as {code:string}).code):'unknown'},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-      },
-    );
-    return () => unsub();
-  }, []);
-
-  React.useEffect(() => {
-    if (landingArticles.length === 0) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'landing-articles-carousel',hypothesisId:'H3_slide_index',location:'src/App.tsx:activeLandingArticleEffect',message:'Landing carousel active slide changed',data:{activeLandingArticle,total:landingArticles.length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  }, [activeLandingArticle, landingArticles.length]);
-
-  const goToPrevLandingArticle = React.useCallback(() => {
-    setActiveLandingArticle((prev) => {
-      if (landingArticles.length === 0) return 0;
-      return prev === 0 ? landingArticles.length - 1 : prev - 1;
-    });
-  }, [landingArticles.length]);
-
-  const goToNextLandingArticle = React.useCallback(() => {
-    setActiveLandingArticle((prev) => {
-      if (landingArticles.length === 0) return 0;
-      return prev === landingArticles.length - 1 ? 0 : prev + 1;
-    });
-  }, [landingArticles.length]);
 
   const handleAdminSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1989,101 +1984,6 @@ iSCENE 2026 Organizing Team</p>`,
               </motion.div>
             ))}
           </div>
-        </div>
-      </section>
-
-      {/* Articles Carousel */}
-      <section id="articles" className="py-24 bg-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <SectionTitle subtitle="Latest updates from iSCENE, displayed one by one in a carousel.">
-            Articles
-          </SectionTitle>
-
-          {landingArticlesLoading ? (
-            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-10 text-center text-slate-500">
-              Loading articles...
-            </div>
-          ) : landingArticlesError ? (
-            <div className="rounded-3xl border border-red-100 bg-red-50 p-10 text-center text-red-600">
-              {landingArticlesError}
-            </div>
-          ) : landingArticles.length === 0 ? (
-            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-10 text-center text-slate-500">
-              No articles published yet.
-            </div>
-          ) : (
-            <div className="relative overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
-              <div
-                className="flex transition-transform duration-500 ease-out"
-                style={{ transform: `translateX(-${activeLandingArticle * 100}%)` }}
-              >
-                {landingArticles.map((article) => (
-                  <article key={article.id} className="w-full shrink-0">
-                    <div className="grid md:grid-cols-2 min-h-[360px]">
-                      <div className="h-full bg-slate-100">
-                        {article.headerImageUrl ? (
-                          <img
-                            src={article.headerImageUrl}
-                            alt={article.title || 'Article'}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full items-center justify-center text-slate-400">
-                            <FileText size={48} />
-                          </div>
-                        )}
-                      </div>
-                      <div className="p-8 md:p-10 flex flex-col justify-center">
-                        <p className="text-xs font-bold uppercase tracking-wider text-blue-600 mb-3">
-                          {(article.category || 'Updates').toString()}
-                        </p>
-                        <h3 className="text-2xl md:text-3xl font-bold text-slate-900 mb-4">
-                          {article.title || 'Untitled article'}
-                        </h3>
-                        <p className="text-slate-600 leading-relaxed line-clamp-6">
-                          {article.description || 'No description provided.'}
-                        </p>
-                        {article.authorName ? (
-                          <p className="mt-5 text-sm text-slate-500">By {article.authorName}</p>
-                        ) : null}
-                      </div>
-                    </div>
-                  </article>
-                ))}
-              </div>
-
-              <button
-                type="button"
-                onClick={goToPrevLandingArticle}
-                aria-label="Previous article"
-                className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/90 p-2.5 text-slate-700 shadow hover:bg-white"
-              >
-                <ChevronLeft size={20} />
-              </button>
-              <button
-                type="button"
-                onClick={goToNextLandingArticle}
-                aria-label="Next article"
-                className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/90 p-2.5 text-slate-700 shadow hover:bg-white"
-              >
-                <ChevronRight size={20} />
-              </button>
-
-              <div className="flex justify-center gap-2 px-4 py-4 bg-slate-50 border-t border-slate-100">
-                {landingArticles.map((article, idx) => (
-                  <button
-                    key={article.id}
-                    type="button"
-                    onClick={() => setActiveLandingArticle(idx)}
-                    aria-label={`Go to article ${idx + 1}`}
-                    className={`h-2.5 rounded-full transition-all ${
-                      idx === activeLandingArticle ? 'w-8 bg-blue-600' : 'w-2.5 bg-slate-300 hover:bg-slate-400'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </section>
 
