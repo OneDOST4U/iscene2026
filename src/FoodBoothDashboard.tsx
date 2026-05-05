@@ -621,7 +621,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
             if (chunk.length === 0) continue;
             const sectorSnap = await getDocs(query(regRef, where('sector', 'in', chunk), where('status', '==', 'approved'), limit(150)));
             sectorSnap.docs.forEach((d) => {
-              const data = d.data() as any;
+            const data = d.data() as any;
               if (!data.uid) return;
               resultsMap.set(d.id, {
                 id: d.id,
@@ -1785,13 +1785,13 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
               </p>
             </div>
             <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-              <button
-                type="button"
-                onClick={() => setScanModal(true)}
+                <button
+                  type="button"
+                  onClick={() => setScanModal(true)}
                 className="flex w-full items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 sm:inline-flex sm:w-auto"
-              >
-                <QrCode size={16} /> Scan QR
-              </button>
+                >
+                  <QrCode size={16} /> Scan QR
+                </button>
               {activeMeal ? (
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   {activeMeals.length > 1 ? (
@@ -2709,7 +2709,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 }
               >
                 <span className="relative inline-flex">
-                  {item.icon}
+                {item.icon}
                   {item.id === 'profile' && travelAccIncomplete ? (
                     <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-white" aria-hidden />
                   ) : null}
@@ -3005,7 +3005,7 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                 ) : (
                   <div className="w-28 h-28 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white ring-2 ring-white/90 shadow-md">
                     {myInitials}
-                  </div>
+            </div>
                 )}
                 <div className="mt-2.5 w-full max-w-[15.5rem] mx-auto rounded-xl border border-white/70 bg-white/40 px-2.5 py-2 text-center shadow-[0_1px_14px_rgba(15,23,42,0.06)] backdrop-blur-md backdrop-saturate-150">
                   <h3 className="text-xs sm:text-[13px] font-black text-slate-900 uppercase tracking-wide leading-none">
@@ -3020,15 +3020,15 @@ export function FoodBoothDashboard({ user, registration, onSignOut }: Props) {
                       </span>
                     ) : null}
                   </p>
-                </div>
+              </div>
                 <div className="mt-3 p-2.5 bg-white rounded-xl shadow-sm border border-slate-200/90">
                   <img src={digitalIdQrImg} alt="Digital ID QR" className="w-[7.5rem] h-[7.5rem] sm:w-32 sm:h-32 block" />
-                </div>
+            </div>
                 <p className="mt-2.5 text-[10px] text-slate-600 font-mono tracking-widest text-center">
                   ID <span className="text-slate-400">#</span>
                   {idNumber}
                 </p>
-              </div>
+            </div>
             </div>
             <img src="/footer.png" alt="" className="w-full h-auto object-cover object-bottom block shrink-0" />
           </div>

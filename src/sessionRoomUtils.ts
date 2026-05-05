@@ -41,20 +41,32 @@ export function getBreakoutRoomScheduleBlockReason(
   now: Date = new Date(),
 ): string | null {
   const phase = getBreakoutRoomSchedulePhase(room, now);
-  if (phase === 'during' || phase === 'unknown') return null;
-
-  if (phase === 'before') {
-    const sessionKey = mealSessionDateKeyManila(room.sessionDate ?? '');
-    const todayKey = getEntranceCalendarDateKey(now);
-    if (sessionKey && todayKey && sessionKey > todayKey) {
-      return 'This session is not available yet. You can reserve and check in on the session date during the scheduled time.';
-    }
-    return 'This session has not started yet. Reservations and check-in are only available during the scheduled time.';
-  }
+  if (phase === 'during' || phase === 'before' || phase === 'unknown') return null;
 
   if (phase === 'after') {
     const sessionKey = mealSessionDateKeyManila(room.sessionDate ?? '');
     const todayKey = getEntranceCalendarDateKey(now);
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'breakout-reserve-window',
+        hypothesisId: 'RW3',
+        location: 'src/sessionRoomUtils.ts:getBreakoutRoomScheduleBlockReason:after',
+        message: 'Reservation blocked by after-phase rule',
+        data: {
+          phase,
+          sessionDate: room.sessionDate ?? null,
+          timeline: room.timeline ?? null,
+          sessionKey: sessionKey ?? null,
+          todayKey: todayKey ?? null,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     if (sessionKey && todayKey && sessionKey < todayKey) {
       return 'This session date has passed. Reservations and check-in are closed.';
     }
@@ -117,4 +129,36 @@ export function formatSessionDateTime(room: { sessionDate?: string; timeline?: s
     parts.push(short);
   }
   return parts.join(', ') || '—';
+}
+
+/** After scheduled session end, Live Q&A posting stays open for this long (Manila). */
+export const ROOM_LIVE_QA_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Scheduled end instant for the breakout session (timeline end on session calendar day, Manila wall time).
+ * Null if date/timeline cannot be parsed.
+ */
+export function getRoomScheduledSessionEndDate(room: { sessionDate?: string; timeline?: string }): Date | null {
+  const ymd = mealSessionDateKeyManila(room.sessionDate ?? '');
+  const range = parseTimelineToMinutes(String(room.timeline ?? '').trim());
+  if (!ymd || !range) return null;
+  const endMins = range.end;
+  const h = Math.floor(endMins / 60);
+  const min = endMins % 60;
+  const iso = `${ymd}T${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}:00+08:00`;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Posting to Live Q&A is allowed until scheduled session end + 1 hour.
+ * If schedule is unknown, posting stays allowed (same as other breakout “unknown” behaviors).
+ */
+export function isRoomLiveQaSendAllowed(
+  room: { sessionDate?: string; timeline?: string },
+  now: Date = new Date(),
+): boolean {
+  const end = getRoomScheduledSessionEndDate(room);
+  if (!end) return true;
+  return now.getTime() <= end.getTime() + ROOM_LIVE_QA_GRACE_MS;
 }

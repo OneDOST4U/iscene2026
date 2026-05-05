@@ -62,7 +62,7 @@ import { QrScanModal } from './QrScanModal';
 import { ArticleBrowsePanel } from './ArticleBrowsePanel';
 import type { ArticleDoc } from './ArticlesManager';
 import { useArticleCategoryNames } from './useArticleCategoryNames';
-import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, roomsOverlap } from './sessionRoomUtils';
+import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, isRoomLiveQaSendAllowed, roomsOverlap } from './sessionRoomUtils';
 import { registrationSectorEligibleForMeal } from './mealEligibility';
 import { MealEntitlementCard } from './MealEntitlementCard';
 import { jsPDF } from 'jspdf';
@@ -623,6 +623,11 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
     const id = window.setInterval(() => setClaimClockTick(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
+
+  const liveQaSendAllowed = React.useMemo(() => {
+    const room = detailRoom ?? selectedRoomForChat;
+    return room ? isRoomLiveQaSendAllowed(room, new Date(claimClockTick)) : true;
+  }, [detailRoom, selectedRoomForChat, claimClockTick]);
 
   React.useEffect(() => {
     const unsubMeals = onSnapshot(
@@ -1249,9 +1254,11 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
   };
 
   const handleSendRoomChat = async () => {
-    const roomId = detailRoom?.id || selectedRoomForChat?.id;
-    const roomName = detailRoom?.name || selectedRoomForChat?.name || 'Session';
+    const chatRoom = detailRoom ?? selectedRoomForChat;
+    const roomId = chatRoom?.id;
+    const roomName = chatRoom?.name || 'Session';
     if (!roomId || !roomChatInput.trim()) return;
+    if (!chatRoom || !isRoomLiveQaSendAllowed(chatRoom, new Date())) return;
     setRoomChatSending(true);
     try {
       await addDoc(collection(db, 'roomChat'), {
@@ -1936,83 +1943,83 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                       {dateKey === 'No date' ? 'No date' : new Date(dateKey).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', year: 'numeric' })}
                     </h3>
                     {roomsForDate.map((room, i) => {
-                      const res = attendeeReservations[room.id];
-                      const presenting = isPresentingRoom(room.id);
+                  const res = attendeeReservations[room.id];
+                  const presenting = isPresentingRoom(room.id);
                       const grad = BREAKOUT_CARD_GRADIENTS[(groupIndex + i) % BREAKOUT_CARD_GRADIENTS.length];
-                      return (
-                        <div
-                          key={room.id}
+                  return (
+                    <div
+                      key={room.id}
                           role="button"
                           tabIndex={0}
                           onClick={() => setDetailRoom(room)}
                           onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
                           className="flex cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md"
-                        >
-                          <div
-                            className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
-                            style={
-                              room.backgroundImage
-                                ? {
-                                    backgroundImage: `url(${room.backgroundImage})`,
-                                    backgroundSize: 'contain',
-                                    backgroundPosition: 'center',
-                                    backgroundRepeat: 'no-repeat',
-                                    backgroundColor: '#f1f5f9',
-                                  }
-                                : undefined
-                            }
-                          />
-                          <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 p-4">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-[11px] text-slate-500">
-                                {formatSessionDateTime(room)}
-                                {room.venue ? ` · ${room.venue}` : ''}
-                              </p>
-                              {presenting ? (
-                                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black uppercase text-violet-800">
-                                  You present
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="text-sm font-bold text-slate-900">{room.name}</p>
-                            {room.description ? (
-                              <p className="line-clamp-2 text-[11px] text-slate-400">{room.description}</p>
-                            ) : null}
-                            <div className="mt-1 flex flex-wrap gap-2">
-                              {presenting ? (
+                    >
+                      <div
+                        className={`w-24 min-h-[100px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${grad}` : ''}`}
+                        style={
+                          room.backgroundImage
+                            ? {
+                                backgroundImage: `url(${room.backgroundImage})`,
+                                backgroundSize: 'contain',
+                                backgroundPosition: 'center',
+                                backgroundRepeat: 'no-repeat',
+                                backgroundColor: '#f1f5f9',
+                              }
+                            : undefined
+                        }
+                      />
+                      <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-[11px] text-slate-500">
+                            {formatSessionDateTime(room)}
+                            {room.venue ? ` · ${room.venue}` : ''}
+                          </p>
+                          {presenting ? (
+                            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black uppercase text-violet-800">
+                              You present
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="text-sm font-bold text-slate-900">{room.name}</p>
+                        {room.description ? (
+                          <p className="line-clamp-2 text-[11px] text-slate-400">{room.description}</p>
+                        ) : null}
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          {presenting ? (
                                 <span className="text-xs font-medium text-slate-500">Open to view details.</span>
-                              ) : !res ? (
-                                <button
-                                  type="button"
+                          ) : !res ? (
+                            <button
+                              type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setDetailRoom(room);
                                   }}
-                                  className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700"
-                                >
-                                  Reserve
-                                </button>
-                              ) : res.attended ? (
-                                <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">Checked in</span>
-                              ) : (
-                                <>
-                                  <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">Reserved</span>
-                                  <button
-                                    type="button"
+                              className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700"
+                            >
+                              Reserve
+                            </button>
+                          ) : res.attended ? (
+                            <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">Checked in</span>
+                          ) : (
+                            <>
+                              <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">Reserved</span>
+                              <button
+                                type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       void handleAttendeeCancelReservation(room);
                                     }}
-                                    className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
-                                  >
-                                    Cancel
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </div>
+                                className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          )}
                         </div>
-                      );
+                      </div>
+                    </div>
+                  );
                     })}
                   </section>
                 ))
@@ -2141,9 +2148,9 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                                           className="h-9 w-9 shrink-0 rounded-full object-cover ring-1 ring-blue-100"
                                         />
                                       ) : (
-                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-600">
-                                          {initial}
-                                        </div>
+                                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-600">
+                                        {initial}
+                                      </div>
                                       )}
                                       <div>
                                         <p className="text-sm font-bold text-slate-700">{rev.participantName || 'Attendee'}</p>
@@ -2222,7 +2229,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                 <div className="flex flex-col gap-3 px-4 pb-8 md:grid md:grid-cols-2 md:gap-4 md:px-0 lg:grid-cols-3">
                   {eligibleMeals.map((meal) => (
                     <MealEntitlementCard
-                      key={meal.id}
+                        key={meal.id}
                       meal={meal}
                       mealLabels={MEAL_LABELS}
                       boothRegs={boothRegs}
@@ -2493,9 +2500,9 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                     >
                       Flight &amp; accommodation
                     </p>
-                  </div>
-                  <button
-                    type="button"
+              </div>
+              <button
+                type="button"
                     onClick={() => setEditingTravel(!editingTravel)}
                     className="flex shrink-0 items-center gap-1 text-xs font-bold text-blue-600"
                   >
@@ -2520,7 +2527,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                         className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="Airline, flight numbers, arrival/departure times, airports…"
                       />
-                    </div>
+                  </div>
                     <div>
                       <p className="mb-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
                         <Hotel size={12} className="text-violet-600" aria-hidden /> Accommodation
@@ -2532,7 +2539,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                         className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="Hotel name, check-in/out dates, confirmation number, special requests…"
                       />
-                    </div>
+                </div>
                     <button
                       type="button"
                       onClick={() => void handleSaveTravel()}
@@ -3162,27 +3169,33 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                               ))
                             )}
                           </div>
-                          <div className="mt-3 flex gap-2">
-                            <input
-                              value={roomChatInput}
-                              onChange={(e) => setRoomChatInput(e.target.value)}
-                              placeholder="Ask a question..."
-                              className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                  e.preventDefault();
-                                  void handleSendRoomChat();
-                                }
-                              }}
-                            />
-                            <button
-                              type="button"
-                              disabled={roomChatSending || !roomChatInput.trim()}
-                              onClick={() => void handleSendRoomChat()}
-                              className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              Ask
-                            </button>
+                          <div className="mt-3 flex flex-col gap-2">
+                            <div className="flex gap-2">
+                              <input
+                                value={roomChatInput}
+                                onChange={(e) => setRoomChatInput(e.target.value)}
+                                placeholder={liveQaSendAllowed ? 'Ask a question...' : 'Live Q&A closed'}
+                                disabled={!liveQaSendAllowed}
+                                className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey && liveQaSendAllowed) {
+                                    e.preventDefault();
+                                    void handleSendRoomChat();
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                disabled={!liveQaSendAllowed || roomChatSending || !roomChatInput.trim()}
+                                onClick={() => void handleSendRoomChat()}
+                                className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                Ask
+                              </button>
+                            </div>
+                            {!liveQaSendAllowed ? (
+                              <p className="text-[11px] text-slate-500">Posting closed — allowed until 1 hour after the scheduled session end.</p>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -3254,7 +3267,7 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                 ) : (
                   <div className="w-28 h-28 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-2xl font-black text-white ring-2 ring-white/90 shadow-md">
                     {initials}
-                  </div>
+            </div>
                 )}
                 <div className="mt-2.5 w-full max-w-[15.5rem] mx-auto rounded-xl border border-white/70 bg-white/40 px-2.5 py-2 text-center shadow-[0_1px_14px_rgba(15,23,42,0.06)] backdrop-blur-md backdrop-saturate-150">
                   <h3 className="text-xs sm:text-[13px] font-black text-slate-900 uppercase tracking-wide leading-none">
@@ -3269,15 +3282,15 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                       </span>
                     ) : null}
                   </p>
-                </div>
+              </div>
                 <div className="mt-3 p-2.5 bg-white rounded-xl shadow-sm border border-slate-200/90">
                   <img src={digitalIdQrImg} alt="Digital ID QR" className="w-[7.5rem] h-[7.5rem] sm:w-32 sm:h-32 block" />
-                </div>
+            </div>
                 <p className="mt-2.5 text-[10px] text-slate-600 font-mono tracking-widest text-center">
                   ID <span className="text-slate-400">#</span>
                   {idNumber}
                 </p>
-              </div>
+            </div>
             </div>
             <img src="/footer.png" alt="" className="w-full h-auto object-cover object-bottom block shrink-0" />
           </div>
@@ -3590,27 +3603,33 @@ export function SpeakerDashboard({ user, registration, onSignOut }: SpeakerDashb
                   ))}
                 </div>
               )}
-              <div className="mt-4 flex gap-2">
-                <input
-                  value={roomChatInput}
-                  onChange={(e) => setRoomChatInput(e.target.value)}
-                  placeholder="Ask a question..."
-                  className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      void handleSendRoomChat();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  disabled={roomChatSending || !roomChatInput.trim()}
-                  onClick={() => void handleSendRoomChat()}
-                  className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Send
-                </button>
+              <div className="mt-4 flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <input
+                    value={roomChatInput}
+                    onChange={(e) => setRoomChatInput(e.target.value)}
+                    placeholder={liveQaSendAllowed ? 'Ask a question...' : 'Live Q&A closed'}
+                    disabled={!liveQaSendAllowed}
+                    className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-200 disabled:text-slate-400"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey && liveQaSendAllowed) {
+                        e.preventDefault();
+                        void handleSendRoomChat();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!liveQaSendAllowed || roomChatSending || !roomChatInput.trim()}
+                    onClick={() => void handleSendRoomChat()}
+                    className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Send
+                  </button>
+                </div>
+                {!liveQaSendAllowed ? (
+                  <p className="text-xs text-slate-500">Posting closed — allowed until 1 hour after the scheduled session end.</p>
+                ) : null}
               </div>
             </div>
           </div>

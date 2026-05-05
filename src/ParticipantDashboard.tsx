@@ -19,6 +19,7 @@ import {
   Download,
   Edit2,
   ChevronRight,
+  ChevronLeft,
   Loader2,
   CheckCircle2,
   Mail,
@@ -62,7 +63,7 @@ import { useArticleCategoryNames } from './useArticleCategoryNames';
 import { getEntranceCalendarDateKey, isEntranceCheckedInForDateKey, mealSessionDateKeyManila } from './entranceCheckInDay';
 import { registrationSectorEligibleForMeal } from './mealEligibility';
 import { MealEntitlementCard } from './MealEntitlementCard';
-import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, roomsOverlap } from './sessionRoomUtils';
+import { formatSessionDateTime, getBreakoutRoomScheduleBlockReason, isRoomLiveQaSendAllowed, roomsOverlap } from './sessionRoomUtils';
 import { QrScanModal } from './QrScanModal';
 import { jsPDF } from 'jspdf';
 import { shouldUseMobilePdfDelivery, openPdfLoadingPlaceholder, deliverPdfBlob } from './pdfDownload';
@@ -278,14 +279,6 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [reviews, setReviews] = React.useState<Record<string, Review>>({});
   const [boothRegs, setBoothRegs] = React.useState<any[]>([]);
   const [presenterMaterials, setPresenterMaterials] = React.useState<{ id: string; roomId?: string; roomName?: string; fileName: string; downloadUrl: string; fileType: string; fileSizeBytes: number }[]>([]);
-  const [entranceAttendanceRaw, setEntranceAttendanceRaw] = React.useState<Record<string, unknown> | null>(null);
-  const [entranceTodayKey, setEntranceTodayKey] = React.useState(() => getEntranceCalendarDateKey());
-
-  const hasEntryAttendance = React.useMemo(
-    () => isEntranceCheckedInForDateKey(entranceAttendanceRaw, entranceTodayKey),
-    [entranceAttendanceRaw, entranceTodayKey],
-  );
-
   const [loading, setLoading] = React.useState(true);
 
   // ── Modals ─────────────────────────────────────────────────────────────────
@@ -305,6 +298,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   // ── Mobile filter ──────────────────────────────────────────────────────────
   const [mobileFilter, setMobileFilter] = React.useState<string>('all');
   const [roomSearchQuery, setRoomSearchQuery] = React.useState('');
+  const [mealDayFilter, setMealDayFilter] = React.useState<string>('all');
+  const [mealsPage, setMealsPage] = React.useState(0);
 
   const [exhibitorSearchQuery, setExhibitorSearchQuery] = React.useState('');
   const [exhibitorCategoryFilter, setExhibitorCategoryFilter] = React.useState<string>('all');
@@ -316,6 +311,79 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   // ── Mobile sidebar drawer ──────────────────────────────────────────────────
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
+
+  /** Home “Upcoming Sessions” preview: 10 per page with prev/next (mobile + desktop). */
+  const UPCOMING_HOME_PAGE_SIZE = 10;
+  const [homeUpcomingPage, setHomeUpcomingPage] = React.useState(0);
+  const MEALS_PAGE_SIZE = 5;
+
+  React.useEffect(() => {
+    const n = rooms.length;
+    if (n === 0) {
+      setHomeUpcomingPage(0);
+      return;
+    }
+    const totalPages = Math.ceil(n / UPCOMING_HOME_PAGE_SIZE);
+    setHomeUpcomingPage((p) => Math.min(p, Math.max(0, totalPages - 1)));
+  }, [rooms.length]);
+
+  const homeUpcomingTotalPages = Math.max(1, Math.ceil(rooms.length / UPCOMING_HOME_PAGE_SIZE));
+  const homeUpcomingSlice = React.useMemo(() => {
+    const start = homeUpcomingPage * UPCOMING_HOME_PAGE_SIZE;
+    return rooms.slice(start, start + UPCOMING_HOME_PAGE_SIZE);
+  }, [rooms, homeUpcomingPage]);
+  React.useEffect(() => {
+    const probe = homeUpcomingSlice.find((r) => !!String(r.backgroundImage || '').trim());
+    if (!probe?.backgroundImage) return;
+    const src = String(probe.backgroundImage).trim();
+    const img = new Image();
+    const startedAt = Date.now();
+    img.onload = () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'room-image-debug',
+          hypothesisId: 'R3',
+          location: 'src/ParticipantDashboard.tsx:upcomingImageProbe:onload',
+          message: 'Upcoming room image loaded in browser',
+          data: {
+            roomId: probe.id,
+            width: img.naturalWidth || 0,
+            height: img.naturalHeight || 0,
+            elapsedMs: Date.now() - startedAt,
+            srcPrefix: src.slice(0, 80),
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+    };
+    img.onerror = () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'room-image-debug',
+          hypothesisId: 'R3_R4',
+          location: 'src/ParticipantDashboard.tsx:upcomingImageProbe:onerror',
+          message: 'Upcoming room image failed to load in browser',
+          data: {
+            roomId: probe.id,
+            elapsedMs: Date.now() - startedAt,
+            srcPrefix: src.slice(0, 80),
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+    };
+    img.src = src;
+  }, [homeUpcomingSlice]);
 
   // ── Review form (DOST) ─────────────────────────────────────────────────────
   const [reviewSaving, setReviewSaving] = React.useState(false);
@@ -355,33 +423,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const [claimClockTick, setClaimClockTick] = React.useState(() => Date.now());
   React.useEffect(() => {
-    const tick = () => setEntranceTodayKey(getEntranceCalendarDateKey());
-    const id = window.setInterval(tick, 60_000);
-    const onVis = () => {
-      if (document.visibilityState === 'visible') tick();
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, []);
-  React.useEffect(() => {
     const id = window.setInterval(() => setClaimClockTick(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
 
-  React.useEffect(() => {
-    const ref = doc(db, 'attendance', `${user.uid}_entrance`);
-    const unsub = onSnapshot(
-      ref,
-      (snap) => {
-        setEntranceAttendanceRaw(snap.exists() ? (snap.data() as Record<string, unknown>) : null);
-      },
-      (err) => console.error('[iSCENE] entrance attendance snapshot', err),
-    );
-    return () => unsub();
-  }, [user.uid]);
+  const liveQaSendAllowed = React.useMemo(
+    () => (!detailRoom ? true : isRoomLiveQaSendAllowed(detailRoom, new Date(claimClockTick))),
+    [detailRoom, claimClockTick],
+  );
 
   const pushInAppNotification = React.useCallback((msg: string, type: InAppNotifyType) => {
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -437,6 +486,32 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     () => meals.filter((m) => registrationSectorEligibleForMeal(m, registrationId, participantSector)),
     [meals, participantSector, registrationId],
   );
+  const recentEligibleMeals = React.useMemo(() => {
+    const copy = [...eligibleMeals];
+    copy.sort((a, b) => {
+      const aDay = mealSessionDateKeyManila(a.sessionDate) || '';
+      const bDay = mealSessionDateKeyManila(b.sessionDate) || '';
+      if (aDay !== bDay) return bDay.localeCompare(aDay);
+      const aTime = String(a.startTime || '');
+      const bTime = String(b.startTime || '');
+      return bTime.localeCompare(aTime);
+    });
+    return copy;
+  }, [eligibleMeals]);
+  const mealDayFilterOptions = React.useMemo(() => {
+    const keys = Array.from(new Set(recentEligibleMeals.map((m) => mealSessionDateKeyManila(m.sessionDate)).filter(Boolean) as string[]));
+    return ['all', ...keys];
+  }, [recentEligibleMeals]);
+  const mealsByDay = React.useMemo(() => (
+    mealDayFilter === 'all'
+      ? recentEligibleMeals
+      : recentEligibleMeals.filter((m) => mealSessionDateKeyManila(m.sessionDate) === mealDayFilter)
+  ), [recentEligibleMeals, mealDayFilter]);
+  const mealsTotalPages = Math.max(1, Math.ceil(mealsByDay.length / MEALS_PAGE_SIZE));
+  const mealsSlice = React.useMemo(() => {
+    const start = mealsPage * MEALS_PAGE_SIZE;
+    return mealsByDay.slice(start, start + MEALS_PAGE_SIZE);
+  }, [mealsByDay, mealsPage, MEALS_PAGE_SIZE]);
   /** Exhibitor directory only — Food (Booth) regs are loaded for meal pickup labels only */
   const exhibitorOnlyBoothRegs = React.useMemo(
     () => boothRegs.filter((b) => String(b.sector) !== 'Food (Booth)'),
@@ -444,6 +519,16 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   );
   const hasClaimedMeal = (mealId: string) => foodClaims.some((c) => c.mealId === mealId);
   const unclaimedMealsCount = eligibleMeals.filter((m) => !hasClaimedMeal(m.id)).length;
+  React.useEffect(() => {
+    if (mealDayFilter !== 'all' && !mealDayFilterOptions.includes(mealDayFilter)) {
+      setMealDayFilter('all');
+      return;
+    }
+    setMealsPage(0);
+  }, [mealDayFilter, mealDayFilterOptions]);
+  React.useEffect(() => {
+    setMealsPage((p) => Math.min(p, Math.max(0, mealsTotalPages - 1)));
+  }, [mealsTotalPages]);
 
   const filteredBoothRegs = React.useMemo(() => {
     const q = exhibitorSearchQuery.trim().toLowerCase();
@@ -492,25 +577,9 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const [ackMealsCount, setAckMealsCount] = React.useState<number | null>(() => parseAck(localStorage.getItem(`iscene_${user.uid}_badgeAck_meals`)));
   const [ackScheduleCount, setAckScheduleCount] = React.useState<number | null>(() => parseAck(localStorage.getItem(`iscene_${user.uid}_badgeAck_schedule`)));
 
-  React.useEffect(() => {
-    if (ackCertCount !== null && certifiableRooms.length < ackCertCount) {
-      const n = certifiableRooms.length;
-      setAckCertCount(n);
-      localStorage.setItem(badgeStorageKey('cert'), String(n));
-    }
-  }, [certifiableRooms.length, ackCertCount, user.uid]);
-  React.useEffect(() => {
-    if (ackMealsCount !== null && unclaimedMealsCount < ackMealsCount) {
-      setAckMealsCount(unclaimedMealsCount);
-      localStorage.setItem(badgeStorageKey('meals'), String(unclaimedMealsCount));
-    }
-  }, [unclaimedMealsCount, ackMealsCount, user.uid]);
-  React.useEffect(() => {
-    if (ackScheduleCount !== null && scheduleNewCount < ackScheduleCount) {
-      setAckScheduleCount(scheduleNewCount);
-      localStorage.setItem(badgeStorageKey('schedule'), String(scheduleNewCount));
-    }
-  }, [scheduleNewCount, ackScheduleCount, user.uid]);
+  // Keep badge acknowledgements stable across refreshes.
+  // Counts can transiently be 0 during initial snapshot hydration; forcibly shrinking ack values here
+  // causes previously-seen badges to reappear after reload.
 
   React.useEffect(() => {
     if (!certModal && !certificatePreview) return;
@@ -530,6 +599,30 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
       setAckMealsCount(unclaimedMealsCount);
       localStorage.setItem(badgeStorageKey('meals'), String(unclaimedMealsCount));
     }
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'badge-once-debug',
+        hypothesisId: 'B1_B4',
+        location: 'src/ParticipantDashboard.tsx:tabAckEffect',
+        message: 'Tab ack sync executed',
+        data: {
+          prevTab: prev,
+          activeTab,
+          wroteMealsAck: activeTab === 'meals' && prev !== 'meals',
+          wroteScheduleAck: activeTab === 'schedule' && prev !== 'schedule',
+          unclaimedMealsCount,
+          scheduleNewCount,
+          storageMealsAck: localStorage.getItem(badgeStorageKey('meals')),
+          storageScheduleAck: localStorage.getItem(badgeStorageKey('schedule')),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     prevTabRef.current = activeTab;
   }, [activeTab, scheduleNewCount, unclaimedMealsCount, user.uid]);
 
@@ -542,6 +635,46 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const scheduleBadgeDisplay = ackScheduleCount === null
     ? scheduleNewCount
     : Math.max(0, scheduleNewCount - ackScheduleCount);
+
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+      body: JSON.stringify({
+        sessionId: 'ec45ad',
+        runId: 'badge-once-debug',
+        hypothesisId: 'B1_B2_B3',
+        location: 'src/ParticipantDashboard.tsx:badgeDisplayEffect',
+        message: 'Badge counters recalculated',
+        data: {
+          activeTab,
+          unclaimedMealsCount,
+          scheduleNewCount,
+          certCount: certifiableRooms.length,
+          ackMealsCount,
+          ackScheduleCount,
+          ackCertCount,
+          mealsBadgeDisplay,
+          scheduleBadgeDisplay,
+          certBadgeDisplay,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [
+    activeTab,
+    unclaimedMealsCount,
+    scheduleNewCount,
+    certifiableRooms.length,
+    ackMealsCount,
+    ackScheduleCount,
+    ackCertCount,
+    mealsBadgeDisplay,
+    scheduleBadgeDisplay,
+    certBadgeDisplay,
+  ]);
 
   /** Persist quick-action badge acks for notification types (certificate / meals / schedule). */
   const syncQuickActionBadgesForNotifyTypes = React.useCallback((types: Set<InAppNotifyType>) => {
@@ -740,6 +873,30 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         prevRoomIdsRef.current = nextIds;
         prevCountsRef.current.rooms = sorted.length;
         hasInitialSyncRef.current.rooms = true;
+        const withImage = sorted.filter((r) => !!String(r.backgroundImage || '').trim());
+        const nonHttpImages = withImage.filter((r) => !/^https?:\/\//i.test(String(r.backgroundImage || '').trim()));
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+          body: JSON.stringify({
+            sessionId: 'ec45ad',
+            runId: 'room-image-debug',
+            hypothesisId: 'R1_R2',
+            location: 'src/ParticipantDashboard.tsx:roomsSnapshot',
+            message: 'Rooms snapshot image URL summary',
+            data: {
+              totalRooms: sorted.length,
+              roomsWithImage: withImage.length,
+              roomsWithoutImage: sorted.length - withImage.length,
+              nonHttpImageCount: nonHttpImages.length,
+              sampleImageRoomId: withImage[0]?.id || null,
+              sampleImageUrlPrefix: withImage[0]?.backgroundImage ? String(withImage[0].backgroundImage).slice(0, 80) : null,
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         setRooms(sorted);
       },
       (err) => console.error('[iSCENE] rooms snapshot — check Firestore rules / network', err),
@@ -971,6 +1128,27 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
   const handleReserve = async (room: Room) => {
     const blockReason = getBreakoutRoomScheduleBlockReason(room, new Date());
     if (blockReason) {
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'breakout-reserve-window',
+          hypothesisId: 'RW4',
+          location: 'src/ParticipantDashboard.tsx:handleReserve:blocked',
+          message: 'Reserve prevented by schedule block',
+          data: {
+            roomId: room.id,
+            roomName: room.name,
+            sessionDate: room.sessionDate || null,
+            timeline: room.timeline || null,
+            blockReason,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       setScanToast(`❌ ${blockReason}`);
       setTimeout(() => setScanToast(null), 5000);
       return;
@@ -1160,6 +1338,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
 
   const handleSendRoomChat = async () => {
     if (!detailRoom || !roomChatInput.trim()) return;
+    if (!isRoomLiveQaSendAllowed(detailRoom, new Date())) return;
     setRoomChatSending(true);
     try {
       await addDoc(collection(db, 'roomChat'), {
@@ -1194,6 +1373,25 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         travelAccommodationUpdatedAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
       });
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+        body: JSON.stringify({
+          sessionId: 'ec45ad',
+          runId: 'travel-persist',
+          hypothesisId: 'T2_T3',
+          location: 'src/ParticipantDashboard.tsx:handleSaveTravel',
+          message: 'Travel save updateDoc completed',
+          data: {
+            regId: registration.id,
+            travelLen: String(travelDetails || '').length,
+            accomLen: String(accommodationDetails || '').length,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       setEditingTravel(false);
       setTravelSavedFlash(true);
       window.setTimeout(() => setTravelSavedFlash(false), 5000);
@@ -1213,34 +1411,6 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
     setPwResetSent(true);
     setTimeout(() => setPwResetSent(false), 5000);
   };
-
-  /** Must run before any early return — same hook order when loading vs loaded. */
-  const desktopPageHeader = React.useMemo(() => {
-    switch (activeTab) {
-      case 'home':
-        return {
-          title: 'Home',
-          subtitle: hasEntryAttendance ? "You're checked in · Enjoy the event!" : 'Scan the entrance QR when you arrive.',
-        };
-      case 'schedule':
-        return { title: 'Breakout Sessions', subtitle: 'Reserve · Check in · Review' };
-      case 'exhibitors':
-        return { title: 'Exhibitors', subtitle: 'Approved booth participants at iSCENE 2026.' };
-      case 'materials':
-        return { title: 'Session Materials', subtitle: 'Access materials from your reserved sessions.' };
-      case 'articles':
-        return { title: 'Articles Home', subtitle: 'News, updates, and resources from the organizers.' };
-      case 'meals':
-        return {
-          title: 'My Entitlements',
-          subtitle: 'Food, kits, and giveaways — claim at the assigned stall within the time window.',
-        };
-      case 'profile':
-        return { title: 'My Profile', subtitle: 'View and update your registration details' };
-      default:
-        return { title: 'iSCENE 2026', subtitle: '' };
-    }
-  }, [activeTab, hasEntryAttendance]);
 
   React.useEffect(() => {
     if (activeTab !== 'profile') return;
@@ -1338,13 +1508,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {travelAccIncomplete && !editingTravel ? (
           <p className="text-xs font-semibold text-orange-800 mb-2">Please add both travel and accommodation details.</p>
         ) : null}
-        {!travelAccIncomplete && !editingTravel ? (
-          <p className="text-xs font-medium text-emerald-800 mb-2">
-            On file — your flight and stay are saved for organizers.
-            {travelFileUpdatedLabel ? (
-              <span className="block text-[11px] text-emerald-700/90 mt-0.5 font-normal">Last updated {travelFileUpdatedLabel}</span>
-            ) : null}
-          </p>
+        {!travelAccIncomplete && !editingTravel && travelFileUpdatedLabel ? (
+          <p className="text-[11px] font-normal text-emerald-700/90 mb-2">Last updated {travelFileUpdatedLabel}</p>
         ) : null}
         {travelSavedFlash ? <p className="text-xs font-semibold text-emerald-600 mb-2">Saved successfully.</p> : null}
         {travelSaveError ? <p className="text-xs font-semibold text-red-600 mb-2">{travelSaveError}</p> : null}
@@ -1577,29 +1742,24 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* ── HOME tab ─────────────────────────────────────── */}
         {activeTab === 'home' && (
           <>
-            <div className="px-4 pt-5 pb-2">
-              <h2 className="text-xl font-black tracking-tight">Welcome, {firstName}!</h2>
-              <p className="text-sm text-slate-500 mt-0.5">
-                {hasEntryAttendance ? "You're checked in · Enjoy the event!" : "Scan the entrance QR when you arrive."}
-              </p>
-            </div>
-
-            {/* Status row */}
-            <div className="flex gap-2 px-4 py-3 overflow-x-auto no-scrollbar">
-              {[
-                { label: 'Registered', done: true },
-                { label: 'Approved', done: true },
-                { label: 'Checked In', done: hasEntryAttendance },
-                { label: 'Certificate', done: certReady },
-              ].map(({ label, done }) => (
-                <div key={label} className={`shrink-0 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${done ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>
-                  {done ? <CheckCircle2 size={12} /> : <Clock size={12} />}{label}
+            <div className="px-4 pt-5">
+              <div className="relative min-h-[148px] overflow-hidden rounded-2xl border border-blue-400/40 bg-gradient-to-r from-blue-700 via-blue-700 to-indigo-700 px-4 py-5 shadow-md">
+                <div className="pointer-events-none absolute left-3 top-3 text-[52px] font-black leading-none text-white/8">iSCENE</div>
+                <div className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-white/12" />
+                <div className="pointer-events-none absolute -bottom-10 left-12 h-24 w-24 rounded-full bg-cyan-300/20" />
+                <div className="relative flex min-h-[108px] items-end justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold text-blue-100">Hello, {firstName}</p>
+                    <p className="text-2xl font-black leading-[1.05] text-white">Welcome back</p>
+                    <p className="mt-1 text-[12px] text-blue-100/95">Your event tools are ready in Quick Actions.</p>
+                  </div>
+                  <img src="/iscene.png" alt="iSCENE" className="h-12 w-12 shrink-0 rounded-full bg-white p-1 shadow-md" />
                 </div>
-              ))}
+              </div>
             </div>
 
             {/* Quick actions */}
-            <div className="px-4 pb-4">
+            <div className="px-4 pt-4 pb-4">
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1"><Zap size={12} /> Quick Actions</p>
               <div className="grid grid-cols-3 gap-2">
                 {[
@@ -1629,38 +1789,65 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               </div>
             </div>
 
-            {/* Upcoming sessions preview - capped height, scrollable */}
+            {/* Upcoming sessions preview — 10 per page + pagination */}
             {rooms.length > 0 && (
               <div className="px-4">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-bold text-slate-800">Upcoming Sessions</p>
                   <button type="button" onClick={() => setActiveTab('schedule')} className="text-xs font-semibold text-blue-600">View all →</button>
                 </div>
-                <div className="max-h-[280px] overflow-y-auto">
-                {rooms.map((room, i) => (
-                  <div
+                <div>
+                {homeUpcomingSlice.map((room, i) => {
+                  const gi = homeUpcomingPage * UPCOMING_HOME_PAGE_SIZE + i;
+                  return (
+                  <article
                     key={room.id}
                     role="button"
                     tabIndex={0}
                     onClick={() => setDetailRoom(room)}
                     onKeyDown={(e) => e.key === 'Enter' && setDetailRoom(room)}
-                    className="mb-3 rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm hover:shadow-md active:scale-[0.99] transition-all cursor-pointer flex"
+                    className="group mb-3 flex cursor-pointer overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05),0_8px_20px_rgba(15,23,42,0.05)] transition-all hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_2px_6px_rgba(37,99,235,0.16)] active:scale-[0.99] last:mb-0"
                   >
                     <div
-                      className={`w-20 min-h-[80px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${CARD_GRADIENTS[i % CARD_GRADIENTS.length]}` : ''}`}
+                      className={`w-20 min-h-[88px] shrink-0 ${!room.backgroundImage ? `bg-gradient-to-br ${CARD_GRADIENTS[gi % CARD_GRADIENTS.length]}` : ''}`}
                       style={room.backgroundImage ? { backgroundImage: `url(${room.backgroundImage})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundColor: '#f1f5f9' } : undefined}
                     />
-                    <div className="flex-1 min-w-0 flex items-start justify-between gap-2 p-4">
+                    <div className="flex min-w-0 flex-1 items-start justify-between gap-2 p-3.5">
                       <div className="min-w-0">
-                        <p className="text-[11px] text-slate-500 mb-0.5">{formatSessionDateTime(room)}{room.venue ? ` · ${room.venue}` : ''}</p>
-                        <p className="text-sm font-bold text-slate-800 truncate">{room.name}</p>
-                        {room.description && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{room.description}</p>}
+                        <p className="mb-1 text-[11px] font-medium text-slate-500">{formatSessionDateTime(room)}{room.venue ? ` · ${room.venue}` : ''}</p>
+                        <p className="truncate text-sm font-bold leading-tight text-slate-800">{room.name}</p>
+                        {room.description && <p className="mt-1 line-clamp-1 text-[12px] text-slate-500">{room.description}</p>}
                       </div>
-                      <ChevronRight size={16} className="text-slate-300 shrink-0 mt-1" />
+                      <div className="shrink-0 rounded-full bg-slate-100 p-1.5 text-slate-400 transition-colors group-hover:bg-blue-50 group-hover:text-blue-500">
+                        <ChevronRight size={14} />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  </article>
+                );})}
                 </div>
+                {homeUpcomingTotalPages > 1 ? (
+                  <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setHomeUpcomingPage((p) => Math.max(0, p - 1))}
+                      disabled={homeUpcomingPage <= 0}
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-50"
+                    >
+                      <ChevronLeft size={16} /> Back
+                    </button>
+                    <span className="text-xs font-semibold text-slate-500 tabular-nums">
+                      {homeUpcomingPage + 1} / {homeUpcomingTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setHomeUpcomingPage((p) => Math.min(homeUpcomingTotalPages - 1, p + 1))}
+                      disabled={homeUpcomingPage >= homeUpcomingTotalPages - 1}
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-50"
+                    >
+                      Next <ChevronRight size={16} />
+                    </button>
+                  </div>
+                ) : null}
               </div>
             )}
           </>
@@ -1669,12 +1856,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* ── SCHEDULE / SHOWCASE tab ───────────────────────── */}
         {activeTab === 'schedule' && (
           <>
-            <div className="px-4 pt-5 pb-2">
-              <h2 className="text-2xl font-black tracking-tight">Break out room</h2>
-              <p className="text-sm text-slate-500 mt-1">Discover breakout sessions and reserve your slot.</p>
-            </div>
-
-            <div className="px-4 pb-2">
+            <div className="px-4 pb-2 pt-5">
               <label htmlFor="breakout-room-search-mobile" className="sr-only">
                 Search breakout sessions
               </label>
@@ -1787,18 +1969,14 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* ── MATERIALS tab ───────────────────────────────────── */}
         {activeTab === 'materials' && (
           <>
-            <div className="px-4 pt-5 pb-2">
-              <h2 className="text-2xl font-black tracking-tight">Session Materials</h2>
-              <p className="text-sm text-slate-500 mt-1">Access materials from your reserved sessions.</p>
-            </div>
             {presenterMaterials.length === 0 ? (
-              <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
+              <div className="mx-4 mt-5 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
                 <BookOpen size={40} className="text-slate-200 mx-auto mb-3" />
                 <p>Reserve a session to access materials.</p>
                 <button type="button" onClick={() => setActiveTab('schedule')} className="mt-4 px-5 py-2 bg-blue-600 text-white rounded-full text-sm font-bold">Browse Sessions</button>
               </div>
             ) : (
-              <div className="px-4 flex flex-col gap-3 pb-4">
+              <div className="px-4 pt-5 flex flex-col gap-3 pb-4">
                 {presenterMaterials.map((mat) => {
                   const room = mat.roomId ? rooms.find((r) => r.id === mat.roomId) : null;
                   const size = mat.fileSizeBytes ? (mat.fileSizeBytes < 1024 ? `${mat.fileSizeBytes} B` : mat.fileSizeBytes < 1024 * 1024 ? `${(mat.fileSizeBytes / 1024).toFixed(1)} KB` : `${(mat.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`) : '';
@@ -1818,56 +1996,52 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* ── EXHIBITORS / SPEAKERS tab ────────────────────── */}
         {activeTab === 'exhibitors' && (
           <>
-            <div className="px-4 pt-5 pb-2">
-              <h2 className="text-2xl font-black tracking-tight">Exhibitors</h2>
-              <p className="text-sm text-slate-500 mt-1">Approved booth participants at iSCENE 2026.</p>
-              {exhibitorOnlyBoothRegs.length > 0 && (
-                <div className="mt-4 space-y-3">
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
-                    <input
-                      type="search"
-                      value={exhibitorSearchQuery}
-                      onChange={(e) => setExhibitorSearchQuery(e.target.value)}
-                      placeholder="Search name, org, products…"
-                      className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                      autoComplete="off"
-                    />
-                  </div>
-                  <div className="flex flex-wrap gap-2">
+            {exhibitorOnlyBoothRegs.length > 0 && (
+              <div className="px-4 pt-5 pb-2 space-y-3">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
+                  <input
+                    type="search"
+                    value={exhibitorSearchQuery}
+                    onChange={(e) => setExhibitorSearchQuery(e.target.value)}
+                    placeholder="Search name, org, products…"
+                    className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setExhibitorCategoryFilter('all')}
+                    className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
+                      exhibitorCategoryFilter === 'all'
+                        ? 'border-blue-600 bg-blue-600 text-white'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {EXHIBITOR_BOOTH_CATEGORIES.map((c) => (
                     <button
+                      key={c}
                       type="button"
-                      onClick={() => setExhibitorCategoryFilter('all')}
+                      onClick={() => setExhibitorCategoryFilter(c)}
                       className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
-                        exhibitorCategoryFilter === 'all'
+                        exhibitorCategoryFilter === c
                           ? 'border-blue-600 bg-blue-600 text-white'
                           : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
                       }`}
                     >
-                      All
+                      {c}
                     </button>
-                    {EXHIBITOR_BOOTH_CATEGORIES.map((c) => (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => setExhibitorCategoryFilter(c)}
-                        className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
-                          exhibitorCategoryFilter === c
-                            ? 'border-blue-600 bg-blue-600 text-white'
-                            : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300'
-                        }`}
-                      >
-                        {c}
-                      </button>
-                    ))}
-                  </div>
+                  ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
             {exhibitorOnlyBoothRegs.length === 0 ? (
-              <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No exhibitors yet.</div>
+              <div className="mx-4 mt-5 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No exhibitors yet.</div>
             ) : filteredBoothRegs.length === 0 ? (
-              <div className="mx-4 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
+              <div className="mx-4 mt-5 bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">
                 No exhibitors match your search or filter.
               </div>
             ) : (
@@ -1920,6 +2094,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {activeTab === 'articles' && (
           <ArticleBrowsePanel
             variant="mobile"
+            hideMobileTitle
             loading={articlesLoading}
             articles={participantArticles}
             searchQuery={articleSearchQuery}
@@ -1933,24 +2108,75 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* ── MEALS tab ─────────────────────────────────────── */}
         {activeTab === 'meals' && (
           <>
-            <div className="px-4 pt-5 pb-2">
-              <h2 className="text-2xl font-black tracking-tight">My Entitlements</h2>
-              <p className="text-sm text-slate-500 mt-1">Food, kits, and giveaways — claim at the assigned stall.</p>
-            </div>
-            <div className="px-4 flex flex-col gap-3 pb-4">
-              {eligibleMeals.length === 0 ? (
+            <div className="px-4 flex flex-col gap-3 pb-4 pt-5">
+              {recentEligibleMeals.length === 0 ? (
                 <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400 text-sm shadow-sm">No entitlements available for you.</div>
-              ) : eligibleMeals.map((meal) => (
-                  <MealEntitlementCard
-                    key={meal.id}
-                    meal={meal}
-                    mealLabels={MEAL_LABELS}
-                    boothRegs={boothRegs}
-                    now={new Date(claimClockTick)}
-                    claimed={hasClaimedMeal(meal.id)}
-                    onClaim={() => setIdModal(true)}
-                  />
-                ))}
+              ) : (
+                <>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-xs font-black uppercase tracking-wide text-slate-500">Recent Meals</p>
+                      <p className="text-xs font-semibold text-slate-500">{Math.min(mealsByDay.length, MEALS_PAGE_SIZE)} of {mealsByDay.length}</p>
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                      {mealDayFilterOptions.map((day) => (
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => setMealDayFilter(day)}
+                          className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
+                            mealDayFilter === day
+                              ? 'border-blue-600 bg-blue-600 text-white'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:text-blue-700'
+                          }`}
+                        >
+                          {day === 'all'
+                            ? 'Recent'
+                            : new Date(`${day}T00:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' })}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {mealsByDay.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center text-slate-400 text-sm shadow-sm">No meals found for this day.</div>
+                  ) : (
+                    mealsSlice.map((meal) => (
+                      <MealEntitlementCard
+                        key={meal.id}
+                        meal={meal}
+                        mealLabels={MEAL_LABELS}
+                        boothRegs={boothRegs}
+                        now={new Date(claimClockTick)}
+                        claimed={hasClaimedMeal(meal.id)}
+                        onClaim={() => setIdModal(true)}
+                      />
+                    ))
+                  )}
+
+                  {mealsTotalPages > 1 ? (
+                    <div className="mt-1 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => setMealsPage((p) => Math.max(0, p - 1))}
+                        disabled={mealsPage <= 0}
+                        className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <ChevronLeft size={15} /> Back
+                      </button>
+                      <span className="text-xs font-semibold text-slate-500 tabular-nums">{mealsPage + 1} / {mealsTotalPages}</span>
+                      <button
+                        type="button"
+                        onClick={() => setMealsPage((p) => Math.min(mealsTotalPages - 1, p + 1))}
+                        disabled={mealsPage >= mealsTotalPages - 1}
+                        className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Next <ChevronRight size={15} />
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
           </>
         )}
@@ -2065,24 +2291,6 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
               ))}
             </nav>
 
-            {/* Quick actions */}
-            <div className="px-3 pb-3 space-y-1">
-              <button
-                type="button"
-                onClick={() => { setScanModal(true); setMobileDrawerOpen(false); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100"
-              >
-                <QrCode size={18} /><span>Scan QR Code</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => { setIdModal(true); setMobileDrawerOpen(false); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100"
-              >
-                <CreditCard size={18} /><span>My Digital ID</span>
-              </button>
-            </div>
-            
             {/* Profile Info & Sign Out Footer */}
             <div className="mt-auto border-t border-slate-100 p-4">
               <div className="mb-3 flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
@@ -2164,40 +2372,32 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         <div className="mx-auto w-full max-w-7xl px-5 sm:px-8 lg:px-10 xl:px-12 2xl:px-14">
         {/* Top header — title row separate from toast so flex doesn’t crush the subtitle */}
         <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-sm border-b border-slate-100 py-4">
-          <div className="flex items-start justify-between gap-4 min-w-0">
-            <div className="min-w-0 flex-1 pr-2">
-              <h1 className="text-2xl font-black leading-tight text-slate-900">{desktopPageHeader.title}</h1>
-              {desktopPageHeader.subtitle ? (
-                <p className="text-slate-500 text-sm mt-1 max-w-prose leading-relaxed">{desktopPageHeader.subtitle}</p>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2 sm:gap-3 shrink-0 pt-0.5">
-              {scanToast && <span className={`hidden sm:inline text-xs font-semibold px-3 py-1.5 rounded-full shrink-0 max-w-[10rem] truncate ${scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`} title={scanToast}>{scanToast}</span>}
-              <button type="button" onClick={() => setScanModal(true)} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-blue-100 flex items-center justify-center transition-colors shrink-0"><QrCode size={17} className="text-slate-600" /></button>
-              <div ref={desktopBellRef} className="relative shrink-0">
-                <button
-                  type="button"
-                  onClick={handleBellToggle}
-                  className="relative w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors"
-                  aria-label="Notifications"
-                  aria-expanded={bellPanelOpen}
-                  aria-haspopup="dialog"
-                >
-                  <Bell size={17} className="text-slate-600" />
-                  {bellUnreadCount > 0 ? (
-                    <span className="absolute top-0.5 right-0.5 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold leading-none">
-                      {Math.min(99, bellUnreadCount)}
-                    </span>
-                  ) : null}
-                </button>
-                {renderBellPanel()}
-              </div>
-              <button type="button" onClick={() => setActiveTab('profile')} className="w-9 h-9 rounded-full overflow-hidden bg-blue-600 flex items-center justify-center text-white text-xs font-black ring-2 ring-blue-200 hover:ring-blue-400 transition-all shrink-0">
-                {profilePicUrl
-                  ? <img src={profilePicUrl} alt={fullName} className="w-full h-full object-cover" />
-                  : <span>{initials}</span>}
+          <div className="flex items-center justify-end gap-2 sm:gap-3 shrink-0 min-w-0">
+            {scanToast && <span className={`hidden sm:inline text-xs font-semibold px-3 py-1.5 rounded-full shrink-0 max-w-[10rem] truncate ${scanToast.startsWith('✅') ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`} title={scanToast}>{scanToast}</span>}
+            <button type="button" onClick={() => setScanModal(true)} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-blue-100 flex items-center justify-center transition-colors shrink-0"><QrCode size={17} className="text-slate-600" /></button>
+            <div ref={desktopBellRef} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={handleBellToggle}
+                className="relative w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors"
+                aria-label="Notifications"
+                aria-expanded={bellPanelOpen}
+                aria-haspopup="dialog"
+              >
+                <Bell size={17} className="text-slate-600" />
+                {bellUnreadCount > 0 ? (
+                  <span className="absolute top-0.5 right-0.5 min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold leading-none">
+                    {Math.min(99, bellUnreadCount)}
+                  </span>
+                ) : null}
               </button>
+              {renderBellPanel()}
             </div>
+            <button type="button" onClick={() => setActiveTab('profile')} className="w-9 h-9 rounded-full overflow-hidden bg-blue-600 flex items-center justify-center text-white text-xs font-black ring-2 ring-blue-200 hover:ring-blue-400 transition-all shrink-0">
+              {profilePicUrl
+                ? <img src={profilePicUrl} alt={fullName} className="w-full h-full object-cover" />
+                : <span>{initials}</span>}
+            </button>
           </div>
           {contentNotify ? (
             <div
@@ -2268,17 +2468,38 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 </div>
                 {rooms.length === 0
                   ? <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center text-slate-400 text-sm shadow-sm">No sessions scheduled yet.</div>
-                  : rooms.slice(0, 4).map((room, i) => (
-                    <React.Fragment key={room.id}>{DesktopSessionCard({ room, idx: i })}</React.Fragment>
-                  ))}
-                <div className="rounded-2xl bg-gradient-to-r from-blue-600 to-blue-800 p-5 flex items-center justify-between gap-4 shadow-lg shadow-blue-200 relative overflow-hidden">
-                  <div className="relative z-10 max-w-[60%]">
-                    <h3 className="text-white font-black text-base mb-1">Join the Innovation Lab Workshop</h3>
-                    <p className="text-blue-200 text-xs leading-relaxed">A hands-on session with industry leaders. Reserve your spot!</p>
-                    <button type="button" onClick={() => setActiveTab('schedule')} className="mt-3 px-4 py-2 bg-white text-blue-700 font-bold text-xs rounded-full hover:bg-blue-50 transition-colors">Secure My Spot</button>
-                  </div>
-                  <div className="text-6xl opacity-20 absolute right-4 top-1/2 -translate-y-1/2">🔬</div>
-                </div>
+                  : (
+                    <>
+                      {homeUpcomingSlice.map((room, i) => (
+                        <React.Fragment key={room.id}>
+                          {DesktopSessionCard({ room, idx: homeUpcomingPage * UPCOMING_HOME_PAGE_SIZE + i })}
+                        </React.Fragment>
+                      ))}
+                      {homeUpcomingTotalPages > 1 ? (
+                        <div className="flex items-center justify-between gap-3 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setHomeUpcomingPage((p) => Math.max(0, p - 1))}
+                            disabled={homeUpcomingPage <= 0}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-50"
+                          >
+                            <ChevronLeft size={18} /> Previous
+                          </button>
+                          <span className="text-sm font-semibold text-slate-500 tabular-nums">
+                            Page {homeUpcomingPage + 1} of {homeUpcomingTotalPages}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setHomeUpcomingPage((p) => Math.min(homeUpcomingTotalPages - 1, p + 1))}
+                            disabled={homeUpcomingPage >= homeUpcomingTotalPages - 1}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-50"
+                          >
+                            Next <ChevronRight size={18} />
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
               </div>
 
               {/* Right panel */}
@@ -2324,26 +2545,6 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                         })}
                       </div>}
                 </div>
-                <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
-                  <h3 className="text-sm font-bold text-slate-800 mb-3">Attendee Networking</h3>
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="flex -space-x-2">
-                      {['bg-blue-400','bg-emerald-400','bg-purple-400'].map((c, i) => (
-                        <div key={i} className={`w-7 h-7 rounded-full ${c} border-2 border-white flex items-center justify-center text-[9px] text-white font-bold`}>{['A','B','C'][i]}</div>
-                      ))}
-                    </div>
-                    <span className="text-[11px] text-slate-500 font-semibold">+{Math.max(0, rooms.length * 10)} attendees</span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mb-3">Connect with fellow participants and industry experts.</p>
-                  <button type="button" className="w-full py-2 rounded-full border-2 border-blue-600 text-blue-600 text-xs font-bold hover:bg-blue-50 transition-colors">Enter Networking Lounge</button>
-                </div>
-                {meals.length > 0 && (
-                  <div className="bg-amber-50 rounded-2xl border border-amber-100 p-4 shadow-sm">
-                    <div className="flex items-center gap-2 mb-2"><Utensils size={16} className="text-amber-600" /><h3 className="text-sm font-bold text-amber-800">Meal Schedule</h3></div>
-                    <p className="text-[11px] text-amber-700 mb-3">{meals.length} meal window{meals.length !== 1 ? 's' : ''} scheduled.</p>
-                    <button type="button" onClick={() => setActiveTab('meals')} className="w-full py-2 rounded-full bg-amber-500 text-white text-xs font-bold hover:bg-amber-600 transition-colors">View My Meals</button>
-                  </div>
-                )}
               </div>
             </div>
           </div>
@@ -2623,22 +2824,77 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
         {/* MEALS */}
         {activeTab === 'meals' && (
           <div className="py-4 sm:py-6 lg:py-8">
-            {eligibleMeals.length === 0
-              ? <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No entitlements available for you yet.</div>
-              : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                  {eligibleMeals.map((meal) => (
-                    <MealEntitlementCard
-                      key={meal.id}
-                      meal={meal}
-                      mealLabels={MEAL_LABELS}
-                      boothRegs={boothRegs}
-                      now={new Date(claimClockTick)}
-                      claimed={hasClaimedMeal(meal.id)}
-                      onClaim={() => setIdModal(true)}
-                      paddingClass="p-5"
-                    />
-                  ))}
-                </div>}
+            {recentEligibleMeals.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No entitlements available for you yet.</div>
+            ) : (
+              <>
+                <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-500">Recent Meals</p>
+                    <p className="text-xs font-semibold text-slate-500">{Math.min(mealsByDay.length, MEALS_PAGE_SIZE)} of {mealsByDay.length}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {mealDayFilterOptions.map((day) => (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => setMealDayFilter(day)}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
+                          mealDayFilter === day
+                            ? 'border-blue-600 bg-blue-600 text-white'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:text-blue-700'
+                        }`}
+                      >
+                        {day === 'all'
+                          ? 'Recent'
+                          : new Date(`${day}T00:00:00`).toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {mealsByDay.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 shadow-sm">No meals found for this day.</div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                    {mealsSlice.map((meal) => (
+                      <MealEntitlementCard
+                        key={meal.id}
+                        meal={meal}
+                        mealLabels={MEAL_LABELS}
+                        boothRegs={boothRegs}
+                        now={new Date(claimClockTick)}
+                        claimed={hasClaimedMeal(meal.id)}
+                        onClaim={() => setIdModal(true)}
+                        paddingClass="p-5"
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {mealsTotalPages > 1 ? (
+                  <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setMealsPage((p) => Math.max(0, p - 1))}
+                      disabled={mealsPage <= 0}
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <ChevronLeft size={16} /> Back
+                    </button>
+                    <span className="text-sm font-semibold text-slate-500 tabular-nums">{mealsPage + 1} / {mealsTotalPages}</span>
+                    <button
+                      type="button"
+                      onClick={() => setMealsPage((p) => Math.min(mealsTotalPages - 1, p + 1))}
+                      disabled={mealsPage >= mealsTotalPages - 1}
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Next <ChevronRight size={16} />
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
         )}
 
@@ -3157,9 +3413,13 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                   <div className="flex items-center justify-between gap-2 mb-3">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2"><MessageCircle size={18} className="text-blue-600" /> Live Q&A</h3>
-                    <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> LIVE
-                    </span>
+                    {liveQaSendAllowed ? (
+                      <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> LIVE
+                      </span>
+                    ) : (
+                      <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">Closed</span>
+                    )}
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50/50 max-h-40 overflow-y-auto p-3 space-y-2 mb-3">
                     {roomChatMessages.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">No questions yet. Ask something!</p> : roomChatMessages.map((msg) => (
@@ -3169,15 +3429,25 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                       </div>
                     ))}
                   </div>
-                  <div className="flex gap-2">
-                    <input
-                      value={roomChatInput}
-                      onChange={(e) => setRoomChatInput(e.target.value)}
-                      placeholder="Ask a question..."
-                      className="flex-1 min-h-[44px] rounded-xl border border-slate-200 px-3 py-2 text-base md:text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendRoomChat()}
-                    />
-                    <button type="button" onClick={handleSendRoomChat} disabled={roomChatSending || !roomChatInput.trim()} className="min-h-[44px] shrink-0 rounded-xl bg-blue-600 px-4 py-2 text-white text-base md:text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"><MessageCircle size={16} /> Send</button>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex gap-2">
+                      <input
+                        value={roomChatInput}
+                        onChange={(e) => setRoomChatInput(e.target.value)}
+                        placeholder={liveQaSendAllowed ? 'Ask a question...' : 'Live Q&A closed'}
+                        disabled={!liveQaSendAllowed}
+                        className="flex-1 min-h-[44px] rounded-xl border border-slate-200 px-3 py-2 text-base md:text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100 disabled:text-slate-400"
+                        onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && liveQaSendAllowed && handleSendRoomChat()}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSendRoomChat}
+                        disabled={!liveQaSendAllowed || roomChatSending || !roomChatInput.trim()}
+                        className="min-h-[44px] shrink-0 rounded-xl bg-blue-600 px-4 py-2 text-white text-base md:text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+                      >
+                        <MessageCircle size={16} /> Send
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3185,8 +3455,8 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
             )}
 
             {/* Actions bar */}
-            <div id="detail-actions-bar" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3 sm:justify-between">
-              <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 flex-1 sm:flex-initial min-w-0 w-full sm:w-auto">
+            <div id="detail-actions-bar" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {!res
                   ? (
                     <button
@@ -3195,7 +3465,7 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                       onClick={async () => {
                         await handleReserve(detailRoom);
                       }}
-                      className={`w-full sm:w-auto px-6 py-3 font-bold rounded-xl ${breakoutScheduleBlock ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                      className={`w-full rounded-xl px-6 py-3 font-bold transition-colors ${breakoutScheduleBlock ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                       title={breakoutScheduleBlock || undefined}
                     >
                       Reserve Slot
@@ -3210,19 +3480,21 @@ export function ParticipantDashboard({ user, registration, onSignOut }: Particip
                             setScanModalRoom(detailRoom);
                             setScanModal(true);
                           }}
-                          className={`w-full sm:w-auto px-6 py-3 font-bold rounded-xl flex items-center justify-center gap-2 ${breakoutScheduleBlock ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          className={`w-full rounded-xl px-6 py-3 font-bold transition-colors flex items-center justify-center gap-2 ${breakoutScheduleBlock ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                           title={breakoutScheduleBlock || undefined}
                         >
                           <QrCode size={18} /> Scan QR at Breakout Room Entrance
                         </button>
-                        <button type="button" onClick={async () => { await handleCancelReservation(detailRoom); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600">Cancel reservation</button>
+                        <button type="button" onClick={async () => { await handleCancelReservation(detailRoom); setDetailRoom(null); }} className="w-full rounded-xl bg-rose-500 px-6 py-3 font-bold text-white transition-colors hover:bg-rose-600">Cancel reservation</button>
                       </>
-                    : <span className="w-full sm:w-auto px-6 py-3 bg-emerald-100 text-emerald-700 font-bold rounded-xl flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}
+                    : <span className="w-full rounded-xl bg-emerald-100 px-6 py-3 font-bold text-emerald-700 flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Timed In</span>}
                 {res?.attended && !reviewDone && (
-                  <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }} className="w-full sm:w-auto px-6 py-3 bg-amber-100 text-amber-700 font-bold rounded-xl hover:bg-amber-200 flex items-center justify-center gap-2"><Star size={18} /> Submit Review</button>
+                  <button type="button" onClick={() => { setReviewModal({ roomId: detailRoom.id, roomName: detailRoom.name, presenterNames: detailRoom.presenterNames || [], fromRoom: detailRoom }); setDetailRoom(null); }} className="w-full rounded-xl bg-amber-100 px-6 py-3 font-bold text-amber-700 transition-colors hover:bg-amber-200 flex items-center justify-center gap-2"><Star size={18} /> Submit Review</button>
                 )}
               </div>
-              <button type="button" onClick={() => { setDetailRoom(null); setOverlapModal(null); }} className="w-full sm:w-auto sm:shrink-0 px-6 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600">Close</button>
+              <div className="mt-3 flex justify-end">
+                <button type="button" onClick={() => { setDetailRoom(null); setOverlapModal(null); }} className="w-full sm:w-auto px-6 py-3 rounded-xl bg-rose-500 font-bold text-white transition-colors hover:bg-rose-600">Close</button>
+              </div>
             </div>
           </div>
         </div>

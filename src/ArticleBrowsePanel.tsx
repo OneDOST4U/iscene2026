@@ -25,6 +25,8 @@ export type ArticleBrowsePanelProps = {
   categoryChipNames: string[];
   /** mobile: px-4 padding inside; desktop: full width content */
   variant: 'mobile' | 'desktop';
+  /** When true, omit the mobile “Articles Home” heading + subtitle (nav already labels the tab). */
+  hideMobileTitle?: boolean;
 };
 
 export function ArticleBrowsePanel({
@@ -36,6 +38,7 @@ export function ArticleBrowsePanel({
   onCategoryChange,
   categoryChipNames,
   variant,
+  hideMobileTitle = false,
 }: ArticleBrowsePanelProps) {
   const filtered = React.useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -64,7 +67,7 @@ export function ArticleBrowsePanel({
 
   return (
     <div className={shell}>
-      {variant === 'mobile' ? (
+      {variant === 'mobile' && !hideMobileTitle ? (
         <>
           <h2 className="text-2xl font-black tracking-tight">Articles Home</h2>
           <p className="text-sm text-slate-500 mt-1 mb-4">News and updates from the organizers.</p>

@@ -37,13 +37,13 @@ export function MealEntitlementCard({
 
   return (
     <div
-      className={`rounded-2xl border shadow-sm ${paddingClass} ${
-        claimed ? 'bg-emerald-50 border-emerald-200' : isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'
+      className={`rounded-3xl border ${paddingClass} shadow-[0_1px_3px_rgba(15,23,42,0.05),0_10px_24px_rgba(15,23,42,0.06)] ${
+        claimed ? 'bg-emerald-50 border-emerald-200' : isToday ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200/90'
       }`}
     >
       <div className="flex items-center justify-between mb-1 gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <p className="font-bold">{title}</p>
+          <p className="text-xl font-black tracking-tight text-slate-900">{title}</p>
           {meal.itemType ? (
             <span
               className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
@@ -59,16 +59,16 @@ export function MealEntitlementCard({
           ) : null}
         </div>
       </div>
-      <p className="text-xs text-slate-500">
+      <p className="text-sm text-slate-500">
         {meal.sessionDate ? new Date(meal.sessionDate).toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric' }) : '—'}
       </p>
       {meal.startTime && meal.endTime ? (
-        <p className="text-xs font-semibold text-blue-600 mt-0.5 flex items-center gap-1">
+        <p className="text-sm font-semibold text-blue-600 mt-0.5 flex items-center gap-1">
           <Clock size={11} /> {formatMealTimeRangeForDisplay(meal.startTime, meal.endTime)}
         </p>
       ) : null}
       {locationBelowTime ? (
-        <p className="text-xs text-slate-800 mt-1 flex items-start gap-1.5 font-medium">
+        <p className="text-sm text-slate-800 mt-1 flex items-start gap-1.5 font-semibold">
           <MapPin size={12} className="shrink-0 text-rose-600 mt-0.5" aria-hidden />
           <span className="min-w-0 leading-snug">{locationBelowTime}</span>
         </p>

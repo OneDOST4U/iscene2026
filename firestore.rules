@@ -272,12 +272,13 @@ service cloud.firestore {
     }
 
     // ARTICLES  /articles/{docId}
-    // Listeners (onSnapshot) need get + list. Any signed-in user may read.
+    // Public landing page reads this collection without sign-in.
+    // Keep writes restricted to authenticated authors/admins.
     // Create: authorUid must match caller; core fields required (extras OK).
     // ─────────────────────────────────────────────────────────────
     match /articles/{articleId} {
-      allow get: if request.auth != null;
-      allow list: if request.auth != null;
+      allow get: if true;
+      allow list: if true;
       allow create: if request.auth != null
         && request.resource.data.authorUid == request.auth.uid
         && request.resource.data.title is string

@@ -1901,7 +1901,7 @@ export function AdminDashboard({
     setRoomBackgroundUploading(true);
     try {
       const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      const path = `rooms/backgrounds/${user.uid}/${Date.now()}_${safeName}`;
+      const path = `roomBackgrounds/${user.uid}/${Date.now()}_${safeName}`;
       await uploadBytes(ref(storage, path), file, { contentType: file.type || 'image/jpeg' });
       const url = await getDownloadURL(ref(storage, path));
       setNewRoomBackgroundImage(url);

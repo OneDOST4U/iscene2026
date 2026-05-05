@@ -61,6 +61,8 @@ import {
   onAuthStateChanged,
   signOut,
   sendPasswordResetEmail,
+  verifyPasswordResetCode,
+  confirmPasswordReset,
   User,
 } from 'firebase/auth';
 
@@ -207,6 +209,14 @@ const Card = ({ title, description, icon: Icon, color }: { title: string, descri
 
 type RuntimeErrorBoundaryProps = { children: React.ReactNode };
 type RuntimeErrorBoundaryState = { hasError: boolean; message: string };
+type LandingArticle = {
+  id: string;
+  title?: string;
+  description?: string;
+  authorName?: string;
+  headerImageUrl?: string;
+  category?: string;
+};
 
 class RuntimeErrorBoundary extends React.Component<RuntimeErrorBoundaryProps, RuntimeErrorBoundaryState> {
   state: RuntimeErrorBoundaryState = { hasError: false, message: '' };
@@ -272,6 +282,20 @@ export default function App() {
    const [participantPassword, setParticipantPassword] = React.useState('');
    const [participantAuthError, setParticipantAuthError] = React.useState<string | null>(null);
    const [participantAuthLoading, setParticipantAuthLoading] = React.useState(false);
+  const [forgotPasswordOpen, setForgotPasswordOpen] = React.useState(false);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = React.useState('');
+  const [forgotPasswordLoading, setForgotPasswordLoading] = React.useState(false);
+  const [forgotPasswordMessage, setForgotPasswordMessage] = React.useState<string | null>(null);
+  const [forgotPasswordError, setForgotPasswordError] = React.useState<string | null>(null);
+  const [forgotPasswordCooldownUntil, setForgotPasswordCooldownUntil] = React.useState<number>(0);
+  const [forgotPasswordNowMs, setForgotPasswordNowMs] = React.useState<number>(Date.now());
+  const [resetPasswordOpen, setResetPasswordOpen] = React.useState(false);
+  const [resetOobCode, setResetOobCode] = React.useState('');
+  const [resetNewPassword, setResetNewPassword] = React.useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = React.useState('');
+  const [resetPasswordLoading, setResetPasswordLoading] = React.useState(false);
+  const [resetPasswordError, setResetPasswordError] = React.useState<string | null>(null);
+  const [resetPasswordMessage, setResetPasswordMessage] = React.useState<string | null>(null);
   const [participantRegistration, setParticipantRegistration] = React.useState<any | null>(null);
   const [participantRegistrationLoading, setParticipantRegistrationLoading] = React.useState(false);
   const [registrations, setRegistrations] = React.useState<any[]>([]);
@@ -289,6 +313,12 @@ export default function App() {
   const [exhibitorBoothCategory, setExhibitorBoothCategory] = React.useState('');
   const [exhibitorBoothCategoryOther, setExhibitorBoothCategoryOther] = React.useState('');
   const [paymentMethod, setPaymentMethod] = React.useState<'upload' | 'pay_at_venue'>('upload');
+  const [registerPrivacyConsent, setRegisterPrivacyConsent] = React.useState(false);
+  const registerPrivacyNoticeRef = React.useRef<HTMLDivElement | null>(null);
+  const [landingArticles, setLandingArticles] = React.useState<LandingArticle[]>([]);
+  const [landingArticlesLoading, setLandingArticlesLoading] = React.useState(true);
+  const [landingArticlesError, setLandingArticlesError] = React.useState<string | null>(null);
+  const [activeLandingArticle, setActiveLandingArticle] = React.useState(0);
 
   // Profile picture preview (data URL shown in the form before submit)
   const [profilePicPreview, setProfilePicPreview] = React.useState<string | null>(null);
@@ -347,6 +377,8 @@ export default function App() {
     setIsAuthChoiceOpen(false);
     setIsParticipantLoginOpen(false);
     setIsRegisterOpen(false);
+    setForgotPasswordOpen(false);
+    setRegisterPrivacyConsent(false);
   }, []);
 
   const openAuthChoiceModal = React.useCallback(() => {
@@ -360,13 +392,26 @@ export default function App() {
     setIsMenuOpen(false);
     setIsAuthChoiceOpen(false);
     setIsRegisterOpen(false);
+    setForgotPasswordOpen(false);
     setIsParticipantLoginOpen(true);
   }, []);
+
+  const openForgotPasswordModal = React.useCallback(() => {
+    setIsMenuOpen(false);
+    setIsAuthChoiceOpen(false);
+    setIsRegisterOpen(false);
+    setIsParticipantLoginOpen(false);
+    setForgotPasswordMessage(null);
+    setForgotPasswordError(null);
+    setForgotPasswordEmail(participantEmail);
+    setForgotPasswordOpen(true);
+  }, [participantEmail]);
 
   const openRegisterModal = React.useCallback(() => {
     setIsMenuOpen(false);
     setIsAuthChoiceOpen(false);
     setIsParticipantLoginOpen(false);
+    setRegisterPrivacyConsent(false);
     setIsRegisterOpen(true);
   }, []);
 
@@ -395,7 +440,8 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Load current user's registration when signed in (for role-based dashboard)
+  // Load current user's registration when signed in (for role-based dashboard).
+  // Realtime listener keeps travel/accommodation and other fields in sync after updateDoc and on refresh.
   React.useEffect(() => {
     if (!adminUser?.uid) {
       setParticipantRegistration(null);
@@ -407,18 +453,38 @@ export default function App() {
       setParticipantRegistrationLoading(false);
       return;
     }
-    let cancelled = false;
     setParticipantRegistrationLoading(true);
     const q = query(
       collection(db, 'registrations'),
       where('uid', '==', adminUser.uid),
     );
-    getDocs(q)
-      .then((snap) => {
-        if (cancelled) return;
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
         const reg = pickRegistrationFromQuerySnapshot(snap) as any;
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ec45ad' },
+          body: JSON.stringify({
+            sessionId: 'ec45ad',
+            runId: 'travel-persist',
+            hypothesisId: 'T1_T2',
+            location: 'src/App.tsx:participantRegistrationOnSnapshot',
+            message: 'Registration snapshot applied',
+            data: {
+              empty: snap.empty,
+              regId: reg ? (reg as { id?: string }).id : null,
+              travelLen: reg ? String((reg as { travelDetails?: unknown }).travelDetails ?? '').length : 0,
+              accomLen: reg ? String((reg as { accommodationDetails?: unknown }).accommodationDetails ?? '').length : 0,
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         if (!reg) {
           setParticipantRegistration(null);
+          setParticipantRegistrationLoading(false);
           return;
         }
         const status = (reg.status as string | undefined) || 'pending';
@@ -428,16 +494,14 @@ export default function App() {
         } else {
           setParticipantRegistration(null);
         }
-      })
-      .catch(() => {
-        if (!cancelled) setParticipantRegistration(null);
-      })
-      .finally(() => {
-        if (!cancelled) setParticipantRegistrationLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+        setParticipantRegistrationLoading(false);
+      },
+      () => {
+        setParticipantRegistration(null);
+        setParticipantRegistrationLoading(false);
+      },
+    );
+    return () => unsub();
   }, [adminUser?.uid, adminUser?.email]);
 
   // Secret URL trigger for admin panel, e.g. https://site.com/?admin=1
@@ -446,6 +510,43 @@ export default function App() {
       setIsAdminPanelOpen(true);
     }
   }, []);
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get('mode');
+    const oobCode = params.get('oobCode');
+    const continueUrl = params.get('continueUrl');
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H2_H4',location:'src/App.tsx:authActionParamsEffect',message:'Auth action params observed on app load',data:{mode:mode||null,hasOobCode:!!oobCode,oobCodeLength:oobCode?oobCode.length:0,hasContinueUrl:!!continueUrl},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    if (mode === 'resetPassword' && oobCode) {
+      setResetOobCode(oobCode);
+      setResetPasswordOpen(true);
+      setForgotPasswordOpen(false);
+      setIsParticipantLoginOpen(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H1_H3',location:'src/App.tsx:participantLoginModalStateEffect',message:'Participant login modal visibility changed',data:{isParticipantLoginOpen},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [isParticipantLoginOpen]);
+
+  React.useEffect(() => {
+    if (!forgotPasswordOpen && forgotPasswordCooldownUntil <= Date.now()) return;
+    const timer = window.setInterval(() => {
+      setForgotPasswordNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [forgotPasswordOpen, forgotPasswordCooldownUntil]);
+
+  React.useEffect(() => {
+    if (!isRegisterOpen) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'registration-privacy-consent',hypothesisId:'H8',location:'src/App.tsx:registerPrivacyConsentEffect',message:'Registration privacy consent state changed',data:{registerPrivacyConsent},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [isRegisterOpen, registerPrivacyConsent]);
 
   React.useEffect(() => {
     if (!isAdminVerified) return;
@@ -475,6 +576,57 @@ export default function App() {
 
     return () => unsub();
   }, [isAdminVerified]);
+
+  React.useEffect(() => {
+    setLandingArticlesLoading(true);
+    setLandingArticlesError(null);
+    const q = query(collection(db, 'articles'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<LandingArticle, 'id'>) }));
+        setLandingArticles(items);
+        setActiveLandingArticle((prev) => {
+          if (items.length === 0) return 0;
+          return Math.min(prev, items.length - 1);
+        });
+        setLandingArticlesLoading(false);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'landing-articles-carousel',hypothesisId:'H1_data_load',location:'src/App.tsx:landingArticlesSnapshot',message:'Landing carousel articles snapshot loaded',data:{count:items.length},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      },
+      (err) => {
+        console.error('Error loading landing articles', err);
+        setLandingArticlesError('Unable to load articles right now.');
+        setLandingArticlesLoading(false);
+        // #region agent log
+        fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'landing-articles-carousel',hypothesisId:'H2_query_error',location:'src/App.tsx:landingArticlesSnapshot:error',message:'Landing carousel articles query failed',data:{code:err&&typeof err==='object'&&'code' in err?String((err as {code:string}).code):'unknown'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      },
+    );
+    return () => unsub();
+  }, []);
+
+  React.useEffect(() => {
+    if (landingArticles.length === 0) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'landing-articles-carousel',hypothesisId:'H3_slide_index',location:'src/App.tsx:activeLandingArticleEffect',message:'Landing carousel active slide changed',data:{activeLandingArticle,total:landingArticles.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [activeLandingArticle, landingArticles.length]);
+
+  const goToPrevLandingArticle = React.useCallback(() => {
+    setActiveLandingArticle((prev) => {
+      if (landingArticles.length === 0) return 0;
+      return prev === 0 ? landingArticles.length - 1 : prev - 1;
+    });
+  }, [landingArticles.length]);
+
+  const goToNextLandingArticle = React.useCallback(() => {
+    setActiveLandingArticle((prev) => {
+      if (landingArticles.length === 0) return 0;
+      return prev === landingArticles.length - 1 ? 0 : prev + 1;
+    });
+  }, [landingArticles.length]);
 
   const handleAdminSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -525,6 +677,9 @@ export default function App() {
     e.preventDefault();
     setParticipantAuthError(null);
     setParticipantAuthLoading(true);
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H3',location:'src/App.tsx:handleParticipantSignIn:start',message:'Participant sign in submitted',data:{emailDomain:participantEmail.includes('@')?participantEmail.split('@')[1]:'invalid',hasPassword:participantPassword.length>0},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     try {
       const credential = await signInWithEmailAndPassword(
         auth,
@@ -582,6 +737,9 @@ export default function App() {
     } catch (err: any) {
       console.error('Participant sign-in error', err);
       const code = err?.code as string | undefined;
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H3',location:'src/App.tsx:handleParticipantSignIn:catch',message:'Participant sign in failed',data:{code:code||'unknown',message:String(err?.message||'')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') {
         setParticipantAuthError('Incorrect email or password.');
       } else if (code === 'auth/user-not-found') {
@@ -593,6 +751,104 @@ export default function App() {
       }
     } finally {
       setParticipantAuthLoading(false);
+    }
+  };
+
+  const handleSendForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cooldownLeftMs = forgotPasswordCooldownUntil - Date.now();
+    if (cooldownLeftMs > 0) {
+      const secondsLeft = Math.ceil(cooldownLeftMs / 1000);
+      setForgotPasswordError(`Please wait ${secondsLeft}s before sending another reset email.`);
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H5',location:'src/App.tsx:handleSendForgotPassword:cooldownBlocked',message:'Forgot password blocked by cooldown',data:{secondsLeft},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      return;
+    }
+    setForgotPasswordError(null);
+    setForgotPasswordMessage(null);
+    setForgotPasswordLoading(true);
+    const email = forgotPasswordEmail.trim();
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H1_H2',location:'src/App.tsx:handleSendForgotPassword:start',message:'Forgot password submit started',data:{hasEmail:email.length>0,emailDomain:email.includes('@')?email.split('@')[1]:'invalid'},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      await sendPasswordResetEmail(auth, email);
+      const nextCooldownUntil = Date.now() + 60_000;
+      setForgotPasswordCooldownUntil(nextCooldownUntil);
+      setForgotPasswordMessage('Password reset email sent. Check your inbox and open the link to set a new password.');
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H2_H5',location:'src/App.tsx:handleSendForgotPassword:success',message:'Forgot password email sent',data:{emailDomain:email.includes('@')?email.split('@')[1]:'invalid',cooldownSeconds:60},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } catch (err: any) {
+      const code = err?.code as string | undefined;
+      setForgotPasswordError(
+        code === 'auth/user-not-found'
+          ? 'No account found with this email.'
+          : 'Unable to send reset email. Please try again.'
+      );
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H2_H3',location:'src/App.tsx:handleSendForgotPassword:catch',message:'Forgot password email failed',data:{code:code||'unknown',message:String(err?.message||'')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } finally {
+      setForgotPasswordLoading(false);
+    }
+  };
+
+  const handleSubmitResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetPasswordError(null);
+    setResetPasswordMessage(null);
+    if (!resetOobCode) {
+      setResetPasswordError('Reset link is missing or invalid. Request a new reset email.');
+      return;
+    }
+    if (resetNewPassword.length < 6) {
+      setResetPasswordError('Password must be at least 6 characters.');
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetPasswordError('Passwords do not match.');
+      return;
+    }
+    setResetPasswordLoading(true);
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H4',location:'src/App.tsx:handleSubmitResetPassword:start',message:'Reset password submit started',data:{hasOobCode:!!resetOobCode,newPasswordLength:resetNewPassword.length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      await verifyPasswordResetCode(auth, resetOobCode);
+      await confirmPasswordReset(auth, resetOobCode, resetNewPassword);
+      setResetPasswordMessage('Password updated successfully. Please sign in with your new password.');
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H4',location:'src/App.tsx:handleSubmitResetPassword:success',message:'Reset password completed',data:{hasOobCode:!!resetOobCode},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      const params = new URLSearchParams(window.location.search);
+      params.delete('mode');
+      params.delete('oobCode');
+      params.delete('apiKey');
+      params.delete('lang');
+      params.delete('continueUrl');
+      const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', next);
+      setResetNewPassword('');
+      setResetConfirmPassword('');
+      setResetOobCode('');
+      setResetPasswordOpen(false);
+      setParticipantPassword('');
+      setParticipantAuthError(null);
+      setIsParticipantLoginOpen(true);
+    } catch (err: any) {
+      const code = err?.code as string | undefined;
+      setResetPasswordError(
+        code === 'auth/expired-action-code' || code === 'auth/invalid-action-code'
+          ? 'This reset link has expired or is invalid. Request a new password reset email.'
+          : 'Unable to reset password. Please try again.'
+      );
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'forgot-password-flow',hypothesisId:'H4',location:'src/App.tsx:handleSubmitResetPassword:catch',message:'Reset password failed',data:{code:code||'unknown',message:String(err?.message||'')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } finally {
+      setResetPasswordLoading(false);
     }
   };
 
@@ -946,7 +1202,6 @@ iSCENE 2026 Organizing Team</p>`,
 
   const handleRegisterSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setRegisterStatus('submitting');
     setRegisterMessage(null);
 
     const form = e.currentTarget;
@@ -965,6 +1220,29 @@ iSCENE 2026 Organizing Team</p>`,
     const notes = (formData.get('notes') as string) || '';
     const proofFile = formData.get('proofOfPayment') as File | null;
     const profilePicFile = formData.get('profilePicture') as File | null;
+    const privacyConsentChecked = registerPrivacyConsent || formData.get('privacyConsent') === 'on';
+
+    // #region agent log
+    fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'registration-privacy-consent',hypothesisId:'H6_H7',location:'src/App.tsx:handleRegisterSubmit:start',message:'Registration submit attempt',data:{hasConsent:privacyConsentChecked,sector:sector||null,payMethod:paymentMethod},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+
+    if (!privacyConsentChecked) {
+      setRegisterStatus('error');
+      setRegisterMessage('Please agree to the Privacy Notice before completing registration.');
+      const noticeEl = registerPrivacyNoticeRef.current;
+      if (noticeEl) {
+        noticeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'registration-privacy-consent',hypothesisId:'H1_scroll',location:'src/App.tsx:handleRegisterSubmit:privacyScroll',message:'Privacy consent missing — scroll to notice',data:{refAttached:!!noticeEl},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      // #region agent log
+      fetch('http://127.0.0.1:7397/ingest/56484124-7df3-4537-80fa-738427537570',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ec45ad'},body:JSON.stringify({sessionId:'ec45ad',runId:'registration-privacy-consent',hypothesisId:'H6_H8',location:'src/App.tsx:handleRegisterSubmit:blockedByConsent',message:'Registration blocked due to missing privacy consent',data:{hasConsent:privacyConsentChecked},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      return;
+    }
+
+    setRegisterStatus('submitting');
 
     // Profile picture is always required
     if (!profilePicFile || profilePicFile.size === 0) {
@@ -1092,6 +1370,7 @@ iSCENE 2026 Organizing Team</p>`,
       setExhibitorBoothCategoryOther('');
       setPaymentMethod('upload');
       setProfilePicPreview(null);
+      setRegisterPrivacyConsent(false);
       setIsRegisterOpen(false);
       setShowSuccessPopup(true);
     } catch (error) {
@@ -1137,6 +1416,7 @@ iSCENE 2026 Organizing Team</p>`,
     !authInitialized ||
     // Auth is known but the participant's Firestore registration is still loading
     (!isAdminPanelOpen && !isAdminVerified && !!adminUser && participantRegistrationLoading && registerStatus !== 'submitting');
+  const forgotPasswordCooldownRemaining = Math.max(0, Math.ceil((forgotPasswordCooldownUntil - forgotPasswordNowMs) / 1000));
 
   React.useEffect(() => {
     // #region agent log
@@ -1712,6 +1992,101 @@ iSCENE 2026 Organizing Team</p>`,
         </div>
       </section>
 
+      {/* Articles Carousel */}
+      <section id="articles" className="py-24 bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <SectionTitle subtitle="Latest updates from iSCENE, displayed one by one in a carousel.">
+            Articles
+          </SectionTitle>
+
+          {landingArticlesLoading ? (
+            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-10 text-center text-slate-500">
+              Loading articles...
+            </div>
+          ) : landingArticlesError ? (
+            <div className="rounded-3xl border border-red-100 bg-red-50 p-10 text-center text-red-600">
+              {landingArticlesError}
+            </div>
+          ) : landingArticles.length === 0 ? (
+            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-10 text-center text-slate-500">
+              No articles published yet.
+            </div>
+          ) : (
+            <div className="relative overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+              <div
+                className="flex transition-transform duration-500 ease-out"
+                style={{ transform: `translateX(-${activeLandingArticle * 100}%)` }}
+              >
+                {landingArticles.map((article) => (
+                  <article key={article.id} className="w-full shrink-0">
+                    <div className="grid md:grid-cols-2 min-h-[360px]">
+                      <div className="h-full bg-slate-100">
+                        {article.headerImageUrl ? (
+                          <img
+                            src={article.headerImageUrl}
+                            alt={article.title || 'Article'}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-slate-400">
+                            <FileText size={48} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-8 md:p-10 flex flex-col justify-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-blue-600 mb-3">
+                          {(article.category || 'Updates').toString()}
+                        </p>
+                        <h3 className="text-2xl md:text-3xl font-bold text-slate-900 mb-4">
+                          {article.title || 'Untitled article'}
+                        </h3>
+                        <p className="text-slate-600 leading-relaxed line-clamp-6">
+                          {article.description || 'No description provided.'}
+                        </p>
+                        {article.authorName ? (
+                          <p className="mt-5 text-sm text-slate-500">By {article.authorName}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={goToPrevLandingArticle}
+                aria-label="Previous article"
+                className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/90 p-2.5 text-slate-700 shadow hover:bg-white"
+              >
+                <ChevronLeft size={20} />
+              </button>
+              <button
+                type="button"
+                onClick={goToNextLandingArticle}
+                aria-label="Next article"
+                className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/90 p-2.5 text-slate-700 shadow hover:bg-white"
+              >
+                <ChevronRight size={20} />
+              </button>
+
+              <div className="flex justify-center gap-2 px-4 py-4 bg-slate-50 border-t border-slate-100">
+                {landingArticles.map((article, idx) => (
+                  <button
+                    key={article.id}
+                    type="button"
+                    onClick={() => setActiveLandingArticle(idx)}
+                    aria-label={`Go to article ${idx + 1}`}
+                    className={`h-2.5 rounded-full transition-all ${
+                      idx === activeLandingArticle ? 'w-8 bg-blue-600' : 'w-2.5 bg-slate-300 hover:bg-slate-400'
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
       {/* Footer */}
       <footer className="bg-white border-t border-slate-100 pt-20 pb-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -1857,6 +2232,15 @@ iSCENE 2026 Organizing Team</p>`,
                   placeholder="Your password"
                 />
               </div>
+              <div className="flex justify-end -mt-1">
+                <button
+                  type="button"
+                  onClick={openForgotPasswordModal}
+                  className="text-xs font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  Forgot password?
+                </button>
+              </div>
               {participantAuthError && (
                 <p className="text-xs text-red-600 mt-1">{participantAuthError}</p>
               )}
@@ -1876,6 +2260,114 @@ iSCENE 2026 Organizing Team</p>`,
               </button>
             </form>
           </div>
+          </div>
+        </div>
+      )}
+
+      {/* Forgot Password Modal */}
+      {forgotPasswordOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain bg-black/40">
+          <div className="flex min-h-dvh w-full flex-col items-center justify-center px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:py-10">
+            <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-5 relative sm:p-6">
+              <button
+                type="button"
+                onClick={() => { setForgotPasswordOpen(false); setIsParticipantLoginOpen(true); }}
+                className="absolute top-3 right-3 text-slate-400 hover:text-slate-600"
+              >
+                <X size={20} />
+              </button>
+              <h2 className="text-xl font-bold text-slate-900 mb-1 text-center">Reset Password</h2>
+              <p className="text-xs text-slate-500 mb-4 text-center">
+                Enter your registration email and we will send a password reset link.
+              </p>
+              <form onSubmit={handleSendForgotPassword} className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                  <input
+                    required
+                    type="email"
+                    value={forgotPasswordEmail}
+                    onChange={(e) => setForgotPasswordEmail(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="you@example.com"
+                  />
+                </div>
+                {forgotPasswordError ? <p className="text-xs text-red-600">{forgotPasswordError}</p> : null}
+                {forgotPasswordMessage ? <p className="text-xs text-emerald-600">{forgotPasswordMessage}</p> : null}
+                {forgotPasswordCooldownRemaining > 0 ? (
+                  <p className="text-xs text-slate-500">
+                    You can send another reset email in {forgotPasswordCooldownRemaining}s.
+                  </p>
+                ) : null}
+                <button
+                  type="submit"
+                  disabled={forgotPasswordLoading || forgotPasswordCooldownRemaining > 0}
+                  className="w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors mt-1"
+                >
+                  {forgotPasswordLoading
+                    ? 'Sending…'
+                    : forgotPasswordCooldownRemaining > 0
+                    ? `Send again in ${forgotPasswordCooldownRemaining}s`
+                    : 'Send reset email'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setForgotPasswordOpen(false); setIsParticipantLoginOpen(true); }}
+                  className="w-full text-sm font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  Back to sign in
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Password (from email link) */}
+      {resetPasswordOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain bg-black/40">
+          <div className="flex min-h-dvh w-full flex-col items-center justify-center px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:py-10">
+            <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-5 relative sm:p-6">
+              <h2 className="text-xl font-bold text-slate-900 mb-1 text-center">Set New Password</h2>
+              <p className="text-xs text-slate-500 mb-4 text-center">
+                Enter your new password to complete password reset.
+              </p>
+              <form onSubmit={handleSubmitResetPassword} className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">New Password</label>
+                  <input
+                    required
+                    type="password"
+                    minLength={6}
+                    value={resetNewPassword}
+                    onChange={(e) => setResetNewPassword(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="At least 6 characters"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Confirm Password</label>
+                  <input
+                    required
+                    type="password"
+                    minLength={6}
+                    value={resetConfirmPassword}
+                    onChange={(e) => setResetConfirmPassword(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Repeat password"
+                  />
+                </div>
+                {resetPasswordError ? <p className="text-xs text-red-600">{resetPasswordError}</p> : null}
+                {resetPasswordMessage ? <p className="text-xs text-emerald-600">{resetPasswordMessage}</p> : null}
+                <button
+                  type="submit"
+                  disabled={resetPasswordLoading}
+                  className="w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors mt-1"
+                >
+                  {resetPasswordLoading ? 'Updating…' : 'Update password'}
+                </button>
+              </form>
+            </div>
           </div>
         </div>
       )}
@@ -2215,12 +2707,40 @@ iSCENE 2026 Organizing Team</p>`,
                 </div>
               </div>
 
+              {/* Privacy Notice — above submit so consent is visible; ref used to scroll on validation */}
+              <div
+                ref={registerPrivacyNoticeRef}
+                id="registration-privacy-notice"
+                className="mt-6 flex gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4 scroll-mt-24"
+              >
+                <Shield className="shrink-0 text-blue-600 mt-0.5" size={20} />
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  <strong className="text-slate-800">Privacy Notice:</strong> iSCENE 2026 is committed to protecting your personal information. By submitting this form, you consent to the collection and processing of your data in accordance with Republic Act No. 10173 (Data Privacy Act of 2012). Your data will be used solely for registration and event-related communications.
+                </p>
+              </div>
+              <label className="mt-3 flex items-start gap-2.5 rounded-lg border border-slate-200 bg-white p-3">
+                <input
+                  type="checkbox"
+                  name="privacyConsent"
+                  checked={registerPrivacyConsent}
+                  onChange={(e) => setRegisterPrivacyConsent(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-xs text-slate-700 leading-relaxed">
+                  I have read and agree to the Privacy Notice and consent to processing of my registration data.
+                </span>
+              </label>
+
               <button
                 type="submit"
                 disabled={registerStatus === 'submitting'}
-                className="w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white py-3.5 rounded-xl font-bold text-base hover:bg-blue-700 transition-all"
+                className="mt-6 w-full bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed text-white py-3.5 rounded-xl font-bold text-base hover:bg-blue-700 transition-all"
               >
-                {registerStatus === 'submitting' ? 'Submitting...' : 'Complete Registration'}
+                {registerStatus === 'submitting'
+                  ? 'Submitting...'
+                  : !registerPrivacyConsent
+                  ? 'Agree to Privacy Notice to continue'
+                  : 'Complete Registration'}
               </button>
               <button
                 type="button"
@@ -2234,14 +2754,6 @@ iSCENE 2026 Organizing Team</p>`,
                   {registerMessage}
                 </p>
               )}
-
-              {/* Privacy Notice */}
-              <div className="mt-6 flex gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
-                <Shield className="shrink-0 text-blue-600 mt-0.5" size={20} />
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  <strong className="text-slate-800">Privacy Notice:</strong> iSCENE 2026 is committed to protecting your personal information. By submitting this form, you consent to the collection and processing of your data in accordance with Republic Act No. 10173 (Data Privacy Act of 2012). Your data will be used solely for registration and event-related communications.
-                </p>
-              </div>
             </form>
 
             {/* Footer */}
