@@ -209,6 +209,14 @@ const Card = ({ title, description, icon: Icon, color }: { title: string, descri
 
 type RuntimeErrorBoundaryProps = { children: React.ReactNode };
 type RuntimeErrorBoundaryState = { hasError: boolean; message: string };
+type LandingArticle = {
+  id: string;
+  title?: string;
+  description?: string;
+  authorName?: string;
+  headerImageUrl?: string;
+  category?: string;
+};
 
 class RuntimeErrorBoundary extends React.Component<RuntimeErrorBoundaryProps, RuntimeErrorBoundaryState> {
   state: RuntimeErrorBoundaryState = { hasError: false, message: '' };
@@ -307,6 +315,11 @@ export default function App() {
   const [paymentMethod, setPaymentMethod] = React.useState<'upload' | 'pay_at_venue'>('upload');
   const [registerPrivacyConsent, setRegisterPrivacyConsent] = React.useState(false);
   const registerPrivacyNoticeRef = React.useRef<HTMLDivElement | null>(null);
+  const [landingArticles, setLandingArticles] = React.useState<LandingArticle[]>([]);
+  const [landingArticlesLoading, setLandingArticlesLoading] = React.useState(true);
+  const [landingArticlesError, setLandingArticlesError] = React.useState<string | null>(null);
+  const [activeLandingArticle, setActiveLandingArticle] = React.useState(0);
+  const landingArticlesTrackRef = React.useRef<HTMLDivElement | null>(null);
 
   // Profile picture preview (data URL shown in the form before submit)
   const [profilePicPreview, setProfilePicPreview] = React.useState<string | null>(null);
@@ -647,6 +660,77 @@ export default function App() {
 
     return () => unsub();
   }, [isAdminVerified]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const loadLandingArticles = async () => {
+      setLandingArticlesLoading(true);
+      setLandingArticlesError(null);
+      try {
+        const q = query(collection(db, 'articles'), orderBy('createdAt', 'desc'));
+        const snap = await getDocs(q);
+        if (cancelled) return;
+        const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<LandingArticle, 'id'>) }));
+        const nextItems = items.slice(0, 8);
+        setLandingArticles(nextItems);
+        setActiveLandingArticle((prev) => {
+          if (nextItems.length === 0) return 0;
+          return Math.min(prev, nextItems.length - 1);
+        });
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Error loading landing articles', err);
+        setLandingArticlesError('Unable to load articles right now.');
+      } finally {
+        if (!cancelled) setLandingArticlesLoading(false);
+      }
+    };
+    void loadLandingArticles();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const scrollToLandingArticle = React.useCallback((idx: number) => {
+    const track = landingArticlesTrackRef.current;
+    if (!track) return;
+    const cards = track.querySelectorAll<HTMLElement>('[data-landing-article-card]');
+    const card = cards[idx];
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
+  }, []);
+
+  const goToPrevLandingArticle = React.useCallback(() => {
+    if (landingArticles.length === 0) return;
+    const next = activeLandingArticle === 0 ? landingArticles.length - 1 : activeLandingArticle - 1;
+    setActiveLandingArticle(next);
+    scrollToLandingArticle(next);
+  }, [activeLandingArticle, landingArticles.length, scrollToLandingArticle]);
+
+  const goToNextLandingArticle = React.useCallback(() => {
+    if (landingArticles.length === 0) return;
+    const next = activeLandingArticle === landingArticles.length - 1 ? 0 : activeLandingArticle + 1;
+    setActiveLandingArticle(next);
+    scrollToLandingArticle(next);
+  }, [activeLandingArticle, landingArticles.length, scrollToLandingArticle]);
+
+  const handleLandingArticlesScroll = React.useCallback(() => {
+    const track = landingArticlesTrackRef.current;
+    if (!track) return;
+    const cards = track.querySelectorAll<HTMLElement>('[data-landing-article-card]');
+    if (cards.length === 0) return;
+    const left = track.scrollLeft;
+    let nearestIdx = 0;
+    let nearestDist = Number.POSITIVE_INFINITY;
+    cards.forEach((card, idx) => {
+      const dist = Math.abs(card.offsetLeft - left);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestIdx = idx;
+      }
+    });
+    setActiveLandingArticle(nearestIdx);
+  }, []);
 
   const handleAdminSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2009,6 +2093,129 @@ iSCENE 2026 Organizing Team</p>`,
               </motion.div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Articles Section */}
+      <section id="articles" className="py-24 bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <SectionTitle subtitle="Latest updates from iSCENE.">
+            Articles
+          </SectionTitle>
+
+          {landingArticlesLoading ? (
+            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-10 text-center text-slate-500">
+              Loading articles...
+            </div>
+          ) : landingArticlesError ? (
+            <div className="rounded-3xl border border-red-100 bg-red-50 p-10 text-center text-red-600">
+              {landingArticlesError}
+            </div>
+          ) : landingArticles.length === 0 ? (
+            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-10 text-center text-slate-500">
+              No articles published yet.
+            </div>
+          ) : landingArticles.length === 1 ? (
+            <div className="grid gap-6 md:grid-cols-3">
+              {landingArticles.map((article) => (
+                <article key={article.id} className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+                  <div className="h-44 bg-slate-100">
+                    {article.headerImageUrl ? (
+                      <img src={article.headerImageUrl} alt={article.title || 'Article'} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-slate-400">
+                        <FileText size={40} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-5">
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wider text-blue-600">
+                      {(article.category || 'Updates').toString()}
+                    </p>
+                    <h3 className="mb-2 line-clamp-2 text-lg font-bold text-slate-900">
+                      {article.title || 'Untitled article'}
+                    </h3>
+                    <p className="line-clamp-4 text-sm leading-relaxed text-slate-600">
+                      {article.description || 'No description provided.'}
+                    </p>
+                    {article.authorName ? (
+                      <p className="mt-4 text-xs text-slate-500">By {article.authorName}</p>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="relative rounded-3xl border border-slate-100 bg-white p-3 shadow-sm sm:p-4">
+              <div
+                ref={landingArticlesTrackRef}
+                onScroll={handleLandingArticlesScroll}
+                className="flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              >
+                {landingArticles.map((article) => (
+                  <article key={article.id} data-landing-article-card className="w-[92%] shrink-0 snap-start overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm sm:w-[78%] lg:w-[48%] xl:w-[38%]">
+                    <div className="h-52 bg-slate-100">
+                      {article.headerImageUrl ? (
+                        <img src={article.headerImageUrl} alt={article.title || 'Article'} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-slate-400">
+                          <FileText size={48} />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex min-h-[220px] flex-col justify-center p-6">
+                      <p className="mb-3 text-xs font-bold uppercase tracking-wider text-blue-600">
+                        {(article.category || 'Updates').toString()}
+                      </p>
+                      <h3 className="mb-4 line-clamp-2 text-xl font-bold text-slate-900">
+                        {article.title || 'Untitled article'}
+                      </h3>
+                      <p className="line-clamp-5 text-slate-600 leading-relaxed">
+                        {article.description || 'No description provided.'}
+                      </p>
+                      {article.authorName ? (
+                        <p className="mt-5 text-sm text-slate-500">By {article.authorName}</p>
+                      ) : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={goToPrevLandingArticle}
+                aria-label="Previous article"
+                className="absolute left-5 top-1/2 -translate-y-1/2 rounded-full bg-white/95 p-2.5 text-slate-700 shadow hover:bg-white"
+              >
+                <ChevronLeft size={20} />
+              </button>
+              <button
+                type="button"
+                onClick={goToNextLandingArticle}
+                aria-label="Next article"
+                className="absolute right-5 top-1/2 -translate-y-1/2 rounded-full bg-white/95 p-2.5 text-slate-700 shadow hover:bg-white"
+              >
+                <ChevronRight size={20} />
+              </button>
+
+              <div className="flex justify-center gap-2 border-t border-slate-100 bg-slate-50 px-4 py-4">
+                {landingArticles.map((article, idx) => (
+                  <button
+                    key={article.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveLandingArticle(idx);
+                      scrollToLandingArticle(idx);
+                    }}
+                    aria-label={`Go to article ${idx + 1}`}
+                    className={`h-2.5 rounded-full transition-all ${
+                      idx === activeLandingArticle ? 'w-8 bg-blue-600' : 'w-2.5 bg-slate-300 hover:bg-slate-400'
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
